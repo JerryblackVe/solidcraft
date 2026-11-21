@@ -922,6 +922,7 @@ fn body_items(app: &SolveApp, bodies: &[String], browser: bool) -> Vec<Item> {
     let several = rename_selected(app, bodies);
     let mut v = vec![
         act("ui.moveBodies", "Move/Copy", "move").key("M").with(json!({ "bodies": names })).on(!locked),
+        act("ui.placeOnPlane", "Place on Plane", "align").with(json!({ "bodies": names })).on(!locked),
         cmd(app, "component.from_bodies", "Create Components from Bodies").with(json!({ "bodies": names })),
         Item::sep(),
         act("ui.material", "Physical Material", "material").with(json!({ "bodies": names })),
@@ -1886,6 +1887,11 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
             let items: Vec<Value> = bodies.iter().map(|b| json!({"type": "body", "name": b})).collect();
             let _ = app.run("select.set", json!({ "items": items }));
             app.start("solid.move");
+        }
+        "ui.placeOnPlane" => {
+            let items: Vec<Value> = bodies.iter().map(|b| json!({"type": "body", "name": b})).collect();
+            let _ = app.run("select.set", json!({ "items": items }));
+            app.start("solid.place_on_plane");
         }
         "ui.rename" => {
             let several: Option<Vec<String>> =

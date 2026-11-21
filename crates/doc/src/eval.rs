@@ -5188,6 +5188,7 @@ fn track_altered_sheets(before: &ModelState, after: &mut ModelState, f: &Feature
         f.kind,
         FeatureKind::Move { .. }
             | FeatureKind::Align { .. }
+            | FeatureKind::PlaceOnPlane { .. }
             | FeatureKind::Rest { .. }
             | FeatureKind::BodyTransfer { .. }
             | FeatureKind::SplitFace { .. }
@@ -12244,6 +12245,7 @@ fn eval_feature_kind(
         | FeatureKind::Rib { .. }
         | FeatureKind::ReplaceFace { .. }
         | FeatureKind::Align { .. }
+        | FeatureKind::PlaceOnPlane { .. }
         | FeatureKind::Remove { .. } => more::eval(doc, vals, f, st, warning),
         FeatureKind::Sketch { plane, sketch } => eval_sketch(doc, vals, f, plane, sketch, st, warning, crate::project::LostNames::Fail),
         FeatureKind::Extrude { operation, targets, .. }

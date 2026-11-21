@@ -209,6 +209,40 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
             }
             Ok(())
         }
+        FeatureKind::PlaceOnPlane { bodies, plane, offset, each } => {
+            if bodies.is_empty() {
+                return Err(DocError::Invalid("no bodies to place on the plane".into()));
+            }
+            let pl = doc.resolve_plane_in(vals, plane, 0, f.component, Some(&*st))?;
+            let n = pl.normal().normalized().ok_or_else(|| DocError::Invalid("the plane has no direction".into()))?;
+            let gap = match offset {
+                Some(e) => val(vals, e, Kind::Length)?,
+                None => 0.0,
+            };
+            if !gap.is_finite() {
+                return Err(DocError::Invalid("the Place on Plane offset is not a finite number".into()));
+            }
+            let mut moved = Vec::with_capacity(bodies.len());
+            for name in bodies {
+                let i = st.bodies.iter().position(|b| &b.name == name).ok_or_else(|| DocError::Unknown(format!("body `{name}`")))?;
+                // A body named twice moves once.
+                if moved.iter().any(|(j, _)| *j == i) {
+                    continue;
+                }
+                let b = st.bodies.get(i).ok_or_else(|| DocError::Unknown(format!("body `{name}`")))?;
+                moved.push((i, lowest_above(&b.body, pl.origin, n)?));
+            }
+            let set_low = moved.iter().map(|(_, h)| *h).fold(f64::INFINITY, f64::min);
+            for (i, low) in moved {
+                let d = gap - if *each { low } else { set_low };
+                if let Some(mb) = st.bodies.get_mut(i) {
+                    let nb = kernel::transform_matrix(&mb.body, translation(n * d))?;
+                    // A rigid move keeps each face's identity, as Align's does (#20288).
+                    *mb = mb.remade(Traced::step(nb, &[&mb.traced()]));
+                }
+            }
+            Ok(())
+        }
         FeatureKind::Remove { bodies } => {
             if bodies.is_empty() {
                 return Err(DocError::Invalid("no bodies to remove".into()));
@@ -223,6 +257,27 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
         }
         _ => Err(DocError::Invalid(format!("{} is not evaluated here", f.name))),
     }
+}
+
+/// How far the point of `b` nearest the plane through `o` with unit normal `n` lies above it
+/// (negative: below), from the exact box: of the body itself when `n` is a world axis, else of a
+/// copy turned so that `n` points up.
+fn lowest_above(b: &Body, o: Vec3, n: Vec3) -> Result<f64> {
+    let low = match [Vec3::X, Vec3::Y, Vec3::Z].into_iter().find(|a| n.dot(*a).abs() > 1.0 - 1e-12) {
+        Some(a) => {
+            let bb = b.exact_bounds()?;
+            if n.dot(a) > 0.0 { bb.min.dot(a) } else { -bb.max.dot(a) }
+        }
+        None => {
+            let axis = n.cross(Vec3::Z);
+            let turn = rotation(Vec3::ZERO, axis, axis.len().atan2(n.dot(Vec3::Z)));
+            kernel::transform_matrix(b, turn)?.exact_bounds()?.min.z
+        }
+    };
+    if !low.is_finite() {
+        return Err(DocError::Invalid("a body to place on the plane has no extent".into()));
+    }
+    Ok(low - o.dot(n))
 }
 
 /// The walls of rib `f` (one per curve for a web), each run until it meets the bodies. `at`

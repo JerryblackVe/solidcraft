@@ -1,5 +1,5 @@
-//! Contracts for five commands in `cmd/features_more.rs` (#12655, #2829): Rib, Web, Remove,
-//! Boundary Fill and Replace Face. Each adds a feature and returns `add_feature`'s reply, a
+//! Contracts for six commands in `cmd/features_more.rs` (#12655, #2829): Rib, Web, Remove,
+//! Boundary Fill, Replace Face and Place on Plane. Each adds a feature and returns `add_feature`'s reply, a
 //! [`super::features::FeatureResult`].
 //!
 //! The handlers read their parameters from the raw JSON, so each key here reads as its handler
@@ -20,7 +20,7 @@ use super::config::NameList;
 use super::motion::require;
 use super::types::{
     AngleExpr, AxisDir, CoilSectionParam, CoilSectionPositionParam, EmbossFacePoint, EmbossModeParam, FaceRef, FeatureCommon, IdOrName, LengthExpr,
-    NumberExpr, OperationParam, PlaneParam, Point3, PointExpr3, ProfilesParam, RibDirectionParam, SketchRef, StringList, TouchingParam,
+    NumberExpr, OperationParam, PlaneOrFace, PlaneParam, Point3, PointExpr3, ProfilesParam, RibDirectionParam, SketchRef, StringList, TouchingParam,
     feature_common, present,
 };
 use crate::params::{self, MAX_STRING_LIST};
@@ -183,6 +183,33 @@ pub struct RemoveParams {
     #[serde(default, deserialize_with = "remove_bodies")]
     #[schemars(schema_with = "remove_bodies_schema")]
     pub bodies: Option<NameList>,
+    #[serde(flatten, deserialize_with = "feature_common")]
+    pub common: FeatureCommon,
+}
+
+fn place_bodies_schema(_: &mut SchemaGenerator) -> Schema {
+    names_schema("The bodies to rest on the plane, by name: one, or a list of 1 to 10 000.", MAX_STRING_LIST)
+}
+
+/// Rest bodies on a plane: they move along its normal, never turning, until the point nearest
+/// the plane touches it. One undo step.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields, transform = bodies_required)]
+pub struct PlaceOnPlaneParams {
+    // Required in the schema (`bodies_required`), optional in the type, as Remove's.
+    #[serde(default, deserialize_with = "remove_bodies")]
+    #[schemars(schema_with = "place_bodies_schema")]
+    pub bodies: Option<NameList>,
+    /// The plane to rest on, or a planar face of a body that does not move. Default: XY.
+    #[serde(default)]
+    pub plane: Option<PlaneOrFace>,
+    /// The gap left between the bodies and the plane. Default: 0.
+    #[serde(default)]
+    pub offset: Option<LengthExpr>,
+    /// Each body rests on the plane by itself. Default: false, the bodies move together as one
+    /// set and keep where they are relative to each other.
+    #[serde(default)]
+    pub each: Option<bool>,
     #[serde(flatten, deserialize_with = "feature_common")]
     pub common: FeatureCommon,
 }

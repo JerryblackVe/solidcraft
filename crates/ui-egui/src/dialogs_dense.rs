@@ -1111,6 +1111,10 @@ fn additional_rows(app: &mut SolveApp, d: &mut Dialog, ui: &mut egui::Ui) -> boo
         Kind::Stock { margin } => {
             enter |= expr_row(ui, "Margin", margin);
         }
+        Kind::PlaceOnPlane { offset, each } => {
+            enter |= expr_row(ui, "Offset", offset);
+            ui_kit::options(ui, "place_on_plane_options", &mut [("Each body by itself", each)]);
+        }
         Kind::Scale { factor, per_axis, factor_y, factor_z } => {
             form_row(ui, "Type", |ui| {
                 let mut i = usize::from(*per_axis);

@@ -1424,6 +1424,74 @@ fn align_takes_planes_and_the_origin() {
     assert!(s.execute("solid.align", &json!({"bodies": ["C"], "from": [0, 0, 0], "to_plane": "Nowhere"})).is_err());
 }
 
+/// Place on Plane: ten turned blades of a fan move as one set until the lowest touches XY,
+/// keeping where they are relative to each other; or each by itself; at an offset; onto a tilted
+/// plane and a face of another body; measured on the exact geometry (a sphere's pole).
+#[test]
+fn place_on_plane_rests_a_set_of_bodies_without_turning_them() {
+    let fan = || {
+        let mut s = Session::default();
+        for i in 0..10 {
+            let name = format!("Blade{i}");
+            let y = 6.0 * f64::from(i);
+            run(&mut s, "solid.box", json!({"length": 20, "width": 4, "height": 2, "corner": [0, y, 10.0 + f64::from(i)], "body_name": name}));
+            run(
+                &mut s,
+                "solid.move",
+                json!({"bodies": [name], "axis": [1, 0, 0], "origin": [0, y, 10.0 + f64::from(i)], "angle": format!("{} deg", 8 * i)}),
+            );
+        }
+        s
+    };
+    let names: Vec<String> = (0..10).map(|i| format!("Blade{i}")).collect();
+    // As one set: every blade drops by the same distance, the lowest one to Z = 0.
+    let mut s = fan();
+    let before: Vec<_> = names.iter().map(|n| bounds(&mut s, n)).collect();
+    let low = before.iter().map(|(lo, _)| lo[2]).fold(f64::INFINITY, f64::min);
+    let saved = s.doc.to_json();
+    run(&mut s, "solid.place_on_plane", json!({"bodies": names, "plane": "XY", "name": "Rest"}));
+    let check = |s: &mut Session| {
+        for (n, (lo, hi)) in names.iter().zip(&before) {
+            assert_bounds(s, n, [lo[0], lo[1], lo[2] - low], [hi[0], hi[1], hi[2] - low]);
+        }
+    };
+    check(&mut s);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.to_json(), saved);
+    run(&mut s, "edit.redo", json!({}));
+    check(&mut s);
+    check(&mut Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap()));
+    // Each by itself, `offset` above the plane, following a parameter.
+    let mut s = fan();
+    run(&mut s, "parameters.add", json!({"name": "gap", "expression": "2.5 mm"}));
+    run(&mut s, "solid.place_on_plane", json!({"bodies": names, "offset": "gap", "each": true}));
+    for (n, (lo, hi)) in names.iter().zip(&before) {
+        assert_bounds(&mut s, n, [lo[0], lo[1], 2.5], [hi[0], hi[1], 2.5 + hi[2] - lo[2]]);
+    }
+    run(&mut s, "parameters.change", json!({"name": "gap", "expression": "4 mm"}));
+    assert!((bounds(&mut s, "Blade3").0[2] - 4.0).abs() < 1e-6);
+    // A tilted plane through the origin, normal (0, -1, 1): the corner (x, 10, 20) is nearest,
+    // 10/√2 above it, so the box moves by (0, 5, -5); named twice, it still moves once.
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [0, 0, 20], "body_name": "C"}));
+    run(&mut s, "solid.place_on_plane", json!({"bodies": ["C", "C"], "plane": {"origin": [0, 0, 0], "normal": [0, -1, 1]}}));
+    assert_bounds(&mut s, "C", [0.0, 5.0, 15.0], [10.0, 15.0, 25.0]);
+    // Onto the top of another body, measured on the exact sphere (its tessellation would miss).
+    run(&mut s, "solid.box", json!({"length": 100, "width": 100, "height": 5, "corner": [-50, -50, -20], "body_name": "Table"}));
+    run(&mut s, "solid.sphere", json!({"radius": 5, "center": [7, 3, 40], "operation": "new", "body_name": "Ball"}));
+    run(&mut s, "solid.place_on_plane", json!({"bodies": ["Ball"], "plane": {"face": [0, 0, -15]}}));
+    assert_bounds(&mut s, "Ball", [2.0, -2.0, -15.0], [12.0, 8.0, -5.0]);
+    // Refused: a face on a body that moves, no bodies, an unknown body, an offset that is no length.
+    for p in [
+        json!({"bodies": ["Ball", "Table"], "plane": {"face": [0, 0, -15]}}),
+        json!({"bodies": []}),
+        json!({"bodies": ["Nope"]}),
+        json!({"bodies": ["Ball"], "offset": "3 deg"}),
+    ] {
+        assert!(s.execute("solid.place_on_plane", &p).is_err(), "{p}");
+    }
+}
+
 /// The bounding box of body `name`: min and max.
 fn bounds(s: &mut Session, name: &str) -> ([f64; 3], [f64; 3]) {
     let m = measure(s);

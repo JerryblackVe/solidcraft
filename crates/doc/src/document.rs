@@ -1608,6 +1608,19 @@ pub enum FeatureKind {
         #[walk(angle = "Angle")]
         angle: Option<Expr>,
     },
+    /// Rest bodies on a plane: move them along its normal, without turning, until the point of
+    /// the set nearest the plane (with `each`, of each body) lies `offset` from it, on the side
+    /// the normal points to. Measured on the bodies' exact geometry.
+    PlaceOnPlane {
+        bodies: Vec<BodyName>,
+        plane: PlaneRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[walk(length = "Offset")]
+        offset: Option<Expr>,
+        /// Each body rests on the plane by itself, instead of the set moving as one.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        each: bool,
+    },
     /// A cell grid (#14044): the cells of one shape that fill the closed profiles of a sketch (an
     /// outer loop is the field, a loop inside it a keep-out), cut from the targets `depth` deep
     /// (or through all) along the sketch normal, or with `mode: raised` standing `depth` high
@@ -3267,6 +3280,7 @@ impl FeatureKind {
             FeatureKind::Rib { .. } => "WebFeature",
             FeatureKind::ReplaceFace { .. } => "ReplaceFaceFeature",
             FeatureKind::Align { .. } => "AlignFeature",
+            FeatureKind::PlaceOnPlane { .. } => "PlaceOnPlaneFeature",
             FeatureKind::Remove { .. } => "RemoveFeature",
             FeatureKind::Patch { .. } => "PatchFeature",
             FeatureKind::SurfaceExtrude { .. } => "SurfaceExtrudeFeature",
@@ -3333,6 +3347,7 @@ impl FeatureKind {
             FeatureKind::Rib { .. } => "rib",
             FeatureKind::ReplaceFace { .. } => "replace_face",
             FeatureKind::Align { .. } => "align",
+            FeatureKind::PlaceOnPlane { .. } => "place_on_plane",
             FeatureKind::Coil { .. } => "coil",
             FeatureKind::CellGrid { .. } => "cell_grid",
             FeatureKind::SheetBase { .. } => "sheet_base",
@@ -3440,6 +3455,7 @@ impl FeatureKind {
             "RibFeature" | "WebFeature" => "rib",
             "ReplaceFaceFeature" => "replace_face",
             "AlignFeature" => "align",
+            "PlaceOnPlaneFeature" => "place_on_plane",
             "RemoveFeature" => "remove",
             "PatchFeature" => "patch",
             "SurfaceExtrudeFeature" => "surface_extrude",
@@ -3530,6 +3546,7 @@ impl FeatureKind {
             FeatureKind::Rib { .. } => "Web",
             FeatureKind::ReplaceFace { .. } => "ReplaceFace",
             FeatureKind::Align { .. } => "Align",
+            FeatureKind::PlaceOnPlane { .. } => "PlaceOnPlane",
             FeatureKind::Remove { .. } => "Remove",
             FeatureKind::Patch { .. } => "Patch",
             FeatureKind::SurfaceExtrude { .. } => "SurfaceExtrude",

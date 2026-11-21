@@ -159,6 +159,12 @@ crate::dialog_descriptor::dialog_descriptors! {
             FeatureKind::OffsetFace { distance, .. }) {
             distance: String = "2 mm".into() => shown_expr(distance, ValueKind::Length),
         } => json!({"distance": distance});
+        // The bodies rest on the plane as one set, or each by itself; XY when no plane is picked.
+        PlaceOnPlane("solid.place_on_plane", "PLACE ON PLANE", [("Bodies", BODIES, true), ("Plane (XY if none)", PLANES | PLANAR_FACES, false)],
+            FeatureKind::PlaceOnPlane { offset, each, .. }) {
+            offset: String = "0 mm".into() => offset.as_ref().map_or_else(|| "0 mm".to_string(), |e| shown_expr(e, ValueKind::Length)),
+            each: bool = false => *each,
+        } => json!({"offset": offset, "each": each});
         Stock("solid.bounding_solid", "STOCK", [("Bodies (all if none)", BODIES, true)],
             FeatureKind::BoundingSolid { margin, .. }) {
             margin: String = "2 mm".into() => shown_expr(margin, ValueKind::Length),
@@ -1538,6 +1544,7 @@ impl Dialog {
                 | Kind::PathPattern { .. }
                 | Kind::Pipe { .. }
                 | Kind::Stock { .. }
+                | Kind::PlaceOnPlane { .. }
                 | Kind::Scale { .. }
                 | Kind::OffsetFaces { .. }
                 | Kind::PatternRect { .. }
@@ -1612,6 +1619,7 @@ impl Dialog {
             }
             Kind::Pipe { diameter, .. } => ("Diameter", ValueKind::Length, diameter),
             Kind::Stock { margin } => ("Margin", ValueKind::Length, margin),
+            Kind::PlaceOnPlane { offset, .. } => ("Offset", ValueKind::Length, offset),
             Kind::AnglePlane { angle, .. } => ("Angle", ValueKind::Angle, angle),
             Kind::Scale { per_axis: true, .. } => return None,
             Kind::Scale { factor, .. } => ("Scale", ValueKind::Unitless, factor),
@@ -6820,6 +6828,17 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             put(&mut p, &[("wall", wall)]);
             ("solid.pipe", p)
         }
+        Kind::PlaceOnPlane { .. } => {
+            need(0, "bodies")?;
+            let mut p = json!({"bodies": sels(d, 0).body_names()});
+            // A face is followed as it changes; a plane by its name.
+            match sels(d, 1).first() {
+                Some(Sel::Face { point, .. }) => p["plane"] = json!({"face": pt(*point)}),
+                Some(other) => p["plane"] = plane_value(s, Some(other)).ok_or("the plane must be a plane or a planar face")?,
+                None => {}
+            }
+            ("solid.place_on_plane", p)
+        }
         Kind::Stock { .. } => {
             let mut p = json!({});
             if !sels(d, 0).is_empty() {
@@ -9072,6 +9091,17 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             let mut d = start("solid.thread")?;
             crate::dialogs_thread::reopen(&mut d, s, &f);
             d.sync_thread(s);
+            d
+        }
+        FeatureKind::PlaceOnPlane { bodies, plane, .. } => {
+            let mut d = start("solid.place_on_plane")?;
+            d.kind = Kind::simple_restore(&f.kind)?;
+            if let Some(inp) = d.inputs.get_mut(0) {
+                inp.items = bodies.iter().map(|n| Sel::Body { name: n.to_string() }).collect();
+            }
+            if let Some(inp) = d.inputs.get_mut(1) {
+                inp.items = plane_sel(s, plane).into_iter().collect();
+            }
             d
         }
         FeatureKind::BoundingSolid { bodies, contents, .. } => {
