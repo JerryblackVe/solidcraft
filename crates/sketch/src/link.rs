@@ -38,6 +38,8 @@ pub enum LinkKind {
     Intersect,
     /// Text outlines (drawn like normal geometry; edit the text to change them).
     Text,
+    /// A star's outline (drawn like normal geometry; edit the star to change it).
+    Star,
 }
 
 /// What a link refers to. Model geometry is referenced by a point on it plus the body name and
@@ -105,6 +107,8 @@ pub enum LinkSource {
         #[serde(default, skip_serializing_if = "TextExprs::is_empty")]
         exprs: TextExprs,
     },
+    /// A star: its numbers; the outline is rebuilt from them ([`crate::star_geometry`]).
+    Star(crate::StarSpec),
 }
 
 /// The expressions behind a text's numbers that were typed as expressions: its place (`x`, `y`),
@@ -168,6 +172,7 @@ impl LinkSource {
             LinkSource::Spun { body, .. } => of_body("spun profile", body),
             LinkSource::Iso { body, .. } => of_body("isoparametric curve", body),
             LinkSource::Text { text, .. } => format!("text \"{}\"", text.chars().take(20).collect::<String>()),
+            LinkSource::Star(s) => format!("{}-point star", s.points),
         }
     }
 
@@ -194,7 +199,8 @@ impl LinkSource {
             | LinkSource::Axis { .. }
             | LinkSource::SketchAxis { .. }
             | LinkSource::Plane { .. }
-            | LinkSource::Text { .. } => Vec::new(),
+            | LinkSource::Text { .. }
+            | LinkSource::Star(_) => Vec::new(),
         }
     }
 }
@@ -743,8 +749,18 @@ impl Sketch {
         self.curves.get(ci).is_some_and(|c| c.link.is_some())
     }
 
-    /// Is this curve text outline (linked, but drawn like normal geometry)?
+    /// Is this curve a text or star outline (linked, but drawn like normal geometry)?
     pub fn is_text_curve(&self, ci: usize) -> bool {
+        self.curves
+            .get(ci)
+            .and_then(|c| c.link.as_deref())
+            .and_then(|l| self.link(l))
+            .is_some_and(|l| matches!(l.kind, LinkKind::Text | LinkKind::Star))
+    }
+
+    /// Is this curve a text outline? Only letters have counters (the hole of an A); a star's
+    /// inner ring is a star of its own.
+    pub fn is_letter_curve(&self, ci: usize) -> bool {
         self.curves.get(ci).and_then(|c| c.link.as_deref()).and_then(|l| self.link(l)).is_some_and(|l| l.kind == LinkKind::Text)
     }
 
@@ -893,10 +909,12 @@ impl Sketch {
                 }
             };
             let cid = self.fresh(prefix)?;
+            // A star's circles through its tips and valleys are guides, never profiles.
+            let guide = matches!(kind, CurveKind::Circle { .. }) && self.links.iter().any(|l| l.id == id && l.kind == LinkKind::Star);
             self.curves.push(Curve {
                 id: cid,
                 kind,
-                construction: false,
+                construction: guide,
                 reversed: false,
                 link: Some(id.to_string()),
                 centerline: false,

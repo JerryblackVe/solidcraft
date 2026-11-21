@@ -1,0 +1,50 @@
+{
+  "en": {
+    "cmd.sketch.edit_star": "Edit Star",
+    "cmd.sketch.star": "Star",
+    "help.sketch.star": "Draws a star from its centre, number of points and size, with optional rounded tips and valleys. Use it for a star you may change later: Edit Star changes the points, size, depth, rounding and turn without drawing it again.",
+    "ui.star.construction_circles": "Construction Circles"
+  },
+  "de": {
+    "cmd.sketch.edit_star": "Stern bearbeiten",
+    "cmd.sketch.star": "Stern",
+    "help.sketch.star": "Zeichnet einen Stern aus Mittelpunkt, Zackenzahl und Größe, wahlweise mit gerundeten Spitzen und Tälern. Nutze ihn für einen Stern, den du später ändern willst: „Stern bearbeiten“ ändert Zacken, Größe, Tiefe, Rundung und Drehung, ohne neu zu zeichnen.",
+    "ui.star.construction_circles": "Konstruktionskreise"
+  },
+  "ko": {
+    "cmd.sketch.edit_star": "별 편집",
+    "cmd.sketch.star": "별",
+    "help.sketch.star": "중심, 꼭짓점 수, 크기로 별을 그리며 꼭짓점과 골을 둥글게 할 수 있습니다. 나중에 바꿀 별에 사용하세요. 별 편집은 다시 그리지 않고 꼭짓점 수, 크기, 깊이, 둥글기, 회전을 바꿉니다.",
+    "ui.star.construction_circles": "구성 원"
+  },
+  "ja": {
+    "cmd.sketch.edit_star": "星を編集",
+    "cmd.sketch.star": "星",
+    "help.sketch.star": "中心・頂点の数・大きさから星を描きます。先端と谷を丸めることもできます。あとで変更する星に使います。「星を編集」で、描き直さずに頂点の数、大きさ、深さ、丸み、回転を変えられます。",
+    "ui.star.construction_circles": "補助円"
+  },
+  "zh": {
+    "cmd.sketch.edit_star": "编辑星形",
+    "cmd.sketch.star": "星形",
+    "help.sketch.star": "根据中心、顶点数和大小绘制星形，可选圆角的尖端和凹谷。适合之后还要修改的星形：编辑星形可修改顶点数、大小、深度、圆角和旋转，无需重画。",
+    "ui.star.construction_circles": "构造圆"
+  },
+  "ar": {
+    "cmd.sketch.edit_star": "تحرير النجمة",
+    "cmd.sketch.star": "نجمة",
+    "help.sketch.star": "يرسم نجمة من مركزها وعدد رؤوسها وحجمها، مع إمكانية استدارة الرؤوس والوديان. استخدمها لنجمة قد تغيّرها لاحقًا: يغيّر «تحرير النجمة» عدد الرؤوس والحجم والعمق والاستدارة والدوران دون إعادة الرسم.",
+    "ui.star.construction_circles": "دوائر إنشائية"
+  },
+  "he": {
+    "cmd.sketch.edit_star": "עריכת כוכב",
+    "cmd.sketch.star": "כוכב",
+    "help.sketch.star": "משרטט כוכב לפי המרכז, מספר הקודקודים והגודל, עם אפשרות לעגל את הקצוות והעמקים. מתאים לכוכב שתרצה לשנות בהמשך: עריכת כוכב משנה את מספר הקודקודים, הגודל, העומק, העיגול והסיבוב בלי לשרטט מחדש.",
+    "ui.star.construction_circles": "עיגולי בנייה"
+  },
+  "vi": {
+    "cmd.sketch.edit_star": "Sửa ngôi sao",
+    "cmd.sketch.star": "Ngôi sao",
+    "help.sketch.star": "Vẽ ngôi sao từ tâm, số cánh và kích thước, có thể bo tròn đầu cánh và chỗ lõm. Dùng cho ngôi sao bạn có thể đổi sau: Sửa ngôi sao đổi số cánh, kích thước, độ sâu, độ bo và góc xoay mà không cần vẽ lại.",
+    "ui.star.construction_circles": "Vòng tròn dựng hình"
+  }
+}

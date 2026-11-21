@@ -2393,6 +2393,90 @@ fn text_makes_profiles_that_extrude_and_edit() {
     assert!(s.execute("sketch.text", &json!({"text": "", "at": [0, 0]})).is_err());
 }
 
+/// Total volume (mm³) of the design.
+fn total_volume(s: &mut Session) -> f64 {
+    run(s, "inspect.measure", json!({}))["total"]["volume_mm3"].as_f64().unwrap()
+}
+
+#[test]
+fn a_star_extrudes_and_becomes_another_star_without_being_deleted() {
+    let mut s = new_sketch();
+    // Sharp star: area = points * outer * inner * sin(pi / points).
+    let area = |n: f64, r: f64, inner: f64| n * r * inner * (std::f64::consts::PI / n).sin();
+    let r = run(&mut s, "sketch.star", json!({"center": [0, 0], "outer_radius": 20, "points": 5, "circles": true}));
+    let link = r["link"].as_str().unwrap().to_string();
+    // The two construction circles are curves of the star and never a profile.
+    assert_eq!(r["curves"].as_array().unwrap().len(), 12);
+    assert_eq!(profiles(&s).len(), 1);
+    assert!(close(profiles(&s)[0], area(5.0, 20.0, 8.0)), "{:?}", profiles(&s));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance": 2}));
+    assert!(close(total_volume(&mut s), 2.0 * area(5.0, 20.0, 8.0)));
+    // Back in the sketch: five points become eight, and the extrude follows.
+    run(&mut s, "sketch.edit", json!({"sketch": 1}));
+    let r2 = run(&mut s, "sketch.edit_star", json!({"link": link, "points": 8}));
+    assert_eq!(r2["link"], json!(link));
+    assert_eq!(r2["star"]["outer_radius"], json!(20.0), "what is not said is kept");
+    run(&mut s, "sketch.finish", json!({}));
+    assert!(close(total_volume(&mut s), 2.0 * area(8.0, 20.0, 8.0)), "{}", total_volume(&mut s));
+    // The star's numbers survive saving and opening.
+    let mut reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert!(close(total_volume(&mut reopened), 2.0 * area(8.0, 20.0, 8.0)));
+    run(&mut reopened, "sketch.edit", json!({"sketch": 1}));
+    let first = sketch(&reopened).curves[0].id.clone();
+    let again = run(&mut reopened, "sketch.edit_star", json!({"entity": first, "angle": 10}));
+    assert_eq!(again["star"]["points"], json!(8));
+    // Undo and redo.
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.redo", json!({}));
+}
+
+#[test]
+fn a_star_moves_turns_and_scales_as_one() {
+    let mut s = new_sketch();
+    let r = run(&mut s, "sketch.star", json!({"center": [0, 0], "outer_radius": 20}));
+    let link = r["link"].as_str().unwrap().to_string();
+    let first = sketch(&s).curves[0].id.clone();
+    run(&mut s, "sketch.move", json!({"entities": [first], "translate": [10, 5]}));
+    let r = run(&mut s, "sketch.edit_star", json!({"link": link}));
+    assert_eq!(r["star"]["center"], json!([10.0, 5.0]));
+    run(&mut s, "sketch.transform", json!({"entities": [first], "factor": 2.0, "center": [10, 5], "angle": 90}));
+    let r = run(&mut s, "sketch.edit_star", json!({"link": link}));
+    assert!(close(r["star"]["outer_radius"].as_f64().unwrap(), 40.0));
+    assert!(close(r["star"]["angle"].as_f64().unwrap(), 90.0));
+    assert_eq!(sketch(&s).links.len(), 1, "still one star");
+}
+
+#[test]
+fn a_star_refuses_what_makes_no_star_and_changes_nothing() {
+    let mut s = new_sketch();
+    let r = run(&mut s, "sketch.star", json!({"center": [0, 0], "outer_radius": 20, "points": 5, "tip_round": 1, "valley_round": 1}));
+    let link = r["link"].as_str().unwrap().to_string();
+    assert_eq!(sketch(&s).curves.len(), 20, "10 lines and 10 arcs");
+    let before = s.doc.to_json();
+    for bad in [
+        json!({"points": 2}),
+        json!({"points": 201}),
+        json!({"outer_radius": 0}),
+        json!({"outer_radius": -5}),
+        json!({"inner_percent": 100}),
+        json!({"inner_percent": 0}),
+        json!({"skip": 3}),
+        json!({"tip_round": 50}),
+        json!({"valley_round": -1}),
+        json!({"angle": "x"}),
+    ] {
+        let mut p = bad.clone();
+        p["link"] = json!(link);
+        assert!(s.execute("sketch.edit_star", &p).is_err(), "{bad}");
+    }
+    assert_eq!(s.doc.to_json(), before, "refusals change nothing");
+    // A skip of 2 on 6 points shares a factor; on 5 it is the pentagram.
+    assert!(s.execute("sketch.star", &json!({"center": [50, 0], "outer_radius": 20, "points": 6, "skip": 2})).is_err());
+    run(&mut s, "sketch.star", json!({"center": [50, 0], "outer_radius": 20, "points": 5, "skip": 2}));
+    assert!(s.execute("sketch.edit_star", &json!({"link": "nope"})).is_err());
+}
+
 /// Volumes (mm³) of the bodies in the design, smallest first.
 fn body_volumes(s: &mut Session) -> Vec<f64> {
     let m = run(s, "inspect.measure", json!({}));

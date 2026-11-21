@@ -551,6 +551,7 @@ fn resolve_uncached(
         }
         // Its path is a curve of its own sketch: set with the sketch (`Sketch::text_source_geometry`).
         LinkSource::Text { .. } => return Err(DocError::Invalid("a text on a path is set with its sketch".into())),
+        LinkSource::Star(spec) => solidcraft_sketch::star_geometry(spec)?,
         LinkSource::Plane { name } => {
             let pr = if Plane::named(name).is_some() {
                 PlaneRef::Origin { name: name.clone() }
@@ -1448,7 +1449,20 @@ fn refresh_links_in(
             warn.extend(hit.note(name).map(|note| format!("projected {note}")));
             named_vertex = Some((body, hit.vertex, hit.point));
         }
-        let resolved = if matches!(source, LinkSource::Text { .. }) {
+        let resolved = if let LinkSource::Star(spec) = &source {
+            // A star needs nothing outside its sketch either.
+            solidcraft_sketch::star_geometry(spec).map_err(DocError::from).map(|geom| Resolved {
+                geom,
+                wires: Vec::new(),
+                exact: Vec::new(),
+                source: source.clone(),
+                moved: false,
+                face_index: None,
+                edge_index: None,
+                vertex_index: None,
+                edge_names: Vec::new(),
+            })
+        } else if matches!(source, LinkSource::Text { .. }) {
             // A text needs nothing outside its sketch; one on a path follows a curve of it. One
             // whose font this computer lacks is set in another, and the sketch says so (#19230).
             sk.saved_text_source_geometry(&source).map_err(DocError::from).and_then(|(geom, note)| {

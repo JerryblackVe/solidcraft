@@ -2694,7 +2694,7 @@ impl PlacementReads {
                 None => self.all = true,
             },
             // A view edge is refused in a model sketch, whatever the model holds.
-            L::Origin | L::Axis { .. } | L::SketchAxis { .. } | L::Plane { .. } | L::Text { .. } | L::ViewEdge { .. } => {}
+            L::Origin | L::Axis { .. } | L::SketchAxis { .. } | L::Plane { .. } | L::Text { .. } | L::Star(_) | L::ViewEdge { .. } => {}
         }
     }
 }
@@ -2828,7 +2828,7 @@ fn link_reads(st: &ModelState, source: &solidcraft_sketch::LinkSource, read: &mu
         L::ConstructionPoint { .. } => None,
         // In the sketch's own frame (construction axes it names are in its key), or text. A view
         // edge is refused in a model sketch, whatever the model holds.
-        L::Origin | L::Axis { .. } | L::SketchAxis { .. } | L::Plane { .. } | L::Text { .. } | L::ViewEdge { .. } => Some(()),
+        L::Origin | L::Axis { .. } | L::SketchAxis { .. } | L::Plane { .. } | L::Text { .. } | L::Star(_) | L::ViewEdge { .. } => Some(()),
     }
 }
 

@@ -57,7 +57,7 @@ pub const FAMILIES: &[Family] = &[
             "sketch.slot.arc_center",
         ],
     },
-    Family { label: "Polygon", commands: &["sketch.polygon.inscribed", "sketch.polygon.circumscribed", "sketch.polygon.edge"] },
+    Family { label: "Polygon", commands: &["sketch.polygon.inscribed", "sketch.polygon.circumscribed", "sketch.polygon.edge", "sketch.star"] },
     Family { label: "Spline", commands: &["sketch.spline.fit_point", "sketch.spline.control_point", "sketch.spline.control_point_5"] },
 ];
 
