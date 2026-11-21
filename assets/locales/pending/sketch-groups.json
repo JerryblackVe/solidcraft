@@ -4,5 +4,26 @@
   },
   "es": {
     "cmd.sketch.groups": "Grupos del boceto"
+  },
+  "de": {
+    "cmd.sketch.groups": "Skizzengruppen"
+  },
+  "ko": {
+    "cmd.sketch.groups": "스케치 그룹"
+  },
+  "ar": {
+    "cmd.sketch.groups": "مجموعات الرسم"
+  },
+  "he": {
+    "cmd.sketch.groups": "קבוצות סקיצה"
+  },
+  "ja": {
+    "cmd.sketch.groups": "スケッチグループ"
+  },
+  "vi": {
+    "cmd.sketch.groups": "Nhóm phác thảo"
+  },
+  "zh": {
+    "cmd.sketch.groups": "草图组"
   }
 }
