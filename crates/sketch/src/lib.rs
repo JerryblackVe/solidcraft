@@ -24,6 +24,7 @@ mod ends;
 mod equation;
 mod fonts;
 mod freeform_offset;
+mod groups;
 pub mod limits;
 pub mod linalg;
 mod link;
@@ -66,6 +67,7 @@ pub use fonts::{
     font_file_path, font_override_dirs, installed_families, set_font_file_check,
 };
 pub use freeform_offset::{FreeformOffset, FreeformOffsetOutput, OFFSET_TOLERANCE};
+pub use groups::{CurveGroup, GroupKind, GroupMember};
 pub use link::{Link, LinkGeom, LinkKind, LinkSource, MAX_LINK_ENTITIES, SKETCH_AXIS_HALF, SketchPlacement, TextExprs, sketch_axis_geom};
 pub use model::{
     CEILING_CONSTRAINTS, CEILING_CURVES, CEILING_POINTS, Constraint, ConstraintKind, Curve, CurveKind, MAX_CONSTRAINTS, MAX_COORD, MAX_CURVES,
