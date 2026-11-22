@@ -701,6 +701,142 @@ fn emboss_face_off_the_part_says_how_far() {
     run(&mut s, "solid.emboss", json!({"sketch": "Logo", "depth": 1, "face": [20, 15, 10]}));
 }
 
+/// A 40 x 40 step: a top at z = 10 over x = 0..20 and one at z = 20 over x = 20..40, and a sketch
+/// above it (z = 30) with a 5 x 5 square over each top.
+fn step_with_marks() -> Session {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 40, "width": 40, "height": 10, "body_name": "Step"}));
+    run(&mut s, "solid.box", json!({"length": 20, "width": 40, "height": 10, "corner": [20, 0, 10], "operation": "join"}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 30], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Marks"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [5, 10], "p1": [10, 15]}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [25, 10], "p1": [30, 15]}));
+    run(&mut s, "sketch.finish", json!({}));
+    s
+}
+
+#[test]
+fn one_emboss_puts_each_profile_on_the_selected_face_it_lies_over() {
+    let mut s = step_with_marks();
+    let v = volume(&mut s);
+    assert!(rel(v, 16000.0 + 8000.0) < 1e-9, "{v}");
+    let features = s.doc.features.len();
+    run(&mut s, "solid.emboss", json!({"sketch": "Marks", "depth": 1, "faces": [[2, 2, 10], [38, 38, 20]], "name": "Raised"}));
+    assert_eq!(s.doc.features.len(), features + 1, "one feature");
+    // Each square raised 1 mm on its own top.
+    let added = volume(&mut s) - v;
+    assert!(rel(added, 50.0) < 1e-6, "{added}");
+    let f = s.doc.features.last().unwrap();
+    assert_eq!(f.face_names.len(), 2, "{:?}", f.face_names);
+    // Saved and opened again, it builds the same.
+    let json = s.doc.to_json();
+    let mut t = Session { doc: solidcraft_doc::Document::from_json(&json).unwrap().into(), ..Default::default() };
+    t.refresh();
+    assert!(t.model.results.iter().all(|f| f.error.is_none()), "{:?}", t.model.results);
+    assert!(rel(volume(&mut t) - v, 50.0) < 1e-6, "{}", volume(&mut t) - v);
+    // Sunk instead, from the History.
+    run(&mut s, "timeline.edit", json!({"feature": "Raised", "set": {"deboss": true}}));
+    assert!(rel(v - volume(&mut s), 50.0) < 1e-6, "{}", volume(&mut s));
+}
+
+#[test]
+fn an_emboss_refuses_a_profile_over_none_of_its_faces_and_leaves_the_design() {
+    let mut s = step_with_marks();
+    // A square across the step lies over neither top.
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 30], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Across"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [18, 30], "p1": [23, 35]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let saved = s.doc.to_json();
+    let p = json!({"sketch": "Marks", "depth": 1, "faces": [[2, 2, 10], [38, 38, 20]], "more_profiles": [{"sketch": "Across"}]});
+    let e = s.execute("solid.emboss", &p).unwrap_err().to_string();
+    assert!(e.contains("profile 1 of sketch 2 lies over none of the 2 selected faces"), "{e}");
+    assert_eq!(s.doc.to_json(), saved);
+    let e = s.execute("solid.emboss", &json!({"sketch": "Marks", "depth": 1, "faces": [[2, 2, 10]]})).unwrap_err().to_string();
+    assert!(e.contains("not fitting the selected target face") && e.contains("profile 2 of 2 lies off it"), "{e}");
+    assert_eq!(s.doc.to_json(), saved);
+    // A face picked twice is said so.
+    let e = s.execute("solid.emboss", &json!({"sketch": "Marks", "depth": 1, "faces": [[2, 2, 10], [2, 2, 10]]})).unwrap_err().to_string();
+    assert!(e.contains("picked twice"), "{e}");
+    let e = s.execute("solid.emboss", &json!({"sketch": "Marks", "depth": 1, "face": [2, 2, 10], "faces": [[2, 2, 10]]})).unwrap_err().to_string();
+    assert!(e.contains("not both"), "{e}");
+    assert_eq!(s.doc.to_json(), saved);
+}
+
+#[test]
+fn one_emboss_raises_profiles_of_two_sketches() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 40, "width": 30, "height": 10}));
+    for (name, x) in [("A", 5.0), ("B", 25.0)] {
+        run(&mut s, "sketch.create", json!({"plane": {"face": [20, 15, 10]}, "name": name}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [x, 5], "p1": [x + 10.0, 15]}));
+        run(&mut s, "sketch.finish", json!({}));
+    }
+    run(&mut s, "solid.emboss", json!({"sketch": "A", "depth": 2, "more_profiles": [{"sketch": "B"}]}));
+    assert!(rel(volume(&mut s), 12000.0 + 400.0) < 1e-6, "{}", volume(&mut s));
+    let e = s.execute("solid.emboss", &json!({"sketch": "A", "depth": 2, "more_profiles": [{"profiles": "all"}]})).unwrap_err().to_string();
+    assert!(e.contains("{sketch, profiles?}"), "{e}");
+}
+
+#[test]
+fn an_emboss_shifts_and_turns_its_profiles() {
+    // #19616: a 10 x 4 bar at the corner turned a quarter about its centre (5, 2) is 4 x 10 at
+    // x 3..7, y -3..7; moved 5 back along x it hangs over the box's corner at x -2, y -3.
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 40, "width": 30, "height": 10}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 10], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Bar"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [10, 4]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.emboss", json!({"sketch": "Bar", "depth": 2, "dx": "-5 mm", "angle": "90 deg", "name": "Shifted"}));
+    let bounds = |s: &Session| s.model.state().bodies[0].body.exact_bounds().unwrap();
+    let b = bounds(&s);
+    assert!((b.min.x + 2.0).abs() < 1e-6 && (b.min.y + 3.0).abs() < 1e-6 && (b.max.z - 12.0).abs() < 1e-6, "{b:?}");
+    assert!(rel(volume(&mut s), 12000.0 + 80.0) < 1e-6);
+    // The shift is an input, edited from the History.
+    run(&mut s, "timeline.edit", json!({"feature": "Shifted", "set": {"dx": "0 mm", "angle": "0 deg"}}));
+    let b = bounds(&s);
+    assert!(b.min.x.abs() < 1e-6 && b.min.y.abs() < 1e-6, "{b:?}");
+    assert!(s.execute("solid.emboss", &json!({"sketch": "Bar", "depth": 2, "angle": "2 mm"})).is_err());
+}
+
+#[test]
+fn an_emboss_takes_a_whole_text_or_some_of_its_letters() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 100, "width": 40, "height": 10}));
+    run(&mut s, "sketch.create", json!({"plane": {"face": [50, 20, 10]}, "name": "Name"}));
+    let link = run(&mut s, "sketch.text", json!({"text": "OA", "at": [10, 10], "height": 10}))["link"].as_str().unwrap().to_string();
+    run(&mut s, "sketch.finish", json!({}));
+    let base = volume(&mut s);
+    let mut raised = |p: Value| {
+        run(&mut s, "solid.emboss", p);
+        let v = volume(&mut s) - base;
+        run(&mut s, "edit.undo", json!({}));
+        v
+    };
+    let all = raised(json!({"sketch": "Name", "depth": 1}));
+    let whole = raised(json!({"sketch": "Name", "depth": 1, "text": link}));
+    let o = raised(json!({"sketch": "Name", "depth": 1, "text": link, "letters": [0]}));
+    let a = raised(json!({"sketch": "Name", "depth": 1, "text": link, "letters": [1]}));
+    // The O keeps its counter open: the letters add up to the whole text, which is every profile.
+    assert!(o > 1.0 && a > 1.0 && rel(o + a, whole) < 1e-6 && rel(whole, all) < 1e-6, "{o} {a} {whole} {all}");
+    let e = s.execute("solid.emboss", &json!({"sketch": "Name", "depth": 1, "text": link, "letters": [2]})).unwrap_err().to_string();
+    assert!(e.contains("indices 0 to 1"), "{e}");
+    let e = s.execute("solid.emboss", &json!({"sketch": "Name", "depth": 1, "text": "nope"})).unwrap_err().to_string();
+    assert!(e.contains("no text `nope`"), "{e}");
+}
+
+#[test]
+fn a_flipped_emboss_raises_toward_the_sketch_back() {
+    // A sketch on the bottom, facing up into the box: unflipped it raises into the material.
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 40, "width": 30, "height": 10}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 0], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Under"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [5, 5], "p1": [15, 15]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.emboss", json!({"sketch": "Under", "depth": 2, "flip": true}));
+    assert!(rel(volume(&mut s), 12000.0 + 200.0) < 1e-6, "{}", volume(&mut s));
+    let e = s.execute("solid.emboss", &json!({"sketch": "Under", "depth": 2, "flip": true, "face": [20, 15, 0]})).unwrap_err().to_string();
+    assert!(e.contains("can't be flipped"), "{e}");
+}
+
 fn cylinder_badge() -> Session {
     let mut s = Session::default();
     run(&mut s, "parameters.add", json!({"name":"badge_depth","expression":"1 mm"}));

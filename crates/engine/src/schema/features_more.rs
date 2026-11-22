@@ -360,6 +360,25 @@ pub struct CoilParams {
     pub common: FeatureCommon,
 }
 
+/// More profiles of an Emboss: a sketch and which of its profiles.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct EmbossMoreProfiles {
+    /// The sketch, by id or name.
+    pub sketch: IdOrName,
+    /// Which profiles of the sketch to use. Default: all of them.
+    #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "ProfilesParam")]
+    pub profiles: Option<ProfilesParam>,
+    /// A whole text of the sketch, by its group id (`sketch.groups`), in place of `profiles`.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Some of the text's letters, by index. Default: all of them.
+    #[serde(default)]
+    #[schemars(length(min = 1, max = 10000))]
+    pub letters: Option<Vec<u64>>,
+}
+
 /// Raise a sketch's profiles from a face of the part, or sink them into it. One undo step.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -372,6 +391,13 @@ pub struct EmbossParams {
     #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "ProfilesParam")]
     pub profiles: Option<ProfilesParam>,
+    /// A whole text of the sketch, by its group id (`sketch.groups`), in place of `profiles`.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Some of the text's letters, by index. Default: all of them.
+    #[serde(default)]
+    #[schemars(length(min = 1, max = 10000))]
+    pub letters: Option<Vec<u64>>,
     /// How far the profiles are raised or sunk.
     pub depth: LengthExpr,
     #[serde(default)]
@@ -384,6 +410,27 @@ pub struct EmbossParams {
     #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "EmbossFacePoint")]
     pub face: Option<EmbossFacePoint>,
+    /// World points on several faces to emboss (in place of `face`): each profile goes onto the
+    /// face it lies over, and one that lies over none refuses the emboss.
+    #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 64))]
+    pub faces: Option<Vec<EmbossFacePoint>>,
+    /// More profiles, from the same sketch or other sketches, raised or sunk with these.
+    #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 64))]
+    pub more_profiles: Option<Vec<EmbossMoreProfiles>>,
+    /// How far the profiles move along their sketch's x. Default: 0.
+    #[serde(default)]
+    pub dx: Option<LengthExpr>,
+    /// How far the profiles move along their sketch's y. Default: 0.
+    #[serde(default)]
+    pub dy: Option<LengthExpr>,
+    /// How far the profiles turn about the centre of their box, in their sketch. Default: 0.
+    #[serde(default)]
+    pub angle: Option<AngleExpr>,
+    /// Raise or sink toward the sketch's back rather than its front. Not with a selected face.
+    #[serde(default)]
+    pub flip: Option<bool>,
     #[serde(flatten, deserialize_with = "feature_common")]
     pub common: FeatureCommon,
 }

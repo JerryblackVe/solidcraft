@@ -11,63 +11,102 @@ use solidcraft_geom::{Aabb3, ArcMap, Ring};
 
 pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st: &mut ModelState, warning: &mut Option<String>) -> Result<()> {
     match &f.kind {
-        FeatureKind::Emboss { sketch, profiles, depth, deboss, targets, face } => {
-            let ss = st.sketch(sketch.0).ok_or_else(|| DocError::Unknown(format!("sketch {sketch}")))?;
-            let regions = select_profiles(ss, profiles)?;
+        FeatureKind::Emboss { sketch, profiles, depth, deboss, targets, face, more_profiles, more_faces, dx, dy, angle, flip } => {
             let d = val(vals, depth, Kind::Length)?;
             if !(d > 0.0) {
                 return Err(DocError::Invalid("the emboss depth must be positive".into()));
             }
-            if let Some(face) = face {
-                if !targets.is_empty() && (targets.len() != 1 || targets.first() != Some(&face.body)) {
-                    return Err(DocError::Invalid("cylinder emboss must keep its selected target body".into()));
+            let opt = |e: &Option<crate::Expr>, kind| e.as_ref().map(|e| val(vals, e, kind)).transpose();
+            let shift = (opt(dx, Kind::Length)?.unwrap_or(0.0), opt(dy, Kind::Length)?.unwrap_or(0.0), opt(angle, Kind::Angle)?.unwrap_or(0.0));
+            // Each source: its sketch's feature, its plane moved by the shift, its profiles.
+            let mut sources = Vec::with_capacity(1 + more_profiles.len());
+            for (sk, sel) in std::iter::once((sketch, profiles)).chain(more_profiles.iter().map(|m| (&m.sketch, &m.profiles))) {
+                let ss = st.sketch(sk.0).ok_or_else(|| DocError::Unknown(format!("sketch {sk}")))?;
+                let regions = select_profiles(ss, sel)?;
+                let plane = emboss_shifted_plane(&ss.plane, &regions, shift)?;
+                sources.push((ss.feature, plane, regions));
+            }
+            if let Some(first) = face {
+                if *flip {
+                    return Err(DocError::Invalid(
+                        "an emboss on a selected face can't be flipped: the face's outside sets its direction (Deboss sinks it)".into(),
+                    ));
                 }
-                let i =
-                    st.bodies.iter().position(|b| b.name == face.body).ok_or_else(|| DocError::Unknown(format!("emboss body `{}`", face.body)))?;
-                let mb = st.bodies.get(i).cloned().ok_or_else(|| DocError::Invalid("emboss body".into()))?;
-                let body_frame = face.body_frame(doc, &mb)?;
-                let inverse = crate::mat_inverse(&body_frame).ok_or_else(|| DocError::Invalid("invalid cylinder body frame".into()))?;
-                let sketch_owner = doc.feature(ss.feature).map(|f| f.component).unwrap_or(0);
-                let author_frame = EmbossFace::component_frame(doc, f.component, &face.author_path)?;
-                let sketch_frame = face.sketch_frame(doc, f.component, sketch_owner, &mb)?;
-                let sketch_transform = crate::mat_mul(&inverse, &sketch_frame);
-                let plane = Plane::new(
-                    crate::apply_point(&sketch_transform, ss.plane.origin),
-                    crate::apply_vector(&sketch_transform, ss.plane.x),
-                    crate::apply_vector(&sketch_transform, ss.plane.y),
-                )
-                .ok_or_else(|| DocError::Invalid("invalid cylinder sketch frame".into()))?;
-                let at = crate::apply_point(&crate::mat_mul(&inverse, &author_frame), face.at.0);
-                let name = f
-                    .face_names
-                    .first()
-                    .filter(|name| !name.is_empty())
-                    .ok_or_else(|| DocError::Invalid("selected emboss face has no persistent identity".into()))?;
-                let hit = {
-                    let mut scoped = ModelState::default();
-                    scoped.bodies.push(mb.clone());
-                    crate::name_lookup::locate_face(&scoped, name, at).ok_or_else(|| DocError::reselect(name.as_str()))?
-                };
+                let faces: Vec<&EmbossFace> = std::iter::once(first).chain(more_faces).collect();
+                if !targets.is_empty()
+                    && (targets.iter().any(|t| !faces.iter().any(|f| f.body == *t)) || faces.iter().any(|f| !targets.contains(&f.body)))
+                {
+                    return Err(DocError::Invalid("an emboss on selected faces must keep their bodies as its targets".into()));
+                }
                 let signed = if *deboss { -d } else { d };
-                // A sketch tangent to a complete cylinder wall, outside or a bore, takes the wrap
-                // (whose refusals stand); a partial wall, a sketch off the wall and every other
-                // face are projected.
-                let result = match kernel::cylinder_emboss_anchor(&mb.body, hit.face, hit.point) {
-                    Ok(at) if kernel::infer_cylinder_emboss(&mb.body, &plane, &regions, signed)?.is_some() => {
-                        kernel::emboss_cylinder_at(&mb.body, at, &plane, &regions, signed)?
+                // One face, one sketch: a sketch tangent to a complete cylinder wall, outside or a
+                // bore, takes the wrap (whose refusals stand); a partial wall, a sketch off the wall
+                // and every other face are projected.
+                if let ([face], [(feature, plane, regions)]) = (faces.as_slice(), sources.as_slice()) {
+                    let (i, mb, hit, plane) = emboss_face_hit(doc, f, st, face, 0, *feature, plane)?;
+                    let result = match kernel::cylinder_emboss_anchor(&mb.body, hit.face, hit.point) {
+                        Ok(at) if kernel::infer_cylinder_emboss(&mb.body, &plane, regions, signed)?.is_some() => {
+                            kernel::emboss_cylinder_at(&mb.body, at, &plane, regions, signed)?
+                        }
+                        _ => {
+                            let at = kernel::emboss_anchor(&mb.body, hit.face, hit.point)?;
+                            kernel::emboss_project_face(&mb.body, hit.face, at, &plane, regions, signed)?
+                        }
+                    };
+                    if let Some(slot) = st.bodies.get_mut(i) {
+                        *slot = ModelBody::new(mb.name, result, mb.feature);
                     }
-                    _ => {
+                    return Ok(());
+                }
+                // Several faces or sketches: each profile is projected onto the selected face it
+                // lies over (laid round a cylinder wall), all of one body's in one step. A profile
+                // over no selected face refuses the whole emboss, so no letter goes missing.
+                let mut placed: Vec<Vec<bool>> = sources.iter().map(|(_, _, r)| vec![false; r.len()]).collect();
+                let mut per_body: BTreeMap<usize, (ModelBody, Vec<Body>)> = BTreeMap::new();
+                for (slot, face) in faces.iter().enumerate() {
+                    for (k, (feature, plane, regions)) in sources.iter().enumerate() {
+                        let (i, mb, hit, plane) = emboss_face_hit(doc, f, st, face, slot, *feature, plane)?;
                         let at = kernel::emboss_anchor(&mb.body, hit.face, hit.point)?;
-                        kernel::emboss_project_face(&mb.body, hit.face, at, &plane, &regions, signed)?
+                        let pieces = kernel::emboss_face_pieces(&mb.body, hit.face, at, &plane, regions, signed)?;
+                        let done = placed.get_mut(k).ok_or_else(|| DocError::Invalid("emboss source".into()))?;
+                        let entry = per_body.entry(i).or_insert_with(|| (mb.clone(), Vec::new()));
+                        for (piece, done) in pieces.into_iter().zip(done.iter_mut()) {
+                            if let Some(piece) = piece.filter(|_| !*done) {
+                                entry.1.push(piece);
+                                *done = true;
+                            }
+                        }
                     }
-                };
-                if let Some(slot) = st.bodies.get_mut(i) {
-                    *slot = ModelBody::new(mb.name, result, mb.feature);
+                }
+                let missed: Vec<String> = placed
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(k, done)| done.iter().enumerate().filter(|(_, d)| !**d).map(move |(r, _)| (k, r)))
+                    .map(|(k, r)| if sources.len() == 1 { format!("{}", r + 1) } else { format!("{} of sketch {}", r + 1, k + 1) })
+                    .collect();
+                if !missed.is_empty() {
+                    return Err(DocError::Invalid(format!(
+                        "emboss: profile {} lies over none of the {} selected faces; move it onto one or select the face it lies over",
+                        missed.join(", "),
+                        faces.len()
+                    )));
+                }
+                for (i, (mb, pieces)) in per_body {
+                    if pieces.is_empty() {
+                        continue;
+                    }
+                    let result = kernel::emboss_apply(&mb.body, pieces, signed)?;
+                    if let Some(slot) = st.bodies.get_mut(i) {
+                        *slot = ModelBody::new(mb.name, result, mb.feature);
+                    }
                 }
                 return Ok(());
             }
-            let (a, b) = if *deboss { (-d, 0.0) } else { (0.0, d) };
-            let tools = kernel::extrude(&ss.plane, &regions, a, b)?;
+            let (a, b) = if *deboss != *flip { (-d, 0.0) } else { (0.0, d) };
+            let mut tools = Vec::new();
+            for (_, plane, regions) in &sources {
+                tools.extend(kernel::extrude(plane, regions, a, b)?);
+            }
             if st.bodies.is_empty() {
                 return Err(DocError::Invalid("there is no body to emboss".into()));
             }
@@ -3037,6 +3076,69 @@ fn tag_panels(sk: &mut crate::SurfaceSheet, before: Option<&crate::SurfaceSheet>
         sk.recipes.retain(|(k, _)| *k != key);
         sk.recipes.push((key, recipe));
     }
+}
+
+/// `plane` moved by an Emboss's shift `(dx, dy, angle)`: the profiles turn by `angle` (radians,
+/// about the centre of their box) and then move `dx` along the sketch's x and `dy` along its y.
+/// No shift leaves the plane as it is.
+fn emboss_shifted_plane(plane: &Plane, regions: &[Region2], (dx, dy, angle): (f64, f64, f64)) -> Result<Plane> {
+    if dx == 0.0 && dy == 0.0 && angle == 0.0 {
+        return Ok(*plane);
+    }
+    if !(dx.is_finite() && dy.is_finite() && angle.is_finite()) || dx.abs().max(dy.abs()) > 1e9 {
+        return Err(DocError::Invalid("the emboss shift must be finite".into()));
+    }
+    let (mut lo, mut hi) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
+    for p in regions.iter().flat_map(|r| r.outer.polyline(1e-4)) {
+        (lo, hi) = (Vec2::new(lo.x.min(p.x), lo.y.min(p.y)), Vec2::new(hi.x.max(p.x), hi.y.max(p.y)));
+    }
+    let c = if lo.x <= hi.x { Vec2::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0) } else { Vec2::new(0.0, 0.0) };
+    let (sin, cos) = angle.sin_cos();
+    // A sketch point p lands where the plane put c + R(p - c) + (dx, dy): the new axes are the
+    // old ones turned, and the new origin is the old one at c + (dx, dy) - R c.
+    let t = Vec2::new(c.x + dx - (cos * c.x - sin * c.y), c.y + dy - (sin * c.x + cos * c.y));
+    Plane::new(plane.origin + plane.x * t.x + plane.y * t.y, plane.x * cos + plane.y * sin, plane.y * cos - plane.x * sin)
+        .ok_or_else(|| DocError::Invalid("the emboss shift makes no sketch frame".into()))
+}
+
+/// Selected face `slot` of Emboss `f` (`face_names[slot]` names it), found on its body as built so
+/// far: the body's index, the body, the face and point found, and the source sketch's `plane`
+/// (sketch `sketch_feature`'s, already shifted) in that body's frame.
+fn emboss_face_hit(
+    doc: &Document,
+    f: &Feature,
+    st: &ModelState,
+    face: &EmbossFace,
+    slot: usize,
+    sketch_feature: u64,
+    plane: &Plane,
+) -> Result<(usize, ModelBody, crate::name_lookup::FaceHit, Plane)> {
+    let i = st.bodies.iter().position(|b| b.name == face.body).ok_or_else(|| DocError::Unknown(format!("emboss body `{}`", face.body)))?;
+    let mb = st.bodies.get(i).cloned().ok_or_else(|| DocError::Invalid("emboss body".into()))?;
+    let body_frame = face.body_frame(doc, &mb)?;
+    let inverse = crate::mat_inverse(&body_frame).ok_or_else(|| DocError::Invalid("invalid cylinder body frame".into()))?;
+    let sketch_owner = doc.feature(sketch_feature).map(|f| f.component).unwrap_or(0);
+    let author_frame = EmbossFace::component_frame(doc, f.component, &face.author_path)?;
+    let sketch_frame = face.sketch_frame(doc, f.component, sketch_owner, &mb)?;
+    let sketch_transform = crate::mat_mul(&inverse, &sketch_frame);
+    let plane = Plane::new(
+        crate::apply_point(&sketch_transform, plane.origin),
+        crate::apply_vector(&sketch_transform, plane.x),
+        crate::apply_vector(&sketch_transform, plane.y),
+    )
+    .ok_or_else(|| DocError::Invalid("invalid cylinder sketch frame".into()))?;
+    let at = crate::apply_point(&crate::mat_mul(&inverse, &author_frame), face.at.0);
+    let name = f
+        .face_names
+        .get(slot)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| DocError::Invalid("selected emboss face has no persistent identity".into()))?;
+    let hit = {
+        let mut scoped = ModelState::default();
+        scoped.bodies.push(mb.clone());
+        crate::name_lookup::locate_face(&scoped, name, at).ok_or_else(|| DocError::reselect(name.as_str()))?
+    };
+    Ok((i, mb, hit, plane))
 }
 
 #[cfg(test)]

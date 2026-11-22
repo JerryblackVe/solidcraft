@@ -1042,13 +1042,28 @@ fn additional_rows(app: &mut SolveApp, d: &mut Dialog, ui: &mut egui::Ui) -> boo
                 ui_kit::options(ui, "feature_options", &mut [("Flip", flip), (extend_label, extend)]);
             }
         }
-        Kind::Emboss { depth, deboss } => {
+        Kind::Emboss { depth, deboss, dx, dy, angle, flip } => {
+            // How many profiles and faces the one emboss takes.
+            let profiles = d.inputs.first().map_or(0, |i| i.items.len()).to_string();
+            let faces = d.inputs.get(1).map_or(0, |i| i.items.len());
+            ui.label(solidcraft_ui_text::format("ui.emboss_count", &[("profiles", &profiles), ("faces", &faces.to_string())]));
             enter |= expr_row(ui, "Depth", depth);
             form_row(ui, "Type", |ui| {
                 let mut i = usize::from(*deboss);
                 ui_kit::segmented(ui, &mut i, &["Emboss", "Deboss"], Default::default());
                 *deboss = i == 1;
             });
+            enter |= hint_row(ui, "Horizontal Distance", dx, "0 mm");
+            enter |= hint_row(ui, "Vertical Distance", dy, "0 mm");
+            enter |= hint_row(ui, "Rotation Angle", angle, "0 deg");
+            // On a picked face the face's outside sets the direction: Flip is greyed, with why.
+            if faces > 0 {
+                *flip = false;
+            }
+            ui.add_enabled_ui(faces == 0, |ui| ui_kit::options(ui, "feature_options", &mut [("Flip", flip)]));
+            if faces > 0 {
+                ui.add(egui::Label::new(solidcraft_ui_text::tr("ui.emboss_flip_on_face")).wrap());
+            }
             ui.add(egui::Label::new(solidcraft_ui_text::tr("ui.emboss_wrap_note")).wrap());
         }
         Kind::Align { flip, components, axes: [ax, ay, az], angle } => {

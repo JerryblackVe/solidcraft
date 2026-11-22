@@ -25,6 +25,8 @@ enum K {
     Picks,
     /// A point that places new geometry: into the active component's frame.
     Make,
+    /// A list of [`K::Make`] points.
+    Makes,
     /// A direction: turned with the command's frame.
     Dir,
     /// A displacement with length expressions: turned without the frame's translation.
@@ -75,7 +77,7 @@ fn table(id: &str) -> &'static [(&'static str, K)] {
         "solid.scale" => &[("origin", Make), ("bodies", Body)],
         "solid.offset_face" | "solid.shell" | "face.delete" => &[("faces", Picks), ("body", Body)],
         "solid.thread" => &[("face", Pick), ("faces", Picks), ("from", Pick), ("up_to", Plane)],
-        "solid.emboss" => &[("face", Make)],
+        "solid.emboss" => &[("face", Make), ("faces", Makes)],
         "solid.draft" => &[("faces", Picks), ("neutral", Plane), ("pull", Dir), ("body", Body)],
         "solid.press_pull" => &[("face", Pick), ("edges", Picks), ("body", Body), ("face_body", Body)],
         "solid.replace_face" => &[("faces", Picks), ("target_face", Pick), ("target", Plane), ("body", Body)],
@@ -954,6 +956,7 @@ fn map_local_with_input(
                 Pick => m.pick(v, body.as_deref()),
                 Picks => m.picks(v, body.as_deref()),
                 Make => m.make(v),
+                Makes => v.as_array().map(|a| Value::Array(a.iter().map(|x| m.make(x).unwrap_or_else(|| x.clone())).collect())),
                 Dir => m.dir(v),
                 Delta => m.dir(v).or_else(|| {
                     let frame = m.first.unwrap_or(m.f.active);

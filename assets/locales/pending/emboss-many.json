@@ -1,0 +1,58 @@
+{
+  "en": {
+    "Target Faces (optional)": "Target Faces (optional)",
+    "Horizontal Distance": "Horizontal Distance",
+    "Vertical Distance": "Vertical Distance",
+    "Rotation Angle": "Rotation Angle",
+    "ui.emboss_count": "Profiles: {profiles} · Faces: {faces}",
+    "ui.emboss_flip_on_face": "Flip: not available on a picked face: the face's outside sets the direction (Deboss sinks it)."
+  },
+  "es": {
+    "Target Faces (optional)": "Caras de destino (opcional)",
+    "Horizontal Distance": "Distancia horizontal",
+    "Vertical Distance": "Distancia vertical",
+    "Rotation Angle": "Ángulo de rotación",
+    "ui.emboss_count": "Perfiles: {profiles} · Caras: {faces}",
+    "ui.emboss_flip_on_face": "Invertir: no disponible sobre una cara elegida: el lado de afuera de la cara fija la dirección (Grabado la hunde)."
+  },
+  "ar": {
+    "Target Faces (optional)": "الأوجه الهدف (اختياري)",
+    "Horizontal Distance": "المسافة الأفقية",
+    "Vertical Distance": "المسافة الرأسية",
+    "Rotation Angle": "زاوية الدوران",
+    "ui.emboss_count": "المقاطع: {profiles} · الأوجه: {faces}",
+    "ui.emboss_flip_on_face": "قلب: غير متاح على وجه محدد: الجانب الخارجي للوجه يحدد الاتجاه (النقش الغائر يغمره)."
+  },
+  "he": {
+    "Target Faces (optional)": "פאות יעד (אופציונלי)",
+    "Horizontal Distance": "מרחק אופקי",
+    "Vertical Distance": "מרחק אנכי",
+    "Rotation Angle": "זווית סיבוב",
+    "ui.emboss_count": "פרופילים: {profiles} · פאות: {faces}",
+    "ui.emboss_flip_on_face": "היפוך: לא זמין על פאה שנבחרה: הצד החיצוני של הפאה קובע את הכיוון (הטבעה משקיעה אותה)."
+  },
+  "ja": {
+    "Target Faces (optional)": "対象面 (オプション)",
+    "Horizontal Distance": "水平距離",
+    "Vertical Distance": "垂直距離",
+    "Rotation Angle": "回転角度",
+    "ui.emboss_count": "プロファイル: {profiles} · 面: {faces}",
+    "ui.emboss_flip_on_face": "反転: 選択した面では使えません。面の外側が方向を決めます (デボスで沈めます)。"
+  },
+  "vi": {
+    "Target Faces (optional)": "Các mặt đích (tùy chọn)",
+    "Horizontal Distance": "Khoảng cách ngang",
+    "Vertical Distance": "Khoảng cách dọc",
+    "Rotation Angle": "Góc xoay",
+    "ui.emboss_count": "Biên dạng: {profiles} · Mặt: {faces}",
+    "ui.emboss_flip_on_face": "Lật mặt: không dùng được trên mặt đã chọn: phía ngoài của mặt quyết định hướng (Dập chìm để lõm xuống)."
+  },
+  "zh": {
+    "Target Faces (optional)": "目标面（可选）",
+    "Horizontal Distance": "水平距离",
+    "Vertical Distance": "垂直距离",
+    "Rotation Angle": "旋转角度",
+    "ui.emboss_count": "轮廓：{profiles} · 面：{faces}",
+    "ui.emboss_flip_on_face": "翻转：在选定的面上不可用：面的外侧决定方向（凹印使其下沉）。"
+  }
+}
