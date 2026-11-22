@@ -1167,6 +1167,37 @@ fn any_value_input_can_define_a_parameter() {
     assert_eq!(s.doc.param("lift").map(|p| (p.expr.as_str(), p.unit.as_str())), Some(("15", "mm")));
 }
 
+/// A sketch's other value inputs define a parameter too (MEJ-20, MEJ-21): a point placed by
+/// parameters, a text's height, an equation curve's formula and a 3D point. Each input keeps the
+/// name and follows the parameter.
+#[test]
+fn a_sketch_point_text_equation_or_3d_point_can_define_a_parameter() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "S"}));
+    run(&mut s, "sketch.options", json!({"sketch_3d": true}));
+    let id = s.active_sketch.unwrap();
+    run(&mut s, "sketch.point", json!({"point": ["px = 12", 0], "id": "p"}));
+    run(&mut s, "sketch.text", json!({"text": "A", "at": [0, 20], "height": "th = 6 mm"}));
+    run(&mut s, "sketch.equation_curve", json!({"x": "t", "y": "amp = 4 mm", "start": 0, "end": 10}));
+    run(&mut s, "sketch.point3d", json!({"point": [0, 0, "pz = 7"]}));
+    for name in ["px", "th", "amp", "pz"] {
+        assert_eq!(s.doc.param(name).map(|p| p.unit.as_str()), Some("mm"), "{name} is made, a length");
+    }
+    let sk = s.doc.sketch(id).unwrap();
+    let typed: Vec<&str> = sk.text_exprs().into_iter().map(|(_, e)| e.as_str()).collect();
+    for name in ["px", "th", "amp", "pz"] {
+        assert!(typed.contains(&name), "{name} in {typed:?}");
+    }
+    assert!(typed.iter().all(|e| !e.contains('=')), "{typed:?}");
+    run(&mut s, "parameters.change", json!({"name": "px", "expression": "30 mm"}));
+    let st = s.model.state();
+    let at = st.sketch(id).unwrap().sketch.points.iter().find(|q| q.id == "p").unwrap().pos;
+    assert!((at.x - 30.0).abs() < 1e-9, "the point follows px: {at:?}");
+    // A formula written out with its name reads the curve's variable: it is the formula, no parameter.
+    run(&mut s, "sketch.equation_curve", json!({"explicit": true, "y": "y = x / 2", "start": 0, "end": 10}));
+    assert!(s.doc.param("y").is_none());
+}
+
 /// In an inch design a bare number defines a parameter in inches, as the bare value would read;
 /// a value with a unit keeps it.
 #[test]

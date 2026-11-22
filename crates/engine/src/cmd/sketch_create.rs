@@ -359,7 +359,9 @@ pub(super) fn text_number_in(
             match doc.eval(&e, kind) {
                 Ok(x) => {
                     let x = crate::params::finite(x).ok_or_else(|| bad(cmd, must))?;
-                    Ok((x, (!expr::references(&e).is_empty()).then_some(e)))
+                    // A definition (`h = 5 mm`) is kept too: `define_inline` makes its parameter next.
+                    let kept = expr::definition(&e).is_some() || !expr::references(&e).is_empty();
+                    Ok((x, kept.then_some(e)))
                 }
                 // Say what is wrong with it (an unknown parameter, a length where an angle goes).
                 Err(error) => Err(bad(cmd, format!("{key}: {error}"))),

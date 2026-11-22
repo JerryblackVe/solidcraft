@@ -182,6 +182,27 @@ impl Document {
                         _ => {}
                     }
                 }
+                // Points placed by parameters and 3D points are lengths.
+                for e in sketch.points.iter_mut().filter_map(|p| p.exprs.as_deref_mut()).flat_map(solidcraft_sketch::PointExprs::list_mut) {
+                    found.take(e, Reads::Typed(Kind::Length));
+                }
+                for e in sketch.wire_point_exprs_mut() {
+                    found.take(e, Reads::Typed(Kind::Length));
+                }
+                // An equation curve's formulas give lengths; its range is a number, a length or an angle.
+                for eq in &mut sketch.equations {
+                    let var = eq.variable();
+                    for e in eq.x.iter_mut().chain([&mut eq.y]) {
+                        // `y = x / 2` is the formula written out, not a parameter: it reads the curve's variable.
+                        if expr::definition(e).is_some_and(|(_, rhs)| expr::references(rhs).iter().any(|n| n == var)) {
+                            continue;
+                        }
+                        found.take(e, Reads::Typed(Kind::Length));
+                    }
+                    for e in [&mut eq.start, &mut eq.end] {
+                        found.take(e, Reads::Inferred);
+                    }
+                }
             }
         }
         for e in next.assembly.exprs_mut() {

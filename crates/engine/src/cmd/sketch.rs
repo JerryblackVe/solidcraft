@@ -1022,8 +1022,10 @@ fn point_number_in(
                 Ok(x) => {
                     let x = crate::params::finite(x).ok_or_else(|| bad(cmd, must))?;
                     // The expression is kept when it names a parameter or a point, so the point
-                    // follows them.
-                    let follows = !solidcraft_doc::expr::references(&e).is_empty() || !solidcraft_doc::expr::point_members(&e).is_empty();
+                    // follows them, or defines one (`define_inline` makes it next).
+                    let follows = solidcraft_doc::expr::definition(&e).is_some()
+                        || !solidcraft_doc::expr::references(&e).is_empty()
+                        || !solidcraft_doc::expr::point_members(&e).is_empty();
                     Ok((x, follows.then_some(e)))
                 }
                 // Say what is wrong with it (an unknown parameter, a length where an angle goes).
