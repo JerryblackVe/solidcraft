@@ -1684,38 +1684,58 @@ fn extend(s: &mut Session, p: &Value) -> Result<Value> {
     let pair = pair_request(p, cmd)?;
     let at = if pair.is_none() { req_vec2(cmd, p, "at")? } else { Vec2::default() };
     let (out, info) = edit(s, p, cmd, true, |sk, doc| {
-        // The sheet receiver has already solved the exact paper-owned sketch.
-        // Model-only parameter evaluation would discard sheet expressions.
-        if !on_sheet {
-            let rep = solve_current(sk, doc)?;
-            if !rep.keeps_orientation() {
-                return Err(bad(cmd, rep.failure(|_| "solve the existing sketch constraints before extending".into())));
-            }
-        }
-        if let Some((ids, ats)) = &pair {
-            return extend_pair(sk, ids, *ats, cmd);
-        }
-        let ci = curve_arg(sk, p, cmd)?;
-        refuse_offset_ends(sk, ci, "extend", cmd)?;
-        // An infinite line already reaches across the view: moving one of its two points would
-        // move the whole line instead of extending it.
-        if sk.curves.get(ci).is_some_and(|c| c.infinite) {
-            return Err(bad(cmd, "an infinite line has no end to extend: make it a normal line first"));
-        }
-        // An arc grows along its own circle, either way round: in place when its end is free, as
-        // a new arc when the end already carries geometry.
-        if matches!(sk.curves.get(ci).map(|c| &c.kind), Some(CurveKind::Arc { .. })) {
-            return extend_arc(sk, ci, at);
-        }
-        // The line grows past one end, out to the first geometry on the way, or the reach the
-        // preview draws when nothing is in the way. A stop where the sketch already has a point
-        // (another curve's end) joins that point instead of doubling it.
-        let Some(aim) = line_aim(sk, ci, at)? else {
-            return Err(bad(cmd, "only lines and arcs can be extended"));
+        let before = curve_ids(sk);
+        let from = match &pair {
+            Some((ids, _)) => ids.clone(),
+            None => vec![curve_arg(sk, p, cmd).ok().and_then(|ci| sk.curves.get(ci)).map(|c| c.id.clone()).unwrap_or_default()],
         };
-        grow_line(sk, ci, aim)
+        let moved = extend_in(sk, doc, p, &pair, at, on_sheet, cmd)?;
+        keep_new_in_groups(sk, &before, &from);
+        Ok(moved)
     })?;
     reply(cmd, ExtendResult { moved: out, sketch: info, param_warnings: Vec::new() })
+}
+
+/// The body of [`extend`]: the id of the point the curve now stops at.
+fn extend_in(
+    sk: &mut Sketch,
+    doc: &solidcraft_doc::Document,
+    p: &Value,
+    pair: &Option<(Vec<String>, Option<[Vec2; 2]>)>,
+    at: Vec2,
+    on_sheet: bool,
+    cmd: &str,
+) -> Result<String> {
+    // The sheet receiver has already solved the exact paper-owned sketch.
+    // Model-only parameter evaluation would discard sheet expressions.
+    if !on_sheet {
+        let rep = solve_current(sk, doc)?;
+        if !rep.keeps_orientation() {
+            return Err(bad(cmd, rep.failure(|_| "solve the existing sketch constraints before extending".into())));
+        }
+    }
+    if let Some((ids, ats)) = pair {
+        return extend_pair(sk, ids, *ats, cmd);
+    }
+    let ci = curve_arg(sk, p, cmd)?;
+    refuse_offset_ends(sk, ci, "extend", cmd)?;
+    // An infinite line already reaches across the view: moving one of its two points would
+    // move the whole line instead of extending it.
+    if sk.curves.get(ci).is_some_and(|c| c.infinite) {
+        return Err(bad(cmd, "an infinite line has no end to extend: make it a normal line first"));
+    }
+    // An arc grows along its own circle, either way round: in place when its end is free, as
+    // a new arc when the end already carries geometry.
+    if matches!(sk.curves.get(ci).map(|c| &c.kind), Some(CurveKind::Arc { .. })) {
+        return extend_arc(sk, ci, at);
+    }
+    // The line grows past one end, out to the first geometry on the way, or the reach the
+    // preview draws when nothing is in the way. A stop where the sketch already has a point
+    // (another curve's end) joins that point instead of doubling it.
+    let Some(aim) = line_aim(sk, ci, at)? else {
+        return Err(bad(cmd, "only lines and arcs can be extended"));
+    };
+    grow_line(sk, ci, aim)
 }
 
 /// Grow line `ci` past the end `aim` names, to `aim.hit`: a new line when that end is joined to
@@ -2017,6 +2037,34 @@ fn extend_pair(sk: &mut Sketch, ids: &[String], ats: Option<[Vec2; 2]>, cmd: &st
 
 fn uses(c: &Curve, p: usize) -> bool {
     c.kind.uses(p)
+}
+
+fn curve_ids(sk: &Sketch) -> std::collections::BTreeSet<String> {
+    sk.curves.iter().map(|c| c.id.clone()).collect()
+}
+
+/// Curves an edit added (not in `before`) join the group of the curve they grew from, as trimmed
+/// and broken pieces do: the first grouped curve of `from` when the edit names them, else the
+/// first older curve sharing an end with the new one (a fillet arc or a chamfer line).
+fn keep_new_in_groups(sk: &mut Sketch, before: &std::collections::BTreeSet<String>, from: &[String]) {
+    if sk.object_groups.is_empty() {
+        return;
+    }
+    let new: Vec<(String, Option<(usize, usize)>)> =
+        sk.curves.iter().filter(|c| !before.contains(&c.id)).map(|c| (c.id.clone(), c.kind.ends())).collect();
+    for (id, ends) in new {
+        let touching: Vec<String> = sk
+            .curves
+            .iter()
+            .filter(|c| before.contains(&c.id) && ends.is_some_and(|(a, b)| uses(c, a) || uses(c, b)))
+            .map(|c| c.id.clone())
+            .collect();
+        let grouped = |o: &String| sk.object_group_of(o).is_some();
+        let of = if from.is_empty() { touching.into_iter().find(grouped) } else { from.iter().find(|o| grouped(o)).cloned() };
+        if let Some(of) = of {
+            sk.join_object_group_of(&of, &[id]);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2592,6 +2640,7 @@ fn fillet(s: &mut Session, p: &Value) -> Result<Value> {
         // A corner symmetric to another is rounded with it (#18075).
         let corners = symmetric_corners(sk, &corners, cmd);
         let released = release_corner_offsets(sk, doc, &corners, cmd)?;
+        let before = curve_ids(sk);
         let pname = if on_sheet { r_expr.to_string() } else { doc.new_model_param(&r_expr, "mm") };
         // The arcs by id: a fillet that takes a whole line removes it, which renumbers the curves.
         let (mut arcs, mut cons, mut kept): (Vec<String>, _, _) = (Vec::new(), Vec::new(), Vec::new());
@@ -2606,6 +2655,7 @@ fn fillet(s: &mut Session, p: &Value) -> Result<Value> {
             cons.extend(c);
             arcs.push(sk.curves.get(arc).map(|c| c.id.clone()).unwrap_or_default());
         }
+        keep_new_in_groups(sk, &before, &[]);
         Ok((arcs, cons, pname, kept_json(kept), released))
     })?;
     let (curves, constraints, param, (virtual_corners, moved_to_virtual_corner), offset_released) = out;
@@ -2832,12 +2882,13 @@ fn chamfer(s: &mut Session, p: &Value, cmd: &str, dists: impl Fn(f64) -> Result<
                 return Err(bad(cmd, "a corner is listed twice"));
             }
         }
-        let (mut lines, mut kept) = (Vec::new(), Vec::new());
+        let (mut lines, mut kept, before) = (Vec::new(), Vec::new(), curve_ids(sk));
         for q in &corners {
             let (l, k) = chamfer_corner(sk, q, cmd, &dists)?;
             lines.push(l);
             kept.push(k);
         }
+        keep_new_in_groups(sk, &before, &[]);
         Ok((ids_of(sk, &lines), kept_json(kept), released))
     })?;
     let (curves, (virtual_corners, moved_to_virtual_corner), offset_released) = out;
