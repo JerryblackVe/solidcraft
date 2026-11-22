@@ -4552,6 +4552,8 @@ fn move_copy(s: &mut Session, p: &Value) -> Result<Value> {
         ps.extend(riding);
         let held = holding(sk, &involved_points(sk, &cs, &ps));
         transform_in_place(sk, &cs, &ps, &f, 1.0, cmd)?;
+        // A group turned whole keeps its box turned with it (MEJ-19), as Transform does.
+        sk.turn_object_groups(&cs, ang.to_degrees());
         // Broken external holds must not make the rectangle's replacement relations look redundant.
         released = release_broken(sk, &held);
         if rotate_constraints {

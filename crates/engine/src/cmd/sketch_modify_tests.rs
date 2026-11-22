@@ -2475,8 +2475,15 @@ fn a_turned_group_stretches_along_its_own_axes_with_its_arcs_and_circles() {
     let curves: Vec<String> = [&circle, &arc, &line].iter().flat_map(|r| ids(&r["curves"])).collect();
     assert_eq!(curves.len(), 3, "{circle} {arc} {line}");
     run(&mut s, "sketch.group", json!({"curves": curves, "name": "d"}));
-    run(&mut s, "sketch.transform", json!({"entities": [curves[2].clone()], "angle": 30, "center": [0, 0]}));
+    // Turned in two steps, by Move and by Transform: the group remembers the whole turn (MEJ-19).
+    run(&mut s, "sketch.move", json!({"entities": [curves[2].clone()], "angle": 10, "center": [0, 0]}));
+    assert!(close(sketch(&s).object_groups[0].angle, 10.0), "Move turns the group's box");
+    run(&mut s, "sketch.transform", json!({"entities": [curves[2].clone()], "angle": 20, "center": [0, 0]}));
     assert!(close(sketch(&s).object_groups[0].angle, 30.0), "the group remembers its turn");
+    // A copy turned with Move is not in the group, and leaves the group's turn alone.
+    let copied = run(&mut s, "sketch.move", json!({"entities": [curves[2].clone()], "angle": 45, "center": [0, 0], "copy": true}));
+    assert!(close(sketch(&s).object_groups[0].angle, 30.0) && sketch(&s).object_groups[0].curves.len() == 3, "{copied}");
+    run(&mut s, "sketch.delete", json!({"entities": ids(&copied["curves"])}));
     let half_disc = std::f64::consts::PI * 100.0 / 2.0;
     run(&mut s, "sketch.transform", json!({"entities": [curves[0].clone()], "scale_x": 2.0, "scale_y": 1.0, "center": [0, 0]}));
     let sk = sketch(&s);
