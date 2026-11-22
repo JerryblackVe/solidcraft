@@ -141,3 +141,26 @@ fn a_typed_points_count_sets_the_stars_points() {
     assert_eq!(h.app.session.world_state().unwrap().sketches[0].sketch.links.len(), 1, "no second star");
     assert!(format!("{:?}", h.app.status).contains("Points"), "{:?}", h.app.status);
 }
+
+/// An untouched Points box shows the count the star is drawn with, not the polygon's 6.
+#[test]
+fn the_untouched_points_box_shows_the_points_drawn() {
+    use solidcore_record::Vec2;
+    let mut h = Harness::new();
+    h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+    h.app.cam.distance = 50.0;
+    h.step(&json!({"start":"sketch.star"})).unwrap();
+    h.step(&json!({"click":{"world":[0, 0, 0]}})).unwrap();
+    h.frames(2);
+    let tool = h.app.tool.as_ref().unwrap();
+    let shown = crate::sketch_dims::live(&h.app, tool, Vec2::new(0.0, 10.0), 0.1);
+    let points = tool.dims.iter().position(|b| b.label == "Points").expect("a Points box next to Radius");
+    assert_eq!(shown[points].0, crate::sketch_dims::DEFAULT_STAR_POINTS);
+    h.step(&json!({"click":{"world":[0, 10, 0]}})).unwrap();
+    let Some(solidcraft_engine::sketch::LinkSource::Star(star)) =
+        h.app.session.world_state().unwrap().sketches[0].sketch.links.first().map(|l| l.source.clone())
+    else {
+        panic!("a star was drawn: {:?}", h.app.status)
+    };
+    assert_eq!(f64::from(star.points), shown[points].0, "{star:?}");
+}
