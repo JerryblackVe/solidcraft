@@ -1976,9 +1976,12 @@ impl Dialog {
             return false;
         }
         if matches!(self.kind, Kind::Emboss { .. }) {
-            // Emboss takes profiles of several sketches: the clicked sketch's profiles join the others.
+            // Emboss takes profiles of several sketches: the clicked sketch's profiles join the
+            // others, and a sketch clicked again keeps its place (Distribute's rows follow it).
+            let at = input.items.iter().position(|x| matches!(x, Sel::Profile { sketch, .. } if *sketch == id));
             input.items.retain(|x| !matches!(x, Sel::Profile { sketch, .. } if *sketch == id));
-            input.items.extend(profiles);
+            let at = at.unwrap_or(input.items.len());
+            input.items.splice(at..at, profiles);
         } else {
             input.items = profiles;
         }
