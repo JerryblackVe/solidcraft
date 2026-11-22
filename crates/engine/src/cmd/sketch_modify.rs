@@ -175,14 +175,14 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SKETCH", "PATTERN")
         .icon("sketch_circ_pattern")
         .enabled(in_sketch)
-        .params(concat!("entities: [ids], center: [x,y] or point ref, count: 2…500 (number or unitless expression, retained through edits; a star is refused: Mirror copies a star as a star that follows it), angle?: total deg, number or expression (default 360); alignment?: left|center|right (default right); reversed?: bool (default false). Quantity includes the original. Center balances copies around it; reversed flips the direction and extra side for even totals. Partial arcs span angle with angle/(count-1) spacing; full turns use angle/count. Adds associative pattern constraints; a coordinate center creates a constrainable point. Returns pattern and center ids. pattern?: existing pattern id to edit (omitted values retained; surviving instance ids retained)", created_doc!())),
+        .params(concat!("entities: [ids], center: [x,y] or point ref, count: 2…500 (number or unitless expression, retained through edits; a star is copied as a whole into stars that follow it: their points, size, depth and roundings stay the original's when that is edited, and they move with it; edit the original, not a copy), angle?: total deg, number or expression (default 360); alignment?: left|center|right (default right); reversed?: bool (default false). Quantity includes the original. Center balances copies around it; reversed flips the direction and extra side for even totals. Partial arcs span angle with angle/(count-1) spacing; full turns use angle/count. Adds associative pattern constraints; a coordinate center creates a constrainable point. Returns pattern and center ids. pattern?: existing pattern id to edit (omitted values retained; surviving instance ids retained)", created_doc!())),
     CommandSpec::new("sketch.pattern.rectangular", "Rectangular Pattern", crate::checked!("sketch.pattern.rectangular", pattern_rect))
         .contract(&RECTANGULAR_PATTERN_CONTRACT)
         .output(output_schema_for::<PatternResult>)
         .at("SKETCH", "PATTERN")
         .icon("sketch_rect_pattern")
         .enabled(in_sketch)
-        .params(concat!("entities: [ids] (a star is refused: Mirror copies a star as a star that follows it), count, spacing; count2?, spacing2?; counts: positive integer numbers or expressions, at most 500 instances total; spacings: length numbers or expressions; direction?, direction2?: sketch line ids (live references); dir?, dir2?: [x,y] vectors (defaults: sketch x, perpendicular to direction 1); alignment?, alignment2?: left|center|right (default right). Signed spacings reverse each direction. reversed?, reversed2?: bool (default false); reverses placement and the extra side of even centered totals. Quantities include the original. Adds associative pattern constraints. Returns pattern id. pattern?: existing pattern id to edit (omitted values retained; surviving instance ids retained)", created_doc!())),
+        .params(concat!("entities: [ids] (a star is copied as a whole into stars that follow it, as by sketch.pattern.circular), count, spacing; count2?, spacing2?; counts: positive integer numbers or expressions, at most 500 instances total; spacings: length numbers or expressions; direction?, direction2?: sketch line ids (live references); dir?, dir2?: [x,y] vectors (defaults: sketch x, perpendicular to direction 1); alignment?, alignment2?: left|center|right (default right). Signed spacings reverse each direction. reversed?, reversed2?: bool (default false); reverses placement and the extra side of even centered totals. Quantities include the original. Adds associative pattern constraints. Returns pattern id. pattern?: existing pattern id to edit (omitted values retained; surviving instance ids retained)", created_doc!())),
 ];
 
 /// A reply built from its typed value, which is what the command's output schema describes.
@@ -4001,12 +4001,12 @@ fn freeze_offset_profiles(doc: &mut solidcraft_doc::Document, sketch: u64, bound
 // Copies: mirror, patterns, move, scale
 
 /// Curves and lone points named in `entities`.
-/// The stars among the selected curves, for a mirror: their links in order, and the curves left
-/// once the stars' own are taken out. A star's points alone can't be mirrored.
+/// The stars among the selected curves, for a mirror or a pattern: their links in order, and the
+/// curves left once the stars' own are taken out. A star's points alone can't be copied.
 fn take_stars(sk: &Sketch, cs: Vec<usize>, ps: &[usize], cmd: &str) -> Result<(Vec<usize>, Vec<String>)> {
     let star_link = |l: Option<&str>| l.filter(|l| sk.link(l).is_some_and(|l| l.kind == solidcraft_sketch::LinkKind::Star)).map(str::to_owned);
     if ps.iter().any(|q| star_link(sk.points.get(*q).and_then(|x| x.link.as_deref())).is_some()) {
-        return Err(bad(cmd, "a point of a star can't be mirrored alone: pick the star's outline to mirror the whole star"));
+        return Err(bad(cmd, "a point of a star can't be copied alone: pick the star's outline to copy the whole star"));
     }
     let mut stars: Vec<String> = Vec::new();
     let mut rest = Vec::new();
@@ -4018,21 +4018,6 @@ fn take_stars(sk: &Sketch, cs: Vec<usize>, ps: &[usize], cmd: &str) -> Result<(V
         }
     }
     Ok((rest, stars))
-}
-
-/// Refuse copying a star through a pattern: the copies would be loose curves tied to the star's
-/// points, and they come apart when the star gets more or fewer tips.
-fn refuse_star(sk: &Sketch, cs: &[usize], ps: &[usize], cmd: &str) -> Result<()> {
-    let star = |l: Option<&str>| l.and_then(|l| sk.link(l)).is_some_and(|l| l.kind == solidcraft_sketch::LinkKind::Star);
-    if cs.iter().any(|c| star(sk.curves.get(*c).and_then(|c| c.link.as_deref())))
-        || ps.iter().any(|q| star(sk.points.get(*q).and_then(|x| x.link.as_deref())))
-    {
-        return Err(bad(
-            cmd,
-            "a star can't be patterned yet: copy it with Move (copy) or Copy and Paste, and each copy stays a star you can edit; Mirror does follow the star",
-        ));
-    }
-    Ok(())
 }
 
 fn entities(sk: &Sketch, p: &Value, cmd: &str) -> Result<(Vec<usize>, Vec<usize>)> {

@@ -2400,7 +2400,15 @@ fn pattern_upkeep_does_not_search_ids_per_copy() {
         reversed: false,
     };
     let id = sk.fresh("pat").unwrap();
-    sk.patterns.push(SketchPattern { id, entities, kind: kind.clone(), count_expression: None, instances: vec![], expressions: Default::default() });
+    sk.patterns.push(SketchPattern {
+        id,
+        entities,
+        kind: kind.clone(),
+        count_expression: None,
+        instances: vec![],
+        expressions: Default::default(),
+        stars: Vec::new(),
+    });
     sk.update_pattern(0, kind).unwrap();
     assert_eq!(sk.curves.len(), 50);
     sk.curves[arc].reversed = true;

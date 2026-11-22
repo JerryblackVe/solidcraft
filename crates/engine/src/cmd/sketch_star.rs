@@ -199,7 +199,7 @@ fn edit_star(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad(
                 cmd,
                 format!(
-                    "this star is a mirror copy of `{}`: edit that star and the copy follows; move the copy to make it a star of its own",
+                    "this star is a copy of `{}` made by a mirror or a pattern: edit that star and the copy follows; move the copy to make it a star of its own",
                     follow.source
                 ),
             ));

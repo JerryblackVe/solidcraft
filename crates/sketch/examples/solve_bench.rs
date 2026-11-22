@@ -85,7 +85,15 @@ fn slot_pattern(count: usize) -> Result<(Sketch, usize), Box<dyn std::error::Err
     let center_id = sk.points.get(center).map(|q| q.id.clone()).ok_or("missing center")?;
     let kind = SketchPatternKind::Circular { center: center_id, count, angle: 360.0, alignment: PatternAlignment::Right, reversed: false };
     let id = sk.fresh("pat")?;
-    sk.patterns.push(SketchPattern { id, entities, kind: kind.clone(), count_expression: None, instances: vec![], expressions: Default::default() });
+    sk.patterns.push(SketchPattern {
+        id,
+        entities,
+        kind: kind.clone(),
+        count_expression: None,
+        instances: vec![],
+        expressions: Default::default(),
+        stars: Vec::new(),
+    });
     sk.update_pattern(0, kind)?;
     Ok((sk, pts[1]))
 }

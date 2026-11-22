@@ -22,12 +22,15 @@ pub(super) fn run(s: &mut Session, p: &Value, circular: bool) -> Result<Value> {
         };
         let mut params = p.clone();
         if let Some(old) = &old {
+            // The stars it copies are picked by their outlines, as when it was made.
+            let star_curves = old.stars.iter().flat_map(|link| sk.link_curves(link)).filter_map(|i| sk.curves.get(i).map(|c| c.id.clone()));
+            let entities: Vec<String> = old.entities.iter().cloned().chain(star_curves).collect();
             if circular != matches!(old.kind, SketchPatternKind::Circular { .. }) {
                 return Err(bad(cmd, "use the existing pattern's type"));
             }
             let defaults = match &old.kind {
                 SketchPatternKind::Circular { center, count, angle, alignment, reversed } => {
-                    json!({"entities":old.entities,"center":center,"count":old.count_expression.as_ref().map_or_else(|| json!(count), |e| json!(e)),"angle":angle,"alignment":alignment,"reversed":reversed})
+                    json!({"entities":entities,"center":center,"count":old.count_expression.as_ref().map_or_else(|| json!(count), |e| json!(e)),"angle":angle,"alignment":alignment,"reversed":reversed})
                 }
                 SketchPatternKind::Rectangular {
                     dir,
@@ -43,7 +46,7 @@ pub(super) fn run(s: &mut Session, p: &Value, circular: bool) -> Result<Value> {
                     reversed,
                     reversed2,
                 } => {
-                    json!({"entities":old.entities,"dir":dir,"dir2":dir2,"direction":direction,"direction2":direction2,"count":count,"spacing":spacing,"count2":count2,"spacing2":spacing2,"alignment":alignment,"alignment2":alignment2,"reversed":reversed,"reversed2":reversed2})
+                    json!({"entities":entities,"dir":dir,"dir2":dir2,"direction":direction,"direction2":direction2,"count":count,"spacing":spacing,"count2":count2,"spacing2":spacing2,"alignment":alignment,"alignment2":alignment2,"reversed":reversed,"reversed2":reversed2})
                 }
             };
             if let (Some(params), Some(defaults)) = (params.as_object_mut(), defaults.as_object()) {
@@ -76,8 +79,9 @@ pub(super) fn run(s: &mut Session, p: &Value, circular: bool) -> Result<Value> {
         {
             expressions.insert("spacing2".into(), e);
         }
-        let (mut cs, mut ps) = entities(sk, &params, cmd)?;
-        refuse_star(sk, &cs, &ps, cmd)?;
+        let (cs, mut ps) = entities(sk, &params, cmd)?;
+        // A star is copied as a whole, into stars that follow its shape.
+        let (mut cs, stars) = take_stars(sk, cs, &ps, cmd)?;
         cs.sort_unstable();
         cs.dedup();
         ps.sort_unstable();
@@ -88,14 +92,13 @@ pub(super) fn run(s: &mut Session, p: &Value, circular: bool) -> Result<Value> {
             .chain(ps.iter().filter_map(|i| sk.points.get(*i).map(|p| p.id.clone())))
             .collect();
         if let Some(old) = &mut old {
-            if entity_ids != old.entities {
+            if entity_ids != old.entities || stars != old.stars {
                 // A changed seed list (#10649) rebuilds every copy: the old copies go, and the
                 // new ones get fresh ids. A copy cannot seed the pattern that makes it.
-                if old
-                    .instances
-                    .iter()
-                    .any(|instance| entity_ids.iter().any(|id| instance.curves.contains(id) || instance.points.iter().any(|(_, copy)| copy == id)))
-                {
+                if old.instances.iter().any(|instance| {
+                    entity_ids.iter().any(|id| instance.curves.contains(id) || instance.points.iter().any(|(_, copy)| copy == id))
+                        || stars.iter().any(|star| instance.stars.contains(star))
+                }) {
                     return Err(bad(cmd, "a pattern cannot copy its own copies"));
                 }
                 for instance in std::mem::take(&mut old.instances) {
@@ -107,6 +110,7 @@ pub(super) fn run(s: &mut Session, p: &Value, circular: bool) -> Result<Value> {
                     let points: Vec<_> =
                         instance.points.iter().filter_map(|(_, id)| sk.resolve_point(id)).filter(|point| !kept.contains(point)).collect();
                     sk.remove_points(&points);
+                    sk.remove_star_copies(&instance.stars);
                 }
             }
             if old.instances.len() >= MAX_COPIES {
@@ -116,6 +120,7 @@ pub(super) fn run(s: &mut Session, p: &Value, circular: bool) -> Result<Value> {
                 instance.curves.iter().any(|id| sk.curve_index(id).is_none())
                     || instance.points.iter().any(|(p, q)| sk.resolve_point(p).is_none() || sk.resolve_point(q).is_none())
                     || instance.constraints.iter().any(|id| !sk.constraints.iter().any(|c| c.id == *id))
+                    || instance.stars.iter().any(|id| sk.link(id).is_none())
             }) {
                 return Err(bad(cmd, "the pattern has deleted geometry or relations; undo the deletion before editing it"));
             }
@@ -211,11 +216,18 @@ pub(super) fn run(s: &mut Session, p: &Value, circular: bool) -> Result<Value> {
             instances: old.map(|old| old.instances).unwrap_or_default(),
             expressions,
             count_expression,
+            stars,
         };
         sk.patterns.insert(index, pattern);
         sk.update_pattern(index, kind)?;
         let pattern = sk.patterns.get(index).ok_or_else(|| bad(cmd, "missing sketch pattern"))?;
-        let curves: Vec<_> = pattern.instances.iter().flat_map(|instance| instance.curves.iter().take(reported_curve_count).cloned()).collect();
+        let star_curves = pattern.instances.iter().flat_map(|i| &i.stars).flat_map(|link| sk.link_curves(link));
+        let curves: Vec<_> = pattern
+            .instances
+            .iter()
+            .flat_map(|instance| instance.curves.iter().take(reported_curve_count).cloned())
+            .chain(star_curves.filter_map(|i| sk.curves.get(i).map(|c| c.id.clone())))
+            .collect();
         let constraints: Vec<_> = pattern.instances.iter().flat_map(|i| i.constraints.iter().cloned()).collect();
         Ok((id, center_id, curves, constraints))
     })?;
