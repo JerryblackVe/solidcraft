@@ -53,7 +53,9 @@ fn star_number(doc: &Document, p: &Value, cmd: &str, key: &str, kind: Kind) -> R
             let x = doc.eval(&e, kind).map_err(|error| bad(cmd, format!("`{key}`: {error}")))?;
             let x = crate::params::finite(x).ok_or_else(|| bad(cmd, must))?;
             let x = if kind == Kind::Angle { x.to_degrees() } else { x };
-            Ok(Some((x, (!expr::references(&e).is_empty()).then_some(e))))
+            // A definition (`R = 20 mm`) is kept too: `define_inline` makes its parameter next.
+            let kept = expr::definition(&e).is_some() || !expr::references(&e).is_empty();
+            Ok(Some((x, kept.then_some(e))))
         }
         Some(_) => Err(bad(cmd, must)),
     }
