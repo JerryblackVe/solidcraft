@@ -487,6 +487,9 @@ fn modify(sk: &mut Sketch, ci: usize, at: Vec2, remove: bool, points: Option<&[V
     // The removed piece, for previews (`sketch.trim.path`).
     let removed = removed_interval.map(|(a, b)| geo.path(a, b, cmd)).transpose()?.unwrap_or_default();
     let removed: Vec<[f64; 2]> = removed.into_iter().map(|q| [q.x, q.y]).collect();
+    if let Some(of) = sk.curves.get(ci).map(|c| c.id.clone()) {
+        sk.join_object_group_of(&of, &ids);
+    }
     sk.remove_curves(&[ci]);
     Ok(json!({"curves": ids, "removed": removed}))
 }

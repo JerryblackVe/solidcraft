@@ -383,6 +383,10 @@ fn split_at(sk: &mut Sketch, ci: usize, ts: &[f64], cmd: &str) -> Result<(Vec<us
         }
         _ => return Err(bad(cmd, "not supported yet for ellipses, splines and conics")),
     }
+    if let Some(of) = sk.curves.get(ci).map(|c| c.id.clone()) {
+        let new: Vec<String> = pieces.iter().skip(1).filter_map(|i| sk.curves.get(*i).map(|c| c.id.clone())).collect();
+        sk.join_object_group_of(&of, &new);
+    }
     Ok((pieces, pts))
 }
 
