@@ -5181,6 +5181,11 @@ fn drag_frame(s: &mut Session, p: &Value, live: bool) -> Result<(Value, Option<c
                     .collect::<Result<Vec<_>>>()?
             }
         };
+        // A curve of a group drags the whole group.
+        if let Some(members) = sk.object_group_of(r).map(|g| g.curves.clone()) {
+            let moving = super::sketch_modify::move_group(sk, &members, to - from, cmd)?;
+            return Ok((drag::Dragged { reached: 1.0, moving, ..Default::default() }, Left::Unsolved));
+        }
         if let Some(link) = super::sketch_create::text_link(sk, r).map(str::to_owned) {
             let moving = sk.link_points(&link).into_iter().filter_map(|i| sk.point(i).map(|p| (i, p))).collect();
             super::sketch_create::move_text(sk, &link, to - from, 0.0, Vec2::ZERO, false)?;

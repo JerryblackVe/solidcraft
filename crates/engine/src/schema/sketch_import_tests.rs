@@ -32,7 +32,8 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
 
 #[test]
 fn schemas_and_the_key_check_agree() {
-    let insert = ["align", "angle", "at", "fixed", "height", "name", "path", "plane", "scale", "size_from", "sketch", "text", "tolerance", "width"];
+    let insert =
+        ["align", "angle", "at", "fixed", "group", "height", "name", "path", "plane", "scale", "size_from", "sketch", "text", "tolerance", "width"];
     assert_keys(input_schema_for::<InsertDxfParams>(), &insert);
     assert_keys(input_schema_for::<InsertSvgParams>(), &insert);
     assert_keys(
@@ -404,7 +405,7 @@ fn replies_match_the_output_schema() {
     let keys = |r: &Value| {
         r.as_object().map(|o| o.keys().filter(|k| *k != "created").cloned().collect::<std::collections::BTreeSet<_>>()).unwrap_or_default()
     };
-    let insert_keys: std::collections::BTreeSet<String> = ["created_sketch", "curves", "info", "sketch", "texts"].map(String::from).into();
+    let insert_keys: std::collections::BTreeSet<String> = ["created_sketch", "curves", "group", "info", "sketch", "texts"].map(String::from).into();
 
     // A drawing fixed where it is put: the reply says how many points, and matches the schema.
     let r = run(&mut s, "sketch.insert_svg", json!({"text": SVG, "fixed": true, "size_from": "geometry"}));
@@ -422,7 +423,7 @@ fn replies_match_the_output_schema() {
     handler_reply.as_object_mut().unwrap().remove("created");
     assert_eq!(
         handler_reply,
-        json!({"sketch": r["sketch"], "created_sketch": r["sketch"], "curves": 4, "texts": 0, "info": {"solved": true, "dof": 8}})
+        json!({"sketch": r["sketch"], "created_sketch": r["sketch"], "curves": 4, "texts": 0, "group": "g1", "info": {"solved": true, "dof": 8}})
     );
     assert!(r["info"]["solved"].is_boolean() && r["info"]["dof"].is_u64(), "{r}");
     // With one: into it, and `plane` and `name` (of any kind) are not read.

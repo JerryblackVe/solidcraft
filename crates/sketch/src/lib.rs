@@ -31,6 +31,7 @@ mod link;
 mod loci;
 mod model;
 mod nurbs;
+mod object_group;
 mod offset;
 mod offset_topology;
 mod paper_text;
@@ -75,6 +76,7 @@ pub use model::{
     MAX_POINTS, PointExprs, SPoint, Sketch, SketchBatch, SketchError, SketchView, TwoCircles,
 };
 pub use nurbs::Nurbs;
+pub use object_group::{MAX_GROUP_CURVES, ObjectGroup};
 pub use offset::OffsetChain;
 pub use offset_topology::{OffsetCreated, OffsetRole, OffsetRoleFlags, OffsetRoleKind, OffsetTopology};
 pub use paper_text::{

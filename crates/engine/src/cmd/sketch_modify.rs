@@ -152,7 +152,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("sketch_move")
         .key("G")
         .enabled(in_sketch)
-        .params("entities: [curve/point ids], factor?: number (scale), angle?: degrees (turn), center?: [x,y] or point ref (what scales and turns stay put; default [0,0]), translate?: [dx,dy] (applied last); scales, turns and moves in one step; a free point held only to the picked geometry (a rounded rectangle's centre) goes with it; returns `released`: the constraints tying the picked geometry to what stays that the change let go, as {id, kind}"),
+        .params("entities: [curve/point ids] (one curve of a group takes the whole group), factor?: number (scale), scale_x?, scale_y?: width and height factors apart (default factor; lines and splines only), angle?: degrees (turn), center?: [x,y] or point ref (what scales and turns stay put; default [0,0]), translate?: [dx,dy] (applied last); scales, turns and moves in one step; a free point held only to the picked geometry (a rounded rectangle's centre) goes with it; returns `released`: the constraints tying the picked geometry to what stays that the change let go, as {id, kind}"),
     CommandSpec::new("sketch.move", "Move/Copy Sketch Entities", crate::checked!("sketch.move", move_copy))
         .in_sketch_part()
         .contract(&MOVE_CONTRACT)
@@ -160,7 +160,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SKETCH", "MODIFY")
         .icon("sketch_move")
         .enabled(in_sketch)
-        .params(concat!("entities: [ids], translate?: [dx,dy], angle?: deg, center?: [x,y], copy?: bool, z?: mm along the sketch's normal (3D sketches: the moved lines and fit-point splines become drawn 3D curves that far off the plane, and drawn picks move that far along it); rotate_constraints?: bool (default true; false keeps constraints unchanged); a rotation turns the constraints tied to the sketch axes when all their geometry moves (horizontal and vertical relations and dimensions swap at odd quarter turns and stay at half turns, line angles turn with the line) and removes the horizontal and vertical ones that cannot hold at other angles; picking a text outline or linked point transforms its whole text source once, and copies remain editable text; copy also accepts drawn 3D curves, preserving exact arcs and height above the sketch plane; a turned rectangle keeps its shape: parallel and perpendicular relations replace the horizontal and vertical ones lost; `wire@index` picks a drawn 3D point, a drawn curve's id the whole curve: they move with the rest, along the plane and by `z` along its normal; returns `released`: the constraints tying the moved geometry to what stays that the move let go, as {id, kind}, and `added`: the relations put in their place, as {id, kind}", created_doc!())),
+        .params(concat!("entities: [ids] (one curve of a group takes the whole group), translate?: [dx,dy], angle?: deg, center?: [x,y], copy?: bool, z?: mm along the sketch's normal (3D sketches: the moved lines and fit-point splines become drawn 3D curves that far off the plane, and drawn picks move that far along it); rotate_constraints?: bool (default true; false keeps constraints unchanged); a rotation turns the constraints tied to the sketch axes when all their geometry moves (horizontal and vertical relations and dimensions swap at odd quarter turns and stay at half turns, line angles turn with the line) and removes the horizontal and vertical ones that cannot hold at other angles; picking a text outline or linked point transforms its whole text source once, and copies remain editable text; copy also accepts drawn 3D curves, preserving exact arcs and height above the sketch plane; a turned rectangle keeps its shape: parallel and perpendicular relations replace the horizontal and vertical ones lost; `wire@index` picks a drawn 3D point, a drawn curve's id the whole curve: they move with the rest, along the plane and by `z` along its normal; returns `released`: the constraints tying the moved geometry to what stays that the move let go, as {id, kind}, and `added`: the relations put in their place, as {id, kind}", created_doc!())),
     CommandSpec::new("sketch.mirror", "Mirror", crate::checked!("sketch.mirror", mirror))
         .in_sketch_part()
         .contract(&MIRROR_CONTRACT)
@@ -4042,7 +4042,7 @@ fn with_ellipse_axes(sk: &Sketch, cs: &mut Vec<usize>) {
 }
 
 /// Points used by curves plus lone points, in a stable order.
-fn involved_points(sk: &Sketch, cs: &[usize], ps: &[usize]) -> Vec<usize> {
+pub(super) fn involved_points(sk: &Sketch, cs: &[usize], ps: &[usize]) -> Vec<usize> {
     let mut v: Vec<usize> = Vec::new();
     for c in cs {
         if let Some(k) = sk.curves.get(*c).map(|c| &c.kind) {
@@ -4250,6 +4250,14 @@ fn pattern_rect(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Move the points of the entities (in place) through `f`; circle radii scale by `k`.
+/// Move every curve of a group by `by`: the points before the move, for a drag's report.
+pub(super) fn move_group(sk: &mut Sketch, members: &[String], by: Vec2, cmd: &str) -> Result<Vec<(usize, Vec2)>> {
+    let cs: Vec<usize> = members.iter().filter_map(|c| sk.curve_index(c)).collect();
+    let moving: Vec<(usize, Vec2)> = involved_points(sk, &cs, &[]).into_iter().filter_map(|i| sk.point(i).map(|p| (i, p))).collect();
+    transform_in_place(sk, &cs, &[], &move |q| q + by, 1.0, cmd)?;
+    Ok(moving)
+}
+
 fn transform_in_place(sk: &mut Sketch, cs: &[usize], ps: &[usize], f: &dyn Fn(Vec2) -> Vec2, k: f64, cmd: &str) -> Result<()> {
     let pts = involved_points(sk, cs, ps);
     // A point the sketch holds fixed, or one it projects from a body or another sketch, follows
@@ -4496,6 +4504,8 @@ fn move_copy(s: &mut Session, p: &Value) -> Result<Value> {
     let mut released = Vec::new();
     let mut added = Vec::new();
     let (out, info) = edit(s, p, cmd, false, |sk, doc| {
+        // One curve of a group takes the whole group.
+        let planar = super::sketch_object::group_ids(sk, &planar);
         let (mut cs, mut ps) =
             if planar.is_empty() && !drawn.is_empty() { (Vec::new(), Vec::new()) } else { entities(sk, &json!({"entities": planar}), cmd)? };
         let c = if p.get("center").is_some() { point_or_ref(sk, p, "center", cmd)? } else { Vec2::ZERO };
@@ -4578,13 +4588,28 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => v.as_f64().filter(|a| a.is_finite()).ok_or_else(|| bad(cmd, "`angle` must be a number (degrees)"))?.to_radians(),
         None => 0.0,
     };
+    // Width and height on their own: scaled along the sketch's own axes, before the turn.
+    let axis = |key: &str| -> Result<f64> {
+        match p.get(key) {
+            Some(v) => v.as_f64().filter(|k| *k > 1e-9 && *k < 1e6).ok_or_else(|| bad(cmd, format!("`{key}` must be a positive number"))),
+            None => Ok(k),
+        }
+    };
+    let (sx, sy) = (axis("scale_x")?, axis("scale_y")?);
+    let stretched = (sx - sy).abs() > 1e-12;
     let t = if p.get("translate").is_some() { req_vec2(cmd, p, "translate")? } else { Vec2::ZERO };
     let mut released = Vec::new();
     let (out, info) = edit(s, p, cmd, false, |sk, doc| {
+        // One curve of a group takes the whole group.
+        let grouped = super::sketch_object::with_group_members(sk, p, cmd)?;
+        let p = &grouped;
         let (mut cs, mut ps) = entities(sk, p, cmd)?;
         let c = if p.get("center").is_some() { point_or_ref(sk, p, "center", cmd)? } else { Vec2::ZERO };
         let rot = rotate(c, ang);
-        let f = move |q: Vec2| rot(c + (q - c) * k) + t;
+        let f = move |q: Vec2| {
+            let d = q - c;
+            rot(c + Vec2::new(d.x * sx, d.y * sy)) + t
+        };
         // A text's outline points follow its source: the text turns, scales and moves as a
         // unit, as Move turns it, instead of its points being refused as projected (#17315).
         let mut links = Vec::new();
@@ -4597,6 +4622,20 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         }
         cs.retain(|&i| !sk.curves.get(i).and_then(|c| c.link.as_ref()).is_some_and(|link| links.contains(link)));
         ps.retain(|&i| !sk.points.get(i).and_then(|p| p.link.as_ref()).is_some_and(|link| links.contains(link)));
+        if stretched {
+            // Only what an affine stretch keeps exact: lines and splines. An arc, circle or
+            // ellipse would stop being one; dimensions and texts would no longer measure what
+            // they say. Nothing is changed.
+            let bad_curve = cs.iter().find(|&&i| {
+                !matches!(sk.curves.get(i).map(|c| &c.kind), Some(CurveKind::Line { .. } | CurveKind::Spline { .. } | CurveKind::Conic { .. }))
+            });
+            if bad_curve.is_some() || !links.is_empty() || sk.constraints.iter().any(|c| !c.driven && c.kind.is_dimension()) {
+                return Err(bad(
+                    cmd,
+                    "a different width and height need lines and splines only: this has arcs, circles, ellipses, texts or dimensions. Scale it proportionally with `factor`",
+                ));
+            }
+        }
         let mut text_curves = Vec::new();
         for link in links {
             text_curves.extend(super::sketch_create::transform_text(sk, cmd, &link, &f, ang, k, false)?);

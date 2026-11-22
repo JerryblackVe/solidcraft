@@ -42,7 +42,7 @@ pub struct GroupReport {
     pub sketch: u64,
     /// The id of what owns the curves (a text's link id, as `sketch.edit_text` takes it).
     pub id: String,
-    /// What made the group: `text`.
+    /// What made the group: `text` or `object` (an imported drawing, or curves grouped with `sketch.group`).
     pub kind: String,
     /// Its name as shown: a text's words.
     pub label: String,

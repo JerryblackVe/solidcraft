@@ -71,6 +71,7 @@ fn reports(s: &Session, st: &ModelState, sid: u64, sk: &Sketch, groups: &[CurveG
             id: g.id.clone(),
             kind: match g.kind {
                 GroupKind::Text => "text".into(),
+                GroupKind::Object => "object".into(),
             },
             label: g.label.clone(),
             curves: g.curves.clone(),

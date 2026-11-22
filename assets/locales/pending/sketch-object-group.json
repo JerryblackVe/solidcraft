@@ -1,0 +1,42 @@
+{
+  "en": {
+    "cmd.sketch.group": "Group",
+    "help.sketch.group": "Makes the picked curves one object, so picking, moving, turning or scaling one takes them all. Use it to keep a drawing together.",
+    "help.sketch.ungroup": "Takes a group apart so its curves are separate again. Use it when you want to edit one curve of an imported drawing on its own."
+  },
+  "de": {
+    "cmd.sketch.group": "Gruppieren",
+    "help.sketch.group": "Macht die gewählten Kurven zu einem Objekt: Wählen, Verschieben, Drehen oder Skalieren einer Kurve betrifft alle. Nutze es, um eine Zeichnung zusammenzuhalten.",
+    "help.sketch.ungroup": "Löst eine Gruppe auf, sodass ihre Kurven wieder einzeln sind. Nutze es, wenn du eine Kurve einer importierten Zeichnung allein bearbeiten willst."
+  },
+  "ko": {
+    "cmd.sketch.group": "그룹",
+    "help.sketch.group": "선택한 곡선을 하나의 개체로 묶어, 하나를 선택·이동·회전·크기 조절하면 모두 함께 적용됩니다. 도면을 하나로 유지할 때 사용하세요.",
+    "help.sketch.ungroup": "그룹을 풀어 곡선을 다시 따로 둡니다. 가져온 도면의 곡선 하나만 편집하고 싶을 때 사용하세요."
+  },
+  "ja": {
+    "cmd.sketch.group": "グループ化",
+    "help.sketch.group": "選んだ曲線を1つのオブジェクトにまとめ、1本を選択・移動・回転・拡大縮小するとすべてに適用されます。図面をまとめておくときに使います。",
+    "help.sketch.ungroup": "グループを解除して曲線を個別に戻します。読み込んだ図面の曲線を1本だけ編集したいときに使います。"
+  },
+  "zh": {
+    "cmd.sketch.group": "编组",
+    "help.sketch.group": "将所选曲线编为一个对象，选择、移动、旋转或缩放其中一条会作用于全部。用于保持图形完整。",
+    "help.sketch.ungroup": "解散编组，使曲线重新各自独立。想单独编辑导入图形中的某一条曲线时使用。"
+  },
+  "ar": {
+    "cmd.sketch.group": "تجميع",
+    "help.sketch.group": "يجعل المنحنيات المحددة كائنًا واحدًا، فتحديد أحدها أو تحريكه أو تدويره أو تغيير حجمه يشمل الجميع. استخدمه للحفاظ على الرسم متماسكًا.",
+    "help.sketch.ungroup": "يفكّ المجموعة فتعود منحنياتها منفصلة. استخدمه عندما تريد تعديل منحنى واحد من رسم مستورد على حدة."
+  },
+  "he": {
+    "cmd.sketch.group": "קבץ",
+    "help.sketch.group": "הופך את העקומות שנבחרו לאובייקט אחד, כך שבחירה, הזזה, סיבוב או שינוי גודל של אחת חלים על כולן. מתאים לשמירת שרטוט כיחידה אחת.",
+    "help.sketch.ungroup": "מפרק קבוצה כך שהעקומות שלה שוב נפרדות. מתאים לעריכת עקומה אחת משרטוט מיובא בנפרד."
+  },
+  "vi": {
+    "cmd.sketch.group": "Nhóm",
+    "help.sketch.group": "Gộp các đường cong đã chọn thành một đối tượng, nên chọn, di chuyển, xoay hay đổi cỡ một đường sẽ áp dụng cho tất cả. Dùng để giữ một bản vẽ liền khối.",
+    "help.sketch.ungroup": "Tách nhóm để các đường cong lại riêng lẻ. Dùng khi bạn muốn sửa riêng một đường cong của bản vẽ đã nhập."
+  }
+}

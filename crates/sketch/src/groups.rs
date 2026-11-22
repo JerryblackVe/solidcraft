@@ -10,6 +10,8 @@ use crate::model::Sketch;
 pub enum GroupKind {
     /// A text: its members are its letters.
     Text,
+    /// Curves grouped as one object: an imported drawing or curves grouped by hand. No members.
+    Object,
 }
 
 /// A member of a group (a letter of a text) and its curves.
@@ -38,7 +40,18 @@ pub struct CurveGroup {
 impl Sketch {
     /// The groups of this sketch's curves: each text, with its letters.
     pub fn curve_groups(&self) -> Vec<CurveGroup> {
-        self.links.iter().filter_map(|l| self.curve_group(&l.id)).collect()
+        self.links
+            .iter()
+            .filter_map(|l| self.curve_group(&l.id))
+            .chain(self.object_groups.iter().filter_map(|g| self.object_curve_group(&g.id)))
+            .collect()
+    }
+
+    /// The group made by `ObjectGroup` `id`, with the curves it still has.
+    fn object_curve_group(&self, id: &str) -> Option<CurveGroup> {
+        let g = self.object_groups.iter().find(|g| g.id == id)?;
+        let curves: Vec<String> = g.curves.iter().filter(|c| self.curve_index(c).is_some()).cloned().collect();
+        (!curves.is_empty()).then(|| CurveGroup { id: g.id.clone(), kind: GroupKind::Object, label: g.name.clone(), curves, members: Vec::new() })
     }
 
     /// The group owned by link `link`: a text that is not lost and has curves.
@@ -56,6 +69,9 @@ impl Sketch {
     /// The group curve `id` belongs to and, when the group's members are known, the index of
     /// its member. Only that group is worked out.
     pub fn curve_group_of(&self, id: &str) -> Option<(CurveGroup, Option<usize>)> {
+        if let Some(g) = self.object_group_of(id) {
+            return self.object_curve_group(&g.id).map(|g| (g, None));
+        }
         let link = self.curve_index(id).and_then(|i| self.curves.get(i))?.link.clone()?;
         let group = self.curve_group(&link)?;
         let member = group.members.iter().position(|m| m.curves.iter().any(|c| c == id));
