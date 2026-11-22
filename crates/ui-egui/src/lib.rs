@@ -84,6 +84,7 @@ pub mod edit_in_place;
 mod feature_edit;
 #[cfg(test)]
 mod font_literals_tests;
+pub mod font_preview;
 pub mod fonts;
 pub use solidcraft_ui_kit::frame;
 pub mod frame_rate;
@@ -478,6 +479,10 @@ pub struct UiState {
     pub tool_cursor: bool,
     /// The colours picked last in any colour picker, newest first (#9234); kept between runs.
     pub recent_colors: Vec<[u8; 3]>,
+    /// The text dialog's favourite and recent fonts and its sample text; kept between runs (saved
+    /// with the other preferences, see `FontPicks::store`).
+    #[serde(skip)]
+    pub font_picks: font_preview::FontPicks,
 }
 
 impl UiState {
@@ -522,6 +527,7 @@ impl Default for UiState {
             agent_cursor: Default::default(),
             tool_cursor: false,
             recent_colors: Vec::new(),
+            font_picks: Default::default(),
         }
     }
 }
@@ -1461,6 +1467,7 @@ impl SolveApp {
             "ground_shadow": self.ui.ground_shadow,
             "agent_cursor": self.ui.agent_cursor,
             "recent_colors": self.ui.recent_colors,
+            "font_picks": self.ui.font_picks.store(),
             "preferences": self.preferences,
             "view_gizmo": self.view_gizmo.stored(),
             "gpu_path_setup_seconds": self.render_workspace.setup_seconds,
@@ -1595,6 +1602,7 @@ impl SolveApp {
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(|c| serde_json::from_value::<[u8; 3]>(c.clone()).ok()).take(recent_colors::MAX_RECENT_COLORS).collect())
             .unwrap_or_default();
+        self.ui.font_picks = v.get("font_picks").map(font_preview::FontPicks::load).unwrap_or_default();
         panel_runtime::load_preferences(self, &v);
     }
 
@@ -4311,6 +4319,7 @@ impl SolveApp {
         // off is the old behaviour, so the kit default and this preference default agree.
         ui_kit::set_dialog_mnemonics(self.preferences.dialog_first_letter_buttons);
         recent_colors::share(ui.ctx(), &mut self.ui.recent_colors);
+        font_preview::share(ui.ctx(), &mut self.ui.font_picks);
         let t0 = now_ms();
         let _language = self.prepare_text(ui.ctx());
         let mut report_input = None;
