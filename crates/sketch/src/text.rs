@@ -19,7 +19,7 @@ use solidcraft_geom::prelude::*;
 
 use crate::fonts::{FontData, font_data_saved, font_data_styled};
 use crate::link::{LinkGeom, LinkKind, LinkSource, MAX_LINK_ENTITIES};
-use crate::model::{Result, Sketch, SketchError};
+use crate::model::{CurveKind, Result, Sketch, SketchError};
 
 /// Most characters in one text.
 pub const MAX_TEXT_CHARS: usize = 1000;
@@ -573,6 +573,30 @@ fn lay_text(
     style: &TextStyle,
     path: Option<&[Vec2]>,
 ) -> Result<Vec<LinkGeom>> {
+    lay_text_letters(data, slant, text, at, height, angle, style, path).map(|(out, _)| out)
+}
+
+/// One letter of a laid-out text: the characters it sets (a letter with the marks set on it), and
+/// the part of the text's outline geometry that draws it. A letter that draws nothing (a space)
+/// has none.
+struct LetterSpan {
+    text: String,
+    geom: Range<usize>,
+}
+
+/// [`lay_text`], also saying which part of the outlines draws each letter, in the order they are set.
+#[allow(clippy::too_many_arguments)]
+fn lay_text_letters(
+    data: &FontData,
+    slant: bool,
+    text: &str,
+    at: Vec2,
+    height: f64,
+    angle: f64,
+    style: &TextStyle,
+    path: Option<&[Vec2]>,
+) -> Result<(Vec<LinkGeom>, Vec<LetterSpan>)> {
+    let mut letters: Vec<LetterSpan> = Vec::new();
     let metrics = TextMetrics::new(data, style)?;
     let (k, pitch) = (metrics.scale(height)?, metrics.line_pitch(height)?);
     let shear = if slant { SLANT_DEG.to_radians().tan() } else { 0.0 };
@@ -585,7 +609,20 @@ fn lay_text(
         let base_y = lift - (row as f64) * pitch;
         let laid = metrics.laid_out(line, k);
         let start = style.align.start(laid.width);
-        for Glyph { id: gid, x, advance, rise, .. } in laid.glyphs {
+        let mut last_cluster = None;
+        for Glyph { id: gid, x, advance, rise, cluster } in laid.glyphs {
+            // Glyphs of one cluster (a letter and its marks) are one letter, and so is a combining
+            // mark set as a glyph of its own after its letter.
+            let ch = line.get(cluster..).and_then(|s| s.chars().next());
+            if last_cluster != Some(cluster) && !(last_cluster.is_some() && ch.is_some_and(combining_mark)) {
+                letters.push(LetterSpan { text: String::new(), geom: out.len()..out.len() });
+            }
+            if last_cluster != Some(cluster)
+                && let (Some(letter), Some(ch)) = (letters.last_mut(), ch)
+            {
+                letter.text.push(ch);
+            }
+            last_cluster = Some(cluster);
             // The glyph's frame: its origin on the baseline and the way the baseline runs.
             let (origin, dir) = match &along {
                 None => {
@@ -605,6 +642,9 @@ fn lay_text(
             let mut ob = Outline { loops: Vec::new(), start: origin, cur: origin, map };
             let _ = metrics.face.outline_glyph(gid, &mut ob);
             out.extend(ob.loops.iter().flatten().filter_map(LinkGeom::from_seg));
+            if let Some(letter) = letters.last_mut() {
+                letter.geom.end = out.len();
+            }
             // A font can give a glyph any number of points: stop where the link would be refused anyway.
             if out.len() > MAX_LINK_ENTITIES {
                 return Err(SketchError::TooLarge);
@@ -614,7 +654,22 @@ fn lay_text(
     if out.iter().any(|g| !geom_finite(g)) {
         return Err(SketchError::Invalid("the text does not fit its path".into()));
     }
-    Ok(out)
+    Ok((out, letters))
+}
+
+/// A combining mark (an accent typed after its letter, as in `e` + U+0301): it belongs to the
+/// letter before it. The blocks of combining marks used with Latin, Greek and Cyrillic letters.
+fn combining_mark(ch: char) -> bool {
+    matches!(ch, '\u{0300}'..='\u{036F}' | '\u{1AB0}'..='\u{1AFF}' | '\u{1DC0}'..='\u{1DFF}' | '\u{20D0}'..='\u{20FF}' | '\u{FE20}'..='\u{FE2F}')
+}
+
+/// The points an outline piece starts and ends on: where the curves made from it start.
+fn geom_ends(g: &LinkGeom) -> Vec<Vec2> {
+    match g {
+        LinkGeom::Line(a, b) | LinkGeom::Conic { a, b, .. } | LinkGeom::Arc { a, b, .. } => vec![*a, *b],
+        LinkGeom::Spline { pts, .. } => pts.first().into_iter().chain(pts.last()).copied().collect(),
+        LinkGeom::Point(p) | LinkGeom::Circle(p, _) | LinkGeom::Ellipse { c: p, .. } => vec![*p],
+    }
 }
 
 fn geom_finite(g: &LinkGeom) -> bool {
@@ -742,6 +797,45 @@ impl Sketch {
         };
         let path = self.text_path(style)?;
         saved_text_geometry(font.as_deref(), text, *at, *height, *angle, style, path.as_deref())
+    }
+
+    /// The letters of text `link`, in the order they are set, each with the ids of its curves: a
+    /// letter with several outlines (the dot of an i, an accent, the counter of an O) is one
+    /// letter. Each curve goes to the letter whose outline it starts on: the text is laid out
+    /// again, as its outlines were made, and a curve starts where a piece of one letter's outline
+    /// does. A letter that draws nothing (a space) is left out.
+    pub(crate) fn text_letters(&self, link: &str) -> Result<Vec<crate::groups::GroupMember>> {
+        let source = self.link(link).map(|l| &l.source);
+        let Some(LinkSource::Text { text, at, height, angle, font, style, .. }) = source else {
+            return Err(SketchError::Invalid(format!("`{link}` is not a text")));
+        };
+        check_text(text, *at, *height, *angle, style)?;
+        let ((data, slant), _) = font_data_saved(font.as_deref(), style.bold, style.italic)?;
+        let path = self.text_path(style)?;
+        let (geom, letters) = lay_text_letters(&data, slant, text, *at, *height, *angle, style, path.as_deref())?;
+        let ends: Vec<Vec<Vec2>> =
+            letters.iter().map(|l| geom.get(l.geom.clone()).unwrap_or_default().iter().flat_map(geom_ends).collect()).collect();
+        let mut members: Vec<crate::groups::GroupMember> =
+            letters.iter().map(|l| crate::groups::GroupMember { label: l.text.clone(), curves: Vec::new() }).collect();
+        for ci in self.link_curves(link) {
+            let Some(curve) = self.curves.get(ci) else { continue };
+            let start = match &curve.kind {
+                CurveKind::Spline { pts, .. } => pts.first().copied(),
+                CurveKind::Circle { c, .. } | CurveKind::Ellipse { c, .. } => Some(*c),
+                kind => kind.ends().map(|(a, _)| a),
+            };
+            let Some(p) = start.and_then(|i| self.point(i)) else { continue };
+            let nearest = ends
+                .iter()
+                .enumerate()
+                .map(|(i, pts)| (i, pts.iter().map(|q| q.dist(p)).fold(f64::INFINITY, f64::min)))
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some(member) = nearest.and_then(|(i, _)| members.get_mut(i)) {
+                member.curves.push(curve.id.clone());
+            }
+        }
+        members.retain(|m| !m.curves.is_empty());
+        Ok(members)
     }
 
     /// The points of the curve a text runs along, if it runs along one.

@@ -434,3 +434,53 @@ fn hostile_lines_are_measured_as_they_are_drawn_or_refused_alike() {
         );
     }
 }
+
+#[test]
+fn a_text_is_one_group_whose_members_are_its_letters_with_their_outlines() {
+    let mut sk = Sketch::new();
+    let text = "Ái o e\u{301}\nH";
+    let source = LinkSource::Text {
+        text: text.into(),
+        at: v(0.0, 0.0),
+        height: 10.0,
+        angle: 0.0,
+        font: None,
+        style: TextStyle::default(),
+        exprs: Default::default(),
+    };
+    let geom = sk.text_source_geometry(&source).unwrap();
+    let link = sk.add_link(LinkKind::Text, source, &geom).unwrap();
+    let groups = sk.curve_groups();
+    assert_eq!(groups.len(), 1);
+    let g = &groups[0];
+    assert_eq!((g.id.as_str(), g.kind, g.label.as_str()), (link.as_str(), crate::GroupKind::Text, text));
+    // Spaces and line breaks draw nothing; an accented letter, the dot of the i, the counter of the o and an accent
+    // typed after its letter all stay with their letter.
+    let labels: Vec<&str> = g.members.iter().map(|m| m.label.as_str()).collect();
+    assert_eq!(labels, ["Á", "i", "o", "e\u{301}", "H"]);
+    // Every curve of the text is in exactly one letter.
+    let mut all: Vec<&String> = g.members.iter().flat_map(|m| &m.curves).collect();
+    all.sort();
+    let mut curves: Vec<&String> = g.curves.iter().collect();
+    curves.sort();
+    assert_eq!(all, curves);
+    // Each letter's curves lie where it is set: left to right on the first line, the H below it.
+    let span = |m: &crate::GroupMember| {
+        let xs: Vec<Vec2> =
+            m.curves.iter().filter_map(|id| sk.curve_index(id)).flat_map(|i| sk.curves[i].kind.point_ids()).filter_map(|p| sk.point(p)).collect();
+        let lo = xs.iter().fold(v(f64::MAX, f64::MAX), |a, p| v(a.x.min(p.x), a.y.min(p.y)));
+        let hi = xs.iter().fold(v(f64::MIN, f64::MIN), |a, p| v(a.x.max(p.x), a.y.max(p.y)));
+        (lo, hi)
+    };
+    let spans: Vec<(Vec2, Vec2)> = g.members.iter().map(span).collect();
+    for pair in spans[..4].windows(2) {
+        assert!(pair[0].1.x <= pair[1].0.x + 0.5, "letters overlap: {spans:?}");
+    }
+    assert!(spans[4].1.y < 0.0, "the H is on the second line: {spans:?}");
+    // The accent of the É-like letter is above its e: two outlines, one letter.
+    assert!(spans[3].1.y > 10.0 * 0.8, "{spans:?}");
+    // A curve finds its group and letter.
+    let (found, member) = sk.curve_group_of(&g.members[2].curves[0]).unwrap();
+    assert_eq!((found.id, member), (link, Some(2)));
+    assert!(sk.curve_group_of("nope").is_none());
+}

@@ -188,6 +188,7 @@ mod sketch_divide;
 mod sketch_ends;
 mod sketch_equation;
 mod sketch_freeform;
+pub mod sketch_groups;
 mod sketch_import;
 mod sketch_inspect;
 mod sketch_modify;
@@ -486,6 +487,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(sketch_import::COMMANDS.iter());
     v.extend(sketch_inspect::COMMANDS.iter());
     v.extend(sketch_ends::COMMANDS.iter());
+    v.extend(sketch_groups::COMMANDS.iter());
     v.extend(sketch_canvas::COMMANDS.iter());
     v.extend(canvas_sketch::COMMANDS.iter());
     v.extend(point_cloud::COMMANDS.iter());
