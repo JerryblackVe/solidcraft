@@ -8119,6 +8119,11 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                         .or_else(|| sk.resolve_point(id).and_then(|i| sk.points.get(i)).and_then(|p| p.link.as_deref()))?;
                     sk.link(link).filter(|l| l.kind == solidcraft_engine::sketch::LinkKind::Text).map(|l| l.id.clone())
                 });
+                // A curve of a group drags the whole group, as a letter drags its text.
+                let link = link.or_else(|| {
+                    let sk = app.session.active_sketch.and_then(|sid| app.session.doc.sketch(sid).ok())?;
+                    sk.object_group_of(id).map(|g| g.id.clone())
+                });
                 if let Some(link) = link
                     && let Some(q) = on_plane(app, a)
                 {
@@ -8981,6 +8986,14 @@ pub(crate) fn picked_selection(s: &solidcraft_engine::Session, sel: &Sel) -> Vec
         && let Some(letters) = crate::sketch_text::text_profiles(s, *sketch, *index)
     {
         return letters.into_iter().map(|index| Sel::Profile { sketch: *sketch, index }).collect();
+    }
+    // A curve of an imported drawing (or of curves grouped by hand) picks its whole group, unless
+    // Shift is held (Shift picks the one curve): object mode.
+    if let Sel::SketchCurve { id, .. } = sel
+        && !crate::sketch_text::one_letter()
+        && let Some(members) = s.active_sketch.and_then(|sid| s.doc.sketch(sid).ok()).and_then(|sk| sk.object_group_of(id).map(|g| g.curves.clone()))
+    {
+        return members.into_iter().map(|id| Sel::SketchCurve { id, sketch: None }).collect();
     }
     grouped_selection(s, sel)
 }

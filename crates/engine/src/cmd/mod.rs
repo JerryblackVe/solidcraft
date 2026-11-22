@@ -190,6 +190,7 @@ pub mod sketch_groups;
 mod sketch_import;
 mod sketch_inspect;
 mod sketch_modify;
+mod sketch_object;
 mod sketch_project;
 pub(crate) use sketch_project::{MAX_PROJECTED_ENTITIES, RefForm, model_ref, ref_form};
 mod sketch_rational;
@@ -482,6 +483,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(sketch_equation::COMMANDS.iter());
     v.extend(sketch_constraints::COMMANDS.iter());
     v.extend(sketch_import::COMMANDS.iter());
+    v.extend(sketch_object::COMMANDS.iter());
     v.extend(sketch_inspect::COMMANDS.iter());
     v.extend(sketch_ends::COMMANDS.iter());
     v.extend(sketch_groups::COMMANDS.iter());

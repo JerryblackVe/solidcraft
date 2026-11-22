@@ -88,6 +88,11 @@ pub struct InsertDrawingKeys {
     /// the points the sketch already had are not touched. Default: false.
     #[serde(default)]
     pub fixed: Option<bool>,
+    /// `true` makes the curves the drawing adds one group named after the file, so picking one
+    /// curve, moving, turning or scaling takes the whole drawing (`sketch.ungroup` takes it
+    /// apart). Default: true.
+    #[serde(default)]
+    pub group: Option<bool>,
     /// Read only when no sketch is being edited: the plane of the new sketch, as `sketch.create`
     /// takes it. Default: XY. Ignored (and not checked) while a sketch is being edited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -575,6 +580,9 @@ pub struct DrawingInserted {
     /// With `fixed: true`: how many points got a Fix constraint. Left out otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed: Option<usize>,
+    /// The id of the group the curves were made into (see `group`). Left out when none was made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     /// The sketch's solve afterwards; null when it was not solved.
     pub info: Option<SketchSolve>,
     /// Everything the call added to the sketch: `{points, curves, constraints, dimensions}`.

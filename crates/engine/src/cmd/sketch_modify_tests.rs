@@ -2393,6 +2393,101 @@ fn text_makes_profiles_that_extrude_and_edit() {
     assert!(s.execute("sketch.text", &json!({"text": "", "at": [0, 0]})).is_err());
 }
 
+/// The box (min, max) of the sketch's own points.
+fn points_box(s: &Session) -> (Vec2, Vec2) {
+    let sk = sketch(s);
+    let mut lo = Vec2::new(f64::MAX, f64::MAX);
+    let mut hi = Vec2::new(f64::MIN, f64::MIN);
+    for p in sk.points.iter().filter(|p| p.id != "origin") {
+        lo = Vec2::new(lo.x.min(p.pos.x), lo.y.min(p.pos.y));
+        hi = Vec2::new(hi.x.max(p.pos.x), hi.y.max(p.pos.y));
+    }
+    (lo, hi)
+}
+
+/// A crown: a ring of `n` points with a lobed edge, as one SVG path, and a Bezier band beside it.
+fn crown_svg(n: usize) -> String {
+    let ring: Vec<String> = (0..n)
+        .map(|i| {
+            let a = std::f64::consts::TAU * i as f64 / n as f64;
+            let r = 80.0 + 10.0 * (a * 12.0).sin();
+            format!("{:.3},{:.3}", 100.0 + r * a.cos(), 100.0 + r * a.sin())
+        })
+        .collect();
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 200"><path d="M{} Z"/><path d="M200,20 C220,60 260,60 280,20 L280,40 C260,80 220,80 200,40 Z"/></svg>"#,
+        ring.join(" L")
+    )
+}
+
+#[test]
+fn an_imported_drawing_is_one_group_that_moves_and_stretches_as_one() {
+    let mut s = new_sketch();
+    let r = run(&mut s, "sketch.insert_svg", json!({"text": crown_svg(400), "width": 120}));
+    let group = r["group"].as_str().expect("the import made a group").to_string();
+    assert_eq!(sketch(&s).object_groups.len(), 1);
+    let members = sketch(&s).object_groups[0].curves.clone();
+    assert_eq!(members.len(), r["curves"].as_u64().unwrap() as usize);
+    let (lo, hi) = points_box(&s);
+    let area = |s: &Session| profiles(s).iter().sum::<f64>();
+    let a0 = area(&s);
+    // Move: one curve picked, the whole drawing goes.
+    run(&mut s, "sketch.move", json!({"entities": [members[0].clone()], "translate": [10, 5]}));
+    let (lo1, hi1) = points_box(&s);
+    assert!(close(lo1.x - lo.x, 10.0) && close(lo1.y - lo.y, 5.0) && close(hi1.x - hi.x, 10.0) && close(hi1.y - hi.y, 5.0), "{lo:?} {lo1:?}");
+    // Turn a quarter about its middle and scale: nothing deforms.
+    let mid = Vec2::new((lo1.x + hi1.x) / 2.0, (lo1.y + hi1.y) / 2.0);
+    run(&mut s, "sketch.transform", json!({"entities": [members[3].clone()], "factor": 2.0, "angle": 90, "center": [mid.x, mid.y]}));
+    let (lo2, hi2) = points_box(&s);
+    assert!(close((hi2.x - lo2.x) / (hi1.x - lo1.x), 2.0 * (hi1.y - lo1.y) / (hi1.x - lo1.x)), "a quarter turn swaps width and height");
+    assert!(close(area(&s) / a0, 4.0), "area x4");
+    // Width and height apart.
+    let (wlo, whi) = points_box(&s);
+    run(&mut s, "sketch.transform", json!({"entities": [members[7].clone()], "scale_x": 2.0, "scale_y": 0.5, "center": [wlo.x, wlo.y]}));
+    let (lo3, hi3) = points_box(&s);
+    assert!(close((hi3.x - lo3.x) / (whi.x - wlo.x), 2.0) && close((hi3.y - lo3.y) / (whi.y - wlo.y), 0.5));
+    assert!(close(area(&s) / (a0 * 4.0), 1.0), "x2 and x0.5 keep the area");
+    // Saved and opened, the group is still there; undo and redo go through.
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    let mut reopened = reopened;
+    run(&mut reopened, "sketch.edit", json!({"sketch": 1}));
+    assert_eq!(sketch(&reopened).object_groups.len(), 1);
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.redo", json!({}));
+    // Ungroup: one curve moves alone.
+    run(&mut s, "sketch.ungroup", json!({"group": group}));
+    assert!(sketch(&s).object_groups.is_empty());
+    let before = points_box(&s);
+    run(&mut s, "sketch.move", json!({"entities": [members[0].clone()], "translate": [1000, 0]}));
+    assert!(points_box(&s).1.x > before.1.x + 100.0 && points_box(&s).0.x < before.0.x + 1.0, "only that curve left");
+}
+
+#[test]
+fn a_group_refuses_a_stretch_it_cannot_keep_exact_and_changes_nothing() {
+    let mut s = new_sketch();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="20"/><rect x="0" y="0" width="30" height="30"/></svg>"#;
+    let r = run(&mut s, "sketch.insert_svg", json!({"text": svg}));
+    assert!(r["group"].is_string());
+    let member = sketch(&s).object_groups[0].curves[0].clone();
+    let before = s.doc.to_json();
+    let err = s.execute("sketch.transform", &json!({"entities": [member.clone()], "scale_x": 2.0, "scale_y": 1.0})).unwrap_err().to_string();
+    assert!(err.contains("lines and splines"), "{err}");
+    assert_eq!(s.doc.to_json(), before);
+    // Equal factors are an ordinary proportional scale, which arcs and circles allow.
+    run(&mut s, "sketch.transform", json!({"entities": [member], "scale_x": 2.0, "scale_y": 2.0}));
+    // No group when asked not to; a hand-made group; a curve in one group at most.
+    let mut t = new_sketch();
+    let r = run(&mut t, "sketch.insert_svg", json!({"text": svg, "group": false}));
+    assert!(r.get("group").is_none() && sketch(&t).object_groups.is_empty());
+    let ids: Vec<String> = sketch(&t).curves.iter().map(|c| c.id.clone()).collect();
+    let g = run(&mut t, "sketch.group", json!({"curves": ids[..2], "name": "pair"}));
+    assert_eq!(g["curves"].as_array().unwrap().len(), 2);
+    assert!(t.execute("sketch.group", &json!({"curves": [ids[1].clone()]})).is_err(), "already grouped");
+    assert!(t.execute("sketch.group", &json!({"curves": []})).is_err());
+    assert!(t.execute("sketch.ungroup", &json!({"entity": ids[0].clone()})).is_ok());
+    assert!(t.execute("sketch.ungroup", &json!({"entity": ids[0].clone()})).is_err(), "not in a group any more");
+}
+
 /// Volumes (mm³) of the bodies in the design, smallest first.
 fn body_volumes(s: &mut Session) -> Vec<f64> {
     let m = run(s, "inspect.measure", json!({}));

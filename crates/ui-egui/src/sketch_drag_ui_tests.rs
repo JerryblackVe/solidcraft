@@ -577,3 +577,38 @@ fn a_shown_tangent_handle_is_stored_and_turned_by_a_drag() {
     run(&mut h, "edit.undo", json!({}));
     assert!(stored(&h).is_empty(), "undo gives back the spline without handles");
 }
+
+#[test]
+fn an_imported_drawing_picks_and_drags_as_one_group() {
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    run(&mut h, "sketch.create", json!({"plane":"XY"}));
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 20"><path d="M0,0 L30,0 L30,20 L0,20 Z"/></svg>"#;
+    run(&mut h, "sketch.insert_svg", json!({"text": svg, "width": 30}));
+    h.call("ui.view", json!({"view":"top"}));
+    h.app.cam.distance = 80.0;
+    h.frames(3);
+    let sk = h.app.session.doc.sketch(1).unwrap();
+    assert_eq!(sk.object_groups.len(), 1);
+    let first = sk.curves[0].id.clone();
+    // Object mode: one curve picked is the whole drawing; Shift (one letter) picks the one curve.
+    let picked = crate::viewport::picked_selection(&h.app.session, &Sel::SketchCurve { id: first.clone(), sketch: None });
+    assert_eq!(picked.len(), sk.curves.len());
+    let positions =
+        |h: &Harness| -> Vec<Vec2> { h.app.session.doc.sketch(1).unwrap().points.iter().filter(|p| p.id != "origin").map(|p| p.pos).collect() };
+    let before = positions(&h);
+    let polyline = sk.polyline(0);
+    let at = (polyline[0] + polyline[1]) * 0.5;
+    let a = screen(&mut h, at.x, at.y);
+    let b = screen(&mut h, at.x + 3.0, at.y + 2.0);
+    let mut path = vec![a];
+    path.extend(steps(a, b, 6));
+    press_and_move(&mut h, &path);
+    release(&mut h, b);
+    let after = positions(&h);
+    let delta = after[0] - before[0];
+    assert!(delta.len() > 0.5, "the drag moved the drawing: {delta:?}");
+    for (x, y) in after.iter().zip(&before) {
+        assert!((*x - *y - delta).len() < 1e-6, "every point moved alike");
+    }
+}
