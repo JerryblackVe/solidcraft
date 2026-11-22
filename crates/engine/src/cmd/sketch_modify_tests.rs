@@ -2857,6 +2857,49 @@ fn a_star_copied_and_pasted_stays_a_star_and_mirroring_or_patterning_one_is_refu
     assert_eq!(sketch(&s).links.len(), 2);
 }
 
+#[test]
+fn extending_filleting_or_chamfering_a_curve_of_a_group_keeps_the_new_curves_in_the_group() {
+    let mut s = new_sketch();
+    // An open frame of three long sides, and a short bent stroke inside it.
+    let svg =
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M0,0 L60,0 L60,60 L0,60"/><path d="M20,30 L40,30 L40,40"/></svg>"#;
+    run(&mut s, "sketch.insert_svg", json!({"text": svg}));
+    let all_grouped = |s: &Session| {
+        let sk = sketch(s);
+        sk.object_groups.len() == 1 && sk.curves.iter().all(|c| sk.object_group_of(&c.id).is_some())
+    };
+    assert!(all_grouped(&s));
+    let sk = sketch(&s);
+    let len = |i: usize| sk.polyline(i).first().zip(sk.polyline(i).last()).map_or(0.0, |(a, b)| a.dist(*b));
+    let mut lines: Vec<usize> = (0..sk.curves.len()).filter(|i| matches!(sk.curves[*i].kind, CurveKind::Line { .. })).collect();
+    lines.sort_by(|a, b| len(*a).total_cmp(&len(*b)));
+    assert_eq!(lines.len(), 5);
+    let id = |i: usize| sk.curves[i].id.clone();
+    let ends = |i: usize| sk.curves[i].kind.ends().expect("a line has ends");
+    let meet = |i: usize, j: usize| {
+        let ((a, b), (c, d)) = (ends(i), ends(j));
+        [a, b].into_iter().find(|p| *p == c || *p == d)
+    };
+    // The longer stroke's end held by the shorter one grows as a new line out to the frame.
+    let (short, stroke) = (lines[0], lines[1]);
+    let held = meet(short, stroke).expect("the stroke is one path");
+    let (a, b) = ends(stroke);
+    let free = if a == held { b } else { a };
+    let (h, f) = (sk.points[held].pos, sk.points[free].pos);
+    let at = h + (h - f) * 0.05;
+    // Two corners of the frame: the sides that meet.
+    let sides = &lines[2..];
+    let corners: Vec<(usize, usize)> =
+        (0..3).flat_map(|i| (i + 1..3).map(move |j| (sides[i], sides[j]))).filter(|(i, j)| meet(*i, *j).is_some()).collect();
+    assert_eq!(corners.len(), 2);
+    let n = sk.curves.len();
+    run(&mut s, "sketch.extend", json!({"curve": id(stroke), "at": [at.x, at.y]}));
+    run(&mut s, "sketch.fillet", json!({"a": id(corners[0].0), "b": id(corners[0].1), "radius": 5}));
+    run(&mut s, "sketch.chamfer.equal_distance", json!({"a": id(corners[1].0), "b": id(corners[1].1), "distance": 5}));
+    assert_eq!(sketch(&s).curves.len(), n + 3, "an extension, an arc and a cut");
+    assert!(all_grouped(&s), "the new curves are in the group");
+}
+
 /// Volumes (mm³) of the bodies in the design, smallest first.
 fn body_volumes(s: &mut Session) -> Vec<f64> {
     let m = run(s, "inspect.measure", json!({}));
