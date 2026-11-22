@@ -1072,3 +1072,65 @@ fn a_clicked_imported_drawing_shows_its_box_and_a_side_changes_its_width() {
     assert!((hi2.1 - lo2.1 - t).abs() < 0.3, "height as it was: {lo2:?} {hi2:?}");
     assert_eq!(h.app.session.doc.sketch(1).unwrap().object_groups.len(), 1);
 }
+
+/// With a drawing's box open, a click on another drawing takes the box to that one, and Shift on
+/// a curve of the first adds only that curve.
+#[test]
+fn a_click_on_another_group_replaces_the_box_and_shift_adds_one_curve() {
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    let svg = |w: u32| format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} 20"><path d="M0,0 L{w},0 L{w},20 L0,20 Z"/></svg>"#);
+    h.app.run("sketch.insert_svg", json!({"text": svg(30), "width": 30})).unwrap();
+    h.app.run("sketch.insert_svg", json!({"text": svg(30), "width": 30, "at": [50, 0]})).unwrap();
+    h.step(&json!({"call": "ui.view", "params": {"view": "top"}})).unwrap();
+    h.app.cam.distance = 400.0;
+    h.settle();
+    let sk = h.app.session.doc.sketch(1).unwrap();
+    assert_eq!(sk.object_groups.len(), 2);
+    let edge = |g: usize| {
+        let c = &sk.curves.iter().find(|c| sk.object_group_of(&c.id).is_some_and(|x| x.id == sk.object_groups[g].id)).unwrap();
+        let line = sk.polyline(sk.curve_index(&c.id).unwrap());
+        (line[0] * 0.7 + line[1] * 0.3, c.id.clone())
+    };
+    let ((a, _), (b, b_id)) = (edge(0), edge(1));
+    let held = |h: &Harness| -> Vec<String> {
+        match h.app.dialog.as_ref().map(|d| (&d.kind, &d.inputs)) {
+            Some((Kind::SketchModify(Mod::Transform { .. }), inputs)) => {
+                inputs[0].items.iter().filter_map(|x| if let Sel::SketchCurve { id, .. } = x { Some(id.clone()) } else { None }).collect()
+            }
+            other => panic!("the box should be open: {:?}", other.map(|(k, _)| k)),
+        }
+    };
+    h.step(&json!({"click": {"sketch": [a.x, a.y]}})).unwrap();
+    h.frames(3);
+    let first = held(&h);
+    assert_eq!(first.len(), 4);
+    // Another drawing: the box goes there, the first is let go.
+    {
+        let mut d = h.app.dialog.take().unwrap();
+        d.pick(&h.app.session, Sel::SketchCurve { id: b_id.clone(), sketch: None });
+        let direct: Vec<String> =
+            d.inputs[0].items.iter().filter_map(|x| if let Sel::SketchCurve { id, .. } = x { Some(id.clone()) } else { None }).collect();
+        h.app.dialog = Some(d);
+        assert!(direct.contains(&b_id) && direct.iter().all(|id| !first.contains(id)), "pick replaces: {direct:?}");
+        // Back to the first drawing for the mouse.
+        let mut d = h.app.dialog.take().unwrap();
+        d.pick(&h.app.session, Sel::SketchCurve { id: first[0].clone(), sketch: None });
+        h.app.dialog = Some(d);
+        assert_eq!(held(&h), first);
+    }
+    h.step(&json!({"click": {"sketch": [b.x, b.y]}})).unwrap();
+    h.frames(3);
+    let second = held(&h);
+    assert_eq!(second.len(), 4, "{second:?}");
+    assert!(second.iter().all(|id| !first.contains(id)), "replaced, not added: {first:?} {second:?}");
+    assert!(second.contains(&b_id));
+    // Shift picks the one curve, which joins what the box holds.
+    crate::sketch_text::set_one_letter(true);
+    let mut d = h.app.dialog.take().unwrap();
+    d.pick(&h.app.session, Sel::SketchCurve { id: first[0].clone(), sketch: None });
+    h.app.dialog = Some(d);
+    crate::sketch_text::set_one_letter(false);
+    assert_eq!(held(&h).len(), 5, "one curve added to the four");
+}

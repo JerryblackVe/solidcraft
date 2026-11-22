@@ -8893,6 +8893,19 @@ pub(crate) fn paint_toast_ext(
     crate::ui_kit::toast::show(ui, free, place, text, lead, actions, extras)
 }
 
+/// Whether `picked` is one whole group of the sketch being edited and `held` (a window's picks)
+/// holds curves but none of that group: a click on another drawing.
+pub(crate) fn another_group(s: &solidcraft_engine::Session, held: &[Sel], picked: &[Sel]) -> bool {
+    let curve = |x: &Sel| if let Sel::SketchCurve { id, .. } = x { Some(id.clone()) } else { None };
+    let Some(sk) = s.active_sketch.and_then(|sid| s.doc.sketch(sid).ok()) else { return false };
+    let ids: Vec<String> = picked.iter().filter_map(curve).collect();
+    let Some(group) = ids.first().and_then(|id| sk.object_group_of(id)) else { return false };
+    ids.len() == picked.len()
+        && ids.len() == group.curves.len()
+        && !held.is_empty()
+        && held.iter().all(|x| curve(x).is_some_and(|id| !group.curves.contains(&id)))
+}
+
 /// Whether the selection is exactly the curves of one group of the sketch being edited.
 fn picked_whole_group(s: &solidcraft_engine::Session) -> bool {
     let ids: Vec<&str> = s.selection.iter().filter_map(|x| if let Sel::SketchCurve { id, .. } = x { Some(id.as_str()) } else { None }).collect();
