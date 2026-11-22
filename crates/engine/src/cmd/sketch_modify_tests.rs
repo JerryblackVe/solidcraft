@@ -2522,6 +2522,26 @@ fn a_turned_group_stretches_along_its_own_axes_with_its_arcs_and_circles() {
     }
 }
 
+/// MEJ-18: a stretch is refused only for a dimension on what it moves, not one elsewhere.
+#[test]
+fn a_stretch_is_refused_only_by_a_dimension_on_what_it_moves() {
+    let mut s = new_sketch();
+    let a = ids(&run(&mut s, "sketch.line", json!({"points": [[0, 0], [10, 0]], "connect": false}))["curves"])[0].clone();
+    let b = ids(&run(&mut s, "sketch.line", json!({"points": [[0, 50], [10, 50]], "connect": false}))["curves"])[0].clone();
+    run(&mut s, "sketch.dimension", json!({"entities": [b.clone()], "value": "10"}));
+    run(&mut s, "sketch.transform", json!({"entities": [a.clone()], "scale_x": 3.0, "scale_y": 1.0, "center": [0, 0]}));
+    let len = |s: &Session, id: &str| {
+        let sk = sketch(s);
+        let pl = sk.polyline(sk.curve_index(id).unwrap());
+        pl[0].dist(pl[pl.len() - 1])
+    };
+    assert!(close(len(&s, &a), 30.0) && close(len(&s, &b), 10.0));
+    let before = sketch(&s);
+    let e = s.execute("sketch.transform", &json!({"entities": [b.clone()], "scale_x": 3.0, "scale_y": 1.0, "center": [0, 50]}));
+    assert!(e.is_err_and(|e| e.to_string().contains("dimensions")));
+    assert_eq!(sketch(&s).points.iter().map(|p| p.pos).collect::<Vec<_>>(), before.points.iter().map(|p| p.pos).collect::<Vec<_>>());
+}
+
 #[test]
 fn a_group_is_made_by_import_or_by_hand_and_holds_a_curve_once() {
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="20"/><rect x="0" y="0" width="30" height="30"/></svg>"#;

@@ -152,7 +152,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("sketch_move")
         .key("G")
         .enabled(in_sketch)
-        .params("entities: [curve/point ids] (one curve of a group takes the whole group), factor?: number (scale), scale_x?, scale_y?: width and height factors apart (default factor, along the sketch's axes or a turned group's own; an arc becomes an exact rational spline and a circle an ellipse; refused with texts or dimensions in the sketch); angle?: degrees (turn), center?: [x,y] or point ref (what scales and turns stay put; default [0,0]), translate?: [dx,dy] (applied last); scales, turns and moves in one step; a free point held only to the picked geometry (a rounded rectangle's centre) goes with it; returns `released`: the constraints tying the picked geometry to what stays that the change let go, as {id, kind}"),
+        .params("entities: [curve/point ids] (one curve of a group takes the whole group), factor?: number (scale), scale_x?, scale_y?: width and height factors apart (default factor, along the sketch's axes or a turned group's own; an arc becomes an exact rational spline and a circle an ellipse; refused with texts, or dimensions on what moves); angle?: degrees (turn), center?: [x,y] or point ref (what scales and turns stay put; default [0,0]), translate?: [dx,dy] (applied last); scales, turns and moves in one step; a free point held only to the picked geometry (a rounded rectangle's centre) goes with it; returns `released`: the constraints tying the picked geometry to what stays that the change let go, as {id, kind}"),
     CommandSpec::new("sketch.move", "Move/Copy Sketch Entities", crate::checked!("sketch.move", move_copy))
         .in_sketch_part()
         .contract(&MOVE_CONTRACT)
@@ -4629,11 +4629,15 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         let mut ellipses = Vec::new();
         let mut centres = Vec::new();
         if stretched {
-            // Dimensions and texts would no longer measure what they say. Nothing is changed.
-            if !links.is_empty() || sk.constraints.iter().any(|c| !c.driven && c.kind.is_dimension()) {
+            // Texts, and dimensions on what moves, would no longer measure what they say. Nothing
+            // is changed. A dimension elsewhere in the sketch is not in the way.
+            let mut moving = involved_points(sk, &cs, &ps);
+            moving.extend(riders(sk, &moving));
+            let measured = |c: &solidcraft_sketch::Constraint| sk.constraint_points(&c.kind).iter().any(|q| moving.contains(q));
+            if !links.is_empty() || sk.constraints.iter().any(|c| !c.driven && c.kind.is_dimension() && measured(c)) {
                 return Err(bad(
                     cmd,
-                    "a different width and height cannot keep texts or dimensions: this sketch has some. Scale it proportionally with `factor`",
+                    "a different width and height cannot keep texts or dimensions: the selection has some. Scale it proportionally with `factor`",
                 ));
             }
             with_ellipse_axes(sk, &mut cs);
