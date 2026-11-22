@@ -1065,7 +1065,17 @@ fn additional_rows(app: &mut SolveApp, d: &mut Dialog, ui: &mut egui::Ui) -> boo
                 ui.add(egui::Label::new(solidcraft_ui_text::tr("ui.emboss_flip_on_face")).wrap());
             }
             emboss_distribute_rows(ui, distribute, d.inputs.first().map_or(0, |i| i.items.len()), faces);
-            ui.add(egui::Label::new(solidcraft_ui_text::tr("ui.emboss_wrap_note")).wrap());
+            // What the preview did with the profiles: wrapped round a cylinder or projected (MEJ-7).
+            use solidcraft_engine::doc::EmbossLay;
+            let lay = match app.preview.emboss_lay {
+                Some(EmbossLay::Wrapped) => RichText::new(solidcraft_ui_text::tr("ui.emboss_lay_wrapped")),
+                Some(EmbossLay::Projected) => RichText::new(solidcraft_ui_text::tr("ui.emboss_lay_projected")),
+                Some(EmbossLay::ProjectedOnCurve) => {
+                    RichText::new(solidcraft_ui_text::tr("ui.emboss_lay_projected_on_curve")).color(Tokens::get().warning)
+                }
+                None => RichText::new(solidcraft_ui_text::tr("ui.emboss_wrap_note")),
+            };
+            ui.add(egui::Label::new(lay).wrap());
         }
         Kind::Align { flip, components, axes: [ax, ay, az], angle } => {
             // Where on the picked face or edge to snap: as picked (a face turns to meet

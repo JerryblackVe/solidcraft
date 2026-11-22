@@ -1,0 +1,37 @@
+{
+  "en": {
+    "ui.emboss_lay_projected": "Projects: the profiles go straight onto the face.",
+    "ui.emboss_lay_projected_on_curve": "Projects: the profiles go straight onto the curved face, without bending to it. Only the profiles of one sketch tangent to a complete cylinder wall wrap.",
+    "ui.emboss_lay_wrapped": "Wraps: the profiles bend round the cylinder wall, keeping their length along it."
+  },
+  "es": {
+    "ui.emboss_lay_projected": "Proyecta: los perfiles van derechos sobre la cara.",
+    "ui.emboss_lay_projected_on_curve": "Proyecta: los perfiles van derechos sobre la cara curva, sin doblarse con ella. Solo se envuelven los perfiles de un boceto tangente a la pared de un cilindro completo.",
+    "ui.emboss_lay_wrapped": "Envuelve: los perfiles se doblan alrededor de la pared del cilindro, sin cambiar su largo."
+  },
+  "ar": {
+    "ui.emboss_lay_projected": "إسقاط: توضع المقاطع مستقيمة على الوجه.",
+    "ui.emboss_lay_projected_on_curve": "إسقاط: توضع المقاطع مستقيمة على الوجه المنحني دون أن تنثني معه. لا تلتف إلا مقاطع رسم واحد مماس لجدار أسطوانة كاملة.",
+    "ui.emboss_lay_wrapped": "التفاف: تنثني المقاطع حول جدار الأسطوانة مع الحفاظ على طولها على امتداده."
+  },
+  "he": {
+    "ui.emboss_lay_projected": "היטל: הפרופילים מונחים ישר על הפאה.",
+    "ui.emboss_lay_projected_on_curve": "היטל: הפרופילים מונחים ישר על הפאה המעוקלת, בלי להתכופף איתה. רק הפרופילים של סקיצה אחת המשיקה לדופן של גליל שלם נכרכים.",
+    "ui.emboss_lay_wrapped": "כריכה: הפרופילים מתכופפים סביב דופן הגליל ושומרים על אורכם לאורכה."
+  },
+  "ja": {
+    "ui.emboss_lay_projected": "投影: プロファイルは面にまっすぐ置かれます。",
+    "ui.emboss_lay_projected_on_curve": "投影: プロファイルは曲面にまっすぐ置かれ、曲面に沿って曲がりません。巻き付くのは、完全な円柱の壁に接する 1 つのスケッチのプロファイルだけです。",
+    "ui.emboss_lay_wrapped": "巻き付け: プロファイルは円柱の壁に沿って曲がり、壁に沿った長さを保ちます。"
+  },
+  "vi": {
+    "ui.emboss_lay_projected": "Chiếu: các biên dạng được đặt thẳng lên mặt.",
+    "ui.emboss_lay_projected_on_curve": "Chiếu: các biên dạng được đặt thẳng lên mặt cong, không uốn theo mặt. Chỉ các biên dạng của một bản phác thảo tiếp xúc với thành của một hình trụ trọn vẹn mới được quấn.",
+    "ui.emboss_lay_wrapped": "Quấn: các biên dạng uốn quanh thành hình trụ, giữ nguyên chiều dài dọc theo thành."
+  },
+  "zh": {
+    "ui.emboss_lay_projected": "投影：轮廓直接放在面上。",
+    "ui.emboss_lay_projected_on_curve": "投影：轮廓直接放在曲面上，不随曲面弯曲。只有与完整圆柱壁相切的单个草图中的轮廓才会缠绕。",
+    "ui.emboss_lay_wrapped": "缠绕：轮廓沿圆柱壁弯曲，并保持沿壁的长度。"
+  }
+}
