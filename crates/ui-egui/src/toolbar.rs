@@ -965,8 +965,14 @@ fn persistent_available(app: &SolveApp, id: &str) -> bool {
     persistent_command(id) && (id != "inspect.section" || app.preferences.viewport_section_status)
 }
 
+/// Whether a persistent command shows its on/off state: the preference asks for it, or the command
+/// is Nodes Mode, a view switch the user must always see.
+fn persistent_state_shown(app: &SolveApp, id: &str) -> bool {
+    app.preferences.persistent_ribbon_pressed || id == NODES_MODE
+}
+
 pub(crate) fn persistent_pressed(app: &SolveApp, id: &str) -> bool {
-    app.preferences.persistent_ribbon_pressed
+    persistent_state_shown(app, id)
         && persistent_available(app, id)
         && if id == COMPONENT_COLORS {
             app.session.colored_components.is_some()
@@ -1008,7 +1014,7 @@ fn paint_persistent_ribbon(app: &SolveApp, ui: &egui::Ui, paints: Vec<Persistent
         .into_iter()
         .map(|paint| {
             let id = paint.command.id;
-            let checkable = pressed && persistent_available(app, id);
+            let checkable = persistent_state_shown(app, id) && persistent_available(app, id);
             let name = if checkable {
                 persistent_button_name(app, paint.command)
             } else {
@@ -1392,7 +1398,7 @@ impl RibbonPanels {
                         icon: if selected.id == "sketch.finish" { "finish" } else { info.icon },
                         size,
                         enabled: can_start(app, selected),
-                        pressed: (ribbon_shows_pressed(app, selected.id) && !(persistent && app.preferences.persistent_ribbon_pressed))
+                        pressed: (ribbon_shows_pressed(app, selected.id) && !(persistent && persistent_state_shown(app, selected.id)))
                             || (selected.id == "view.shots_strip" && app.preferences.render_shots_strip),
                         // The buttons that leave the sketch or the edit never show pressed; a
                         // tool pinned into their group does.
@@ -1430,8 +1436,7 @@ impl RibbonPanels {
                     .into_iter()
                     .map(|c| {
                         let info = crate::render_workspace::interactive_command_info(app, c);
-                        let checked =
-                            (persistent_available(app, c.id) && app.preferences.persistent_ribbon_pressed).then(|| persistent_pressed(app, c.id));
+                        let checked = (persistent_available(app, c.id) && persistent_state_shown(app, c.id)).then(|| persistent_pressed(app, c.id));
                         PanelMoreRow {
                             id: c.id,
                             label: info.label,
@@ -1867,7 +1872,7 @@ fn ribbon_contents(app: &mut SolveApp, ui: &mut egui::Ui, shape: RibbonShape) ->
                     match place {
                         ribbon::Place::Button => {
                             if persistent_available(app, command.id)
-                                && app.preferences.persistent_ribbon_pressed
+                                && persistent_state_shown(app, command.id)
                                 && let Some(d) = out.buttons.iter().find(|d| !d.cell && d.whole == rect)
                             {
                                 d.response.request_focus();
@@ -2231,7 +2236,7 @@ struct RowData {
 }
 
 fn dropdown_checkable(app: &SolveApp, id: &str) -> bool {
-    id == "view.shots_strip" || (persistent_available(app, id) && app.preferences.persistent_ribbon_pressed)
+    id == "view.shots_strip" || (persistent_available(app, id) && persistent_state_shown(app, id))
 }
 
 impl RowData {
@@ -2360,7 +2365,7 @@ fn grid_entry<'a>(app: &SolveApp, c: &'static solidcraft_engine::CommandSpec, la
         checked: None,
         pinned,
         tip: None,
-        app_paints: app.preferences.persistent_ribbon_pressed && persistent_available(app, c.id),
+        app_paints: persistent_state_shown(app, c.id) && persistent_available(app, c.id),
     }
 }
 

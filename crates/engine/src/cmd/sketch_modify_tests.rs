@@ -2549,6 +2549,19 @@ fn an_import_can_come_locked_and_nodes_mode_shows_the_points_of_grouped_curves()
     assert_eq!(run(&mut s, "sketch.nodes_mode", json!({"nodes": false}))["nodes"], json!(false));
     assert_eq!(shown(&s), 1, "only the origin is left");
     assert!(s.execute("sketch.nodes_mode", &json!({"nodes": "yes"})).is_err());
+    // A point a loose curve shares with the group stays visible in object mode (MEJ-15).
+    let shared = {
+        let sk = sketch(&s);
+        let group = &sk.object_groups[0];
+        let curve = sk.curve_index(&group.curves[0]).unwrap();
+        sk.points[sk.curves[curve].kind.point_ids()[0]].id.clone()
+    };
+    run(&mut s, "sketch.line", json!({"points": [shared, [200, 200]], "connect": false}));
+    let sk = sketch(&s);
+    let v = crate::view::SketchPointVisibility::shown(&s, &sk);
+    let at = sk.points.iter().find(|p| p.id == shared).unwrap();
+    assert!(v.takes(at), "the shared point is shown");
+    assert_eq!(sk.points.iter().filter(|p| v.takes(p)).count(), 3, "the origin, the shared point and the loose line's far end");
 }
 
 /// Volumes (mm³) of the bodies in the design, smallest first.

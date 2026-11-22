@@ -47,7 +47,7 @@ pub(crate) fn idle_point(app: &SolveApp, proj: &Proj, pointer: Pos2) -> Option<V
     // The nearest shown point under the pointer, from the sketch as drawn this frame: not the
     // selection hover, which a selection filter can turn off and which can hold a dragged
     // point's place from before the drag.
-    let visible = solidcraft_engine::view::SketchPointVisibility::new(&ss.sketch);
+    let visible = solidcraft_engine::view::SketchPointVisibility::shown(&app.session, &ss.sketch);
     let near = ss
         .sketch
         .points

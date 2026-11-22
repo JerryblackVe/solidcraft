@@ -330,7 +330,13 @@ fn associated_spline_offset_hides_fit_nodes_and_follows_a_source_drag_live() {
             .iter()
             .any(|hit| matches!(hit, crate::viewport::Hit::SketchPoint {id,..} if derived_points.iter().any(|i| original.points[*i].id == *id)))
     );
-    let snap = crate::drag_snap::find(&original, &[(source_points[1], p)], &source_points, 0.01);
+    let snap = crate::drag_snap::find(
+        &original,
+        &solidcraft_engine::view::SketchPointVisibility::new(&original),
+        &[(source_points[1], p)],
+        &source_points,
+        0.01,
+    );
     assert!(
         !matches!(snap.map(|s| s.target), Some(crate::drag_snap::Target::Point(id)) if derived_points.iter().any(|i| original.points[*i].id == id))
     );
@@ -635,6 +641,35 @@ fn object_mode_hides_the_points_of_a_group_and_nodes_mode_picks_them() {
     run(&mut h, "sketch.nodes_mode", json!({"nodes": true}));
     h.frames(2);
     assert!(over_a_point(&mut h), "nodes mode: the corner point is under the pointer: {:?}", h.app.viewport.hover);
+}
+
+/// MEJ-15: object mode hides the points of a group from what snaps while drawing and dragging, and the
+/// Nodes button shows pressed without the "show pressed" preference.
+#[test]
+fn object_mode_snap_ignores_hidden_nodes_and_the_nodes_button_shows_pressed() {
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    run(&mut h, "sketch.create", json!({"plane":"XY"}));
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 20"><path d="M0,0 L30,0 L30,20 L0,20 Z"/></svg>"#;
+    run(&mut h, "sketch.insert_svg", json!({"text": svg, "width": 30, "at": [10, 10], "lock": "protect"}));
+    let sk = h.app.session.doc.sketch(1).unwrap().clone();
+    let corner = sk.points.iter().position(|p| p.id != "origin").unwrap();
+    let at = sk.points[corner].pos;
+    let near = at + solidcore_record::Vec2::new(0.01, 0.01);
+    let snaps_to_the_corner = |h: &Harness| {
+        let visible = solidcraft_engine::view::SketchPointVisibility::shown(&h.app.session, &sk);
+        let snap = crate::drag_snap::find(&sk, &visible, &[(0, near)], &[0], 0.01);
+        crate::drag_snap::clear();
+        matches!(snap.map(|s| s.target), Some(crate::drag_snap::Target::Point(id)) if id == sk.points[corner].id)
+    };
+    h.app.preferences.persistent_ribbon_pressed = false;
+    assert!(!snaps_to_the_corner(&h), "object mode: the corner is no snap point");
+    assert!(!crate::dialogs::SnapPoints::shown(&h.app.session, &sk).takes(&sk.points[corner]));
+    assert!(!crate::toolbar::persistent_pressed(&h.app, "sketch.nodes_mode"));
+    run(&mut h, "sketch.nodes_mode", json!({"nodes": true}));
+    assert!(snaps_to_the_corner(&h), "nodes mode: the corner is a snap point");
+    assert!(crate::dialogs::SnapPoints::shown(&h.app.session, &sk).takes(&sk.points[corner]));
+    assert!(crate::toolbar::persistent_pressed(&h.app, "sketch.nodes_mode"), "pressed without the preference");
 }
 
 #[test]

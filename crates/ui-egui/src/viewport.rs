@@ -4528,7 +4528,7 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, options: PickOptions<'_>) -
     }
     for ss in point_sketches.iter().filter_map(|sid| st.sketch(*sid)) {
         let sid = ss.feature;
-        let shown = snapping.then(|| crate::dialogs::SnapPoints::of(&ss.sketch));
+        let shown = snapping.then(|| crate::dialogs::SnapPoints::shown(&app.session, &ss.sketch));
         let visible = solidcraft_engine::view::SketchPointVisibility::shown(&app.session, &ss.sketch);
         if picking_3d_curve_points(app) && !ss.sketch.view.hide_points {
             for wire in &ss.sketch.wires {
@@ -8151,9 +8151,10 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                 let st = crate::open_meshing::shown_world(app);
                 app.session.active_sketch.and_then(|s| st.sketch(s)).and_then(|ss| {
                     let sk = &ss.sketch;
+                    let visible = solidcraft_engine::view::SketchPointVisibility::shown(&app.session, sk);
                     let (own, exclude) = crate::drag_snap::moving_points(sk, std::iter::once(id.as_str()).chain(with.iter().map(String::as_str)));
                     if own.iter().any(|&p| sk.point_locked(p)) {
-                        return crate::drag_snap::find(sk, &[], &[], 0.0);
+                        return crate::drag_snap::find(sk, &visible, &[], &[], 0.0);
                     }
                     let a = proj.to_screen(ss.plane.to_world(q))?;
                     let b = proj.to_screen(ss.plane.to_world(q + Vec2::X))?;
@@ -8161,7 +8162,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                     let d = q - from;
                     let moving: Vec<(usize, Vec2)> =
                         own.iter().filter_map(|&p| if grab.is_some() { sk.point(p).map(|x| (p, x + d)) } else { Some((p, q)) }).collect();
-                    crate::drag_snap::find(sk, &moving, &exclude, mm_px)
+                    crate::drag_snap::find(sk, &visible, &moving, &exclude, mm_px)
                 })
             };
             if let Some(s) = snap {

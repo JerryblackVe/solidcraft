@@ -86,12 +86,17 @@ fn keep(s: Option<Snap>) -> Option<Snap> {
 /// The best snap for points moving to `moving` (point index, position after the cursor's move),
 /// `mm_px` millimetres per pixel. Points in `exclude` (the ones moving with the drag) are not
 /// targets, nor are curves using them.
-pub fn find(sk: &Sketch, moving: &[(usize, Vec2)], exclude: &[usize], mm_px: f64) -> Option<Snap> {
+pub fn find(
+    sk: &Sketch,
+    visible: &solidcraft_engine::view::SketchPointVisibility,
+    moving: &[(usize, Vec2)],
+    exclude: &[usize],
+    mm_px: f64,
+) -> Option<Snap> {
     if suppressed() || moving.is_empty() || !(mm_px > 0.0 && mm_px.is_finite()) {
         return keep(None);
     }
     let id = |i: usize| sk.points.get(i).map(|p| p.id.clone()).unwrap_or_default();
-    let visible = solidcraft_engine::view::SketchPointVisibility::new(sk);
     let targets: Vec<(usize, Vec2)> =
         sk.points.iter().enumerate().filter(|(i, p)| !exclude.contains(i) && visible.takes(p)).map(|(i, p)| (i, p.pos)).collect();
     let free_curves: Vec<usize> =
@@ -282,7 +287,7 @@ mod tests {
 
     fn drag(s: &Sketch, entity: &str, p: Vec2) -> Option<Snap> {
         let (own, ex) = moving_points(s, [entity]);
-        find(s, &[(own[0], p)], &ex, 0.1)
+        find(s, &solidcraft_engine::view::SketchPointVisibility::new(s), &[(own[0], p)], &ex, 0.1)
     }
 
     /// A centre rectangle 30 × 20 round `center`, as Center Rectangle draws it: the centre `p5`
@@ -317,7 +322,7 @@ mod tests {
         assert!(own.contains(&centre) && ex.contains(&centre), "{own:?} {ex:?}");
         let d = Vec2::new(0.0, -4.7);
         let moving: Vec<(usize, Vec2)> = own.iter().filter_map(|&p| s.point(p).map(|x| (p, x + d))).collect();
-        let snap = find(&s, &moving, &ex, 0.1).expect("a snap");
+        let snap = find(&s, &solidcraft_engine::view::SketchPointVisibility::new(&s), &moving, &ex, 0.1).expect("a snap");
         assert_eq!((snap.point.as_str(), &snap.target), ("p5", &Target::Align), "{snap:?}");
         assert_eq!(snap.at, Vec2::new(30.0, 0.0));
     }
