@@ -38,5 +38,10 @@
     "cmd.sketch.group": "Nhóm",
     "help.sketch.group": "Gộp các đường cong đã chọn thành một đối tượng, nên chọn, di chuyển, xoay hay đổi cỡ một đường sẽ áp dụng cho tất cả. Dùng để giữ một bản vẽ liền khối.",
     "help.sketch.ungroup": "Tách nhóm để các đường cong lại riêng lẻ. Dùng khi bạn muốn sửa riêng một đường cong của bản vẽ đã nhập."
+  },
+  "es": {
+    "cmd.sketch.group": "Agrupar",
+    "help.sketch.group": "Convierte las curvas elegidas en un solo objeto: elegir, mover, girar o escalar una afecta a todas. Úsalo para mantener unido un dibujo.",
+    "help.sketch.ungroup": "Deshace un grupo y las curvas vuelven a ser independientes. Úsalo para editar por separado una curva de un dibujo importado."
   }
 }

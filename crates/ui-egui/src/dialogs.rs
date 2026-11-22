@@ -2060,7 +2060,15 @@ impl Dialog {
         {
             *auto_op = false;
         }
+        // Another group clicked while the Transform box holds a group replaces it: one box, one
+        // drawing. Shift picks one curve, which still joins what is picked.
+        let replaces = matches!(self.kind, Kind::SketchModify(crate::sketch_modify_ui::Mod::Transform { .. }))
+            && self.active == 0
+            && self.inputs.first().is_some_and(|i| crate::viewport::another_group(s, &i.items, &picked));
         let Some(inp) = self.inputs.get_mut(self.active) else { return };
+        if replaces {
+            inp.items.clear();
+        }
         if is_fillet {
             self.chain_applied = chain;
             if picked.iter().all(|p| inp.items.iter().any(|x| selection::same_item(x, p))) {
