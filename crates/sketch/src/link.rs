@@ -679,6 +679,7 @@ impl Sketch {
             .iter()
             .filter_map(|l| match &l.source {
                 LinkSource::Text { exprs, .. } => Some(exprs.list()),
+                LinkSource::Star(spec) => Some(spec.exprs.list()),
                 _ => None,
             })
             .flatten()
@@ -718,6 +719,7 @@ impl Sketch {
             .iter_mut()
             .filter_map(|l| match &mut l.source {
                 LinkSource::Text { exprs, .. } => Some(exprs.list_mut()),
+                LinkSource::Star(spec) => Some(spec.exprs.list_mut()),
                 _ => None,
             })
             .flatten()

@@ -5583,10 +5583,15 @@ impl Document {
     /// Give the texts of a sketch the numbers and words their expressions come to (in place): a
     /// text's height, place and angle that were typed as expressions, and its words built from
     /// text parameters. A text's outlines are rebuilt from them when the sketch's links are
-    /// refreshed, so this comes before that. What was typed as such is left as it is.
+    /// refreshed, so this comes before that. What was typed as such is left as it is. A star's
+    /// numbers typed as expressions are given theirs the same way ([`Self::apply_star_values`]).
     pub fn apply_text_values(&self, vals: &std::collections::BTreeMap<String, expr::Value>, sk: &mut Sketch) -> Result<()> {
         use crate::eval::val;
         for link in &mut sk.links {
+            if let solidcraft_sketch::LinkSource::Star(spec) = &mut link.source {
+                Self::apply_star_values(vals, spec)?;
+                continue;
+            }
             let solidcraft_sketch::LinkSource::Text { text, at, height, angle, exprs, .. } = &mut link.source else { continue };
             let number = |e: &Option<String>, kind: Kind, what: &str| -> Result<Option<f64>> {
                 match e {
@@ -5618,6 +5623,61 @@ impl Document {
             }
         }
         Ok(())
+    }
+
+    /// Give a star the numbers its expressions come to (in place), checked as a star drawn with
+    /// them would be: a parameter that makes no star (a radius of 0, a skip that does not fit) is
+    /// an error, not a broken outline.
+    fn apply_star_values(vals: &std::collections::BTreeMap<String, expr::Value>, spec: &mut solidcraft_sketch::StarSpec) -> Result<()> {
+        use crate::eval::val;
+        if spec.exprs.is_empty() {
+            return Ok(());
+        }
+        let e = spec.exprs.clone();
+        let number = |e: &Option<String>, kind: Kind, what: &str| -> Result<Option<f64>> {
+            match e {
+                None => Ok(None),
+                Some(e) => val(vals, e, kind).map(Some).map_err(|error| DocError::Expr(format!("star {what}: {error}"))),
+            }
+        };
+        // A count: a whole number, 0 or more.
+        let count = |e: &Option<String>, what: &str| -> Result<Option<u32>> {
+            let Some(x) = number(e, Kind::Unitless, what)? else { return Ok(None) };
+            let n = x.round();
+            if (x - n).abs() > 1e-9 || !(0.0..=f64::from(u32::MAX)).contains(&n) {
+                return Err(DocError::Invalid(format!("star {what}: `{}` gives {x}, not a whole number", e.as_deref().unwrap_or_default())));
+            }
+            Ok(Some(n as u32))
+        };
+        if let Some(v) = number(&e.x, Kind::Length, "centre x")? {
+            spec.center.x = v;
+        }
+        if let Some(v) = number(&e.y, Kind::Length, "centre y")? {
+            spec.center.y = v;
+        }
+        if let Some(v) = count(&e.points, "points")? {
+            spec.points = v;
+        }
+        if let Some(v) = number(&e.outer, Kind::Length, "outer radius")? {
+            spec.outer = v;
+        }
+        if let Some(v) = number(&e.inner_percent, Kind::Unitless, "valley depth")? {
+            spec.inner_percent = v;
+        }
+        if let Some(v) = count(&e.skip, "skip")? {
+            spec.skip = v;
+        }
+        if let Some(v) = number(&e.tip_round, Kind::Length, "tip rounding")? {
+            spec.tip_round = v;
+        }
+        if let Some(v) = number(&e.valley_round, Kind::Length, "valley rounding")? {
+            spec.valley_round = v;
+        }
+        // Angles evaluate in radians; a star keeps degrees.
+        if let Some(v) = number(&e.angle, Kind::Angle, "angle")? {
+            spec.angle = v.to_degrees();
+        }
+        spec.check().map_err(|error| DocError::Invalid(error.to_string()))
     }
 
     /// Apply parameter values to a sketch's dimensions and solve it. `stored` are the values

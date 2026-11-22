@@ -2432,6 +2432,60 @@ fn a_star_extrudes_and_becomes_another_star_without_being_deleted() {
 }
 
 #[test]
+fn a_stars_numbers_typed_as_expressions_follow_the_parameters() {
+    // MEJ-1: radius, points and turn over parameters; the star and its extrude follow them.
+    let area = |n: f64, r: f64, inner: f64| n * r * inner * (std::f64::consts::PI / n).sin();
+    let mut s = new_sketch();
+    run(&mut s, "parameters.add", json!({"name": "R", "expression": "20 mm"}));
+    run(&mut s, "parameters.add", json!({"name": "n", "expression": "5", "unit": ""}));
+    run(&mut s, "parameters.add", json!({"name": "A", "expression": "10 deg"}));
+    let r = run(&mut s, "sketch.star", json!({"center": ["R", 0], "outer_radius": "R", "points": "n", "angle": "A"}));
+    let link = r["link"].as_str().unwrap().to_string();
+    assert_eq!(r["star"]["exprs"], json!({"x": "R", "outer": "R", "points": "n", "angle": "A"}), "{r}");
+    assert!(close(profiles(&s)[0], area(5.0, 20.0, 8.0)));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance": 2}));
+    assert!(close(total_volume(&mut s), 2.0 * area(5.0, 20.0, 8.0)));
+    // The parameters change: the star and the extrude follow.
+    run(&mut s, "parameters.change", json!({"name": "R", "expression": "30 mm"}));
+    run(&mut s, "parameters.change", json!({"name": "n", "expression": "8"}));
+    assert!(close(total_volume(&mut s), 2.0 * area(8.0, 30.0, 12.0)), "{}", total_volume(&mut s));
+    // Saved and opened again, it still follows them.
+    let mut reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    run(&mut reopened, "parameters.change", json!({"name": "n", "expression": "6"}));
+    assert!(close(total_volume(&mut reopened), 2.0 * area(6.0, 30.0, 12.0)));
+    // A renamed parameter is renamed in the star too, and it still follows it.
+    run(&mut reopened, "parameters.rename", json!({"name": "n", "new_name": "tips"}));
+    run(&mut reopened, "parameters.change", json!({"name": "tips", "expression": "7"}));
+    assert!(close(total_volume(&mut reopened), 2.0 * area(7.0, 30.0, 12.0)));
+    // A value that makes no star is reported as an error, not drawn as a broken star; a good one mends it.
+    let r = run(&mut reopened, "parameters.change", json!({"name": "tips", "expression": "2"}));
+    assert!(r["errors"].as_array().is_some_and(|e| !e.is_empty()), "{r}");
+    run(&mut reopened, "parameters.change", json!({"name": "tips", "expression": "7"}));
+    assert!(close(total_volume(&mut reopened), 2.0 * area(7.0, 30.0, 12.0)));
+    // Edit Star shows the numbers the parameters give now; a number replaces an expression.
+    run(&mut s, "sketch.edit", json!({"sketch": 1}));
+    let e = run(&mut s, "sketch.edit_star", json!({"link": link, "points": 7}));
+    assert_eq!((e["star"]["points"].as_u64(), e["star"]["outer_radius"].as_f64()), (Some(7), Some(30.0)));
+    assert_eq!(e["star"]["exprs"], json!({"x": "R", "outer": "R", "angle": "A"}), "{e}");
+    // Moving it makes its centre a number; scaling it, its radius.
+    let first = sketch(&s).curves[0].id.clone();
+    run(&mut s, "sketch.move", json!({"entities": [first.clone()], "translate": [5, 0]}));
+    run(&mut s, "sketch.transform", json!({"entities": [first], "factor": 2.0, "center": [35, 0]}));
+    let e = run(&mut s, "sketch.edit_star", json!({"link": link}));
+    assert_eq!(e["star"]["exprs"], json!({"angle": "A"}), "{e}");
+    assert!(close(e["star"]["outer_radius"].as_f64().unwrap(), 60.0));
+    // An expression that makes no star, or names no parameter there is, is refused and changes nothing.
+    let before = s.doc.to_json();
+    for bad in [json!({"points": "n / 3"}), json!({"outer_radius": "nope"}), json!({"skip": "n"}), json!({"points": "R"})] {
+        let mut p = bad.clone();
+        p["link"] = json!(link);
+        assert!(s.execute("sketch.edit_star", &p).is_err(), "{bad}");
+        assert_eq!(s.doc.to_json(), before, "{bad}");
+    }
+}
+
+#[test]
 fn a_star_moves_turns_and_scales_as_one() {
     let mut s = new_sketch();
     let r = run(&mut s, "sketch.star", json!({"center": [0, 0], "outer_radius": 20}));

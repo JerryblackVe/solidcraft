@@ -570,7 +570,21 @@ fn transform_star(
     factor: f64,
     copy: bool,
 ) -> Result<Vec<usize>> {
-    spec.center = place(spec.center);
+    let moved = place(spec.center);
+    // What the move changes is a number now, not the expression it was; the rest stays.
+    if (moved.x - spec.center.x).abs() > 1e-12 {
+        spec.exprs.x = None;
+    }
+    if (moved.y - spec.center.y).abs() > 1e-12 {
+        spec.exprs.y = None;
+    }
+    if rotation.abs() > 1e-12 {
+        spec.exprs.angle = None;
+    }
+    if (factor - 1.0).abs() > 1e-12 {
+        (spec.exprs.outer, spec.exprs.tip_round, spec.exprs.valley_round) = (None, None, None);
+    }
+    spec.center = moved;
     spec.angle += rotation.to_degrees();
     spec.outer *= factor;
     spec.tip_round *= factor;

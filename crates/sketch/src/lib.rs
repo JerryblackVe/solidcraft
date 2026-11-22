@@ -96,7 +96,7 @@ pub use solver::{
     flips_from_stored, keep_point_order, keep_sides_at_zero, measure_dimension, move_line_towards, move_point_towards, point_along, solve,
     solve_after_edit, solve_after_link_move, solve_after_value_edit, solve_holding, solve_with,
 };
-pub use star::{MAX_POINTS as MAX_STAR_POINTS, MIN_POINTS as MIN_STAR_POINTS, StarSpec, star_geometry};
+pub use star::{MAX_POINTS as MAX_STAR_POINTS, MIN_POINTS as MIN_STAR_POINTS, StarExprs, StarSpec, star_geometry};
 pub use text::{
     MAX_TEXT_CHARS, TextAlign, TextMetrics, TextStyle, TextVerticalAlign, saved_text_geometry, text_geometry, text_geometry_in, text_geometry_styled,
 };
