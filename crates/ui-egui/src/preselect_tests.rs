@@ -5203,3 +5203,43 @@ fn move_features_to_component_takes_the_selected_features() {
     assert_eq!(component_of(&app, boxed), part, "the selected feature moves");
     assert_ne!(component_of(&app, cylinder), part, "an unselected one stays");
 }
+
+#[test]
+fn emboss_dialog_sends_two_sketches_and_one_or_two_faces() {
+    // A step: a top at z = 10 over x = 0..20 and one at z = 20 over x = 20..40, with a square of
+    // sketch A over the low top and one of sketch B over the high top.
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("solid.box", json!({"length":40,"width":40,"height":10,"body_name":"Step"})).unwrap();
+    h.app.run("solid.box", json!({"length":20,"width":40,"height":10,"corner":[20,0,10],"operation":"join"})).unwrap();
+    let mut sketch = |name: &str, x: f64| {
+        let id = h.app.run("sketch.create", json!({"plane":{"origin":[0,0,30],"x_dir":[1,0,0],"y_dir":[0,1,0]},"name":name})).unwrap()["sketch"]
+            .as_u64()
+            .unwrap();
+        h.app.run("sketch.rectangle.two_point", json!({"p0":[x,10],"p1":[x + 5.0,15]})).unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+        id
+    };
+    let (a, b) = (sketch("A", 5.0), sketch("B", 25.0));
+    h.app.session.selection = vec![Sel::Profile { sketch: a, index: 0 }];
+    h.app.start("solid.emboss");
+    h.frames(2);
+    let face = |x: f64, z: f64| Sel::Face { body: "Step".into(), index: 0, point: Vec3::new(x, 2.0, z) };
+    let dialog = h.app.dialog.as_mut().unwrap();
+    // The profiles as picked in the dialog, one from each sketch.
+    dialog.inputs[0].items = vec![Sel::Profile { sketch: a, index: 0 }, Sel::Profile { sketch: b, index: 0 }];
+    dialog.inputs[1].items = vec![face(2.0, 10.0)];
+    let one = apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
+    assert_eq!((one[0].1["sketch"].clone(), one[0].1["more_profiles"].clone()), (json!(a), json!([{"sketch": b, "profiles": [0]}])));
+    assert!(one[0].1.get("face").is_some() && one[0].1.get("faces").is_none(), "{}", one[0].1);
+    h.app.dialog.as_mut().unwrap().inputs[1].items = vec![face(2.0, 10.0), face(38.0, 20.0)];
+    let two = apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
+    assert_eq!(two[0].1["faces"].as_array().map(Vec::len), Some(2), "{}", two[0].1);
+    assert_eq!(two[0].1["targets"], json!(["Step"]));
+    h.step(&json!({"key":"Enter"})).unwrap();
+    assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
+    let kind = &h.app.session.doc.features.last().unwrap().kind;
+    assert!(
+        matches!(kind, solidcraft_engine::doc::FeatureKind::Emboss { more_profiles, more_faces, .. } if more_profiles.len() == 1 && more_faces.len() == 1),
+        "{kind:?}"
+    );
+}
