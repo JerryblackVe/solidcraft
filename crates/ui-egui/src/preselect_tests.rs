@@ -5305,3 +5305,51 @@ fn emboss_dialog_keeps_and_sends_its_distribution() {
     assert!(matches!(&dialog.kind, crate::dialogs::Kind::Emboss { distribute, .. } if distribute.is_empty()), "{:?}", dialog.kind);
     assert!(apply_commands(&h.app, dialog).unwrap()[0].1["params"]["distribute"].is_null());
 }
+
+#[test]
+fn emboss_distribute_rows_light_their_profile_and_warn_of_a_shared_face() {
+    // Two profiles of sketch A and one of B, picked A, B, A, onto two faces of a plate.
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("solid.box", json!({"length":40,"width":40,"height":3,"body_name":"Plate"})).unwrap();
+    let mut sketch = |name: &str, xs: &[f64]| {
+        let id = h.app.run("sketch.create", json!({"plane":{"origin":[0,0,30],"x_dir":[1,0,0],"y_dir":[0,1,0]},"name":name})).unwrap()["sketch"]
+            .as_u64()
+            .unwrap();
+        for x in xs {
+            h.app.run("sketch.rectangle.two_point", json!({"p0":[x,60],"p1":[x + 6.0,62]})).unwrap();
+        }
+        h.app.run("sketch.finish", json!({})).unwrap();
+        id
+    };
+    let (a, b) = (sketch("A", &[0.0, 10.0]), sketch("B", &[20.0]));
+    h.app.session.selection.clear();
+    h.app.start("solid.emboss");
+    h.frames(2);
+    let d = h.app.dialog.as_mut().unwrap();
+    let (a0, b0, a1) = (Sel::Profile { sketch: a, index: 0 }, Sel::Profile { sketch: b, index: 0 }, Sel::Profile { sketch: a, index: 1 });
+    d.inputs[0].items = vec![a0.clone(), b0.clone(), a1.clone()];
+    // Only how many faces there are matters to the rows.
+    for (index, point) in [(0, Vec3::new(20.0, 20.0, 3.0)), (1, Vec3::new(20.0, 0.0, 1.5))] {
+        d.inputs[1].items.push(Sel::Face { body: "Plate".into(), index, point });
+    }
+    if let crate::dialogs::Kind::Emboss { distribute, .. } = &mut d.kind {
+        *distribute = vec![0, 1];
+    }
+    h.frames(2);
+    // Three profiles on two faces: the third goes round to face 1 and the dialog says so before OK.
+    let shared = solidcraft_ui_text::format("ui.emboss_distribute_shared_face", &[("a", "1"), ("b", "3"), ("face", "1")]);
+    assert!(h.widget(&shared).is_some(), "the shared face is named in the dialog");
+    // The rows go in the order the emboss takes the profiles: A's, then B's.
+    hover_handle(&mut h, "dialog:Profile 3");
+    assert_eq!(h.app.dialog.as_ref().unwrap().list_hover, Some((usize::MAX, b0.clone())));
+    // The view lights that profile as if the pointer were over it.
+    assert!(matches!(h.app.viewport.hover, Some(crate::viewport::Hit::Profile { sketch, index: 0 }) if sketch == b), "{:?}", h.app.viewport.hover);
+    hover_handle(&mut h, "dialog:Profile 2");
+    assert_eq!(h.app.dialog.as_ref().unwrap().list_hover, Some((usize::MAX, a1)));
+    hover_handle(&mut h, "dialog:Depth");
+    assert_eq!(h.app.dialog.as_ref().unwrap().list_hover, None);
+    // A face for each profile: no warning.
+    h.app.dialog.as_mut().unwrap().inputs[0].items = vec![a0, b0];
+    h.frames(2);
+    assert!(h.widget(&shared).is_none());
+}
