@@ -169,6 +169,14 @@ impl Sketch {
         Ok(())
     }
 
+    /// Curves cut from curve `of` (by a trim or a break) join `of`'s group, so the drawing stays one
+    /// object. Nothing happens when `of` is in no group.
+    pub fn join_object_group_of(&mut self, of: &str, new: &[String]) {
+        if let Some(g) = self.object_groups.iter_mut().find(|g| g.curves.iter().any(|c| c == of)) {
+            g.curves.extend(new.iter().filter(|n| *n != of).cloned());
+        }
+    }
+
     /// Curves deleted from the sketch leave their groups; a group left empty goes.
     pub(crate) fn prune_object_groups(&mut self, removed: &std::collections::BTreeSet<String>) {
         for g in &mut self.object_groups {
@@ -231,6 +239,16 @@ mod tests {
         assert_eq!(sk.object_groups[0].curves, vec![ids[1].clone()]);
         sk.prune_object_groups(&std::iter::once(ids[1].clone()).collect());
         assert!(sk.object_groups.is_empty());
+    }
+
+    #[test]
+    fn pieces_cut_from_a_member_join_its_group() {
+        let (mut sk, ids) = two_lines();
+        sk.add_object_group("g", &ids[..1]).unwrap();
+        sk.join_object_group_of(&ids[0], &["l9".to_string()]);
+        assert_eq!(sk.object_groups[0].curves, vec![ids[0].clone(), "l9".to_string()]);
+        sk.join_object_group_of(&ids[1], &["l10".to_string()]);
+        assert_eq!(sk.object_groups[0].curves.len(), 2, "a curve in no group adds nothing");
     }
 
     #[test]

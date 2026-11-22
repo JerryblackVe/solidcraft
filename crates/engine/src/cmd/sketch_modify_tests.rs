@@ -2667,6 +2667,42 @@ fn a_locked_group_moves_but_its_points_are_not_edited_and_a_total_lock_changes_n
     assert!(s.execute("sketch.group_lock", &json!({"group": group, "lock": "frozen"})).is_err());
 }
 
+#[test]
+fn trimming_or_breaking_a_curve_of_a_group_keeps_the_pieces_in_the_group() {
+    let mut s = new_sketch();
+    // A straight stroke and a curved one that cross it.
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M50,0 L50,100"/><path d="M0,50 C30,0 70,100 100,50"/></svg>"#;
+    run(&mut s, "sketch.insert_svg", json!({"text": svg}));
+    let all_grouped = |s: &Session| {
+        let sk = sketch(s);
+        sk.object_groups.len() == 1 && sk.curves.iter().all(|c| sk.object_group_of(&c.id).is_some())
+    };
+    assert!(all_grouped(&s));
+    let sk = sketch(&s);
+    let line = sk.curves.iter().position(|c| matches!(c.kind, CurveKind::Line { .. })).expect("a line");
+    let bent = sk.curves.iter().position(|c| !matches!(c.kind, CurveKind::Line { .. })).expect("a curve");
+    let (line_id, bent_id) = (sk.curves[line].id.clone(), sk.curves[bent].id.clone());
+    let lp = sk.polyline(line);
+    let bp = sk.polyline(bent);
+    // Break the line where the curve crosses it, then the curve near its start: every piece stays in.
+    let n = sketch(&s).curves.len();
+    let quarter = Vec2::new(lp[0].x * 0.75 + lp[lp.len() - 1].x * 0.25, lp[0].y * 0.75 + lp[lp.len() - 1].y * 0.25);
+    run(&mut s, "sketch.break", json!({"curve": line_id, "at": [quarter.x, quarter.y]}));
+    run(&mut s, "sketch.break", json!({"curve": bent_id, "points": [[bp[bp.len() / 4].x, bp[bp.len() / 4].y]]}));
+    assert!(sketch(&s).curves.len() >= n + 2, "both broke");
+    assert!(all_grouped(&s), "broken pieces stay in the group");
+    // Trim a piece of the line: what is left is still in the group.
+    let sk = sketch(&s);
+    let piece = sk.curves.iter().position(|c| matches!(c.kind, CurveKind::Line { .. })).expect("a line");
+    let pp = sk.polyline(piece);
+    let mid = Vec2::new((pp[0].x + pp[pp.len() - 1].x) / 2.0, (pp[0].y + pp[pp.len() - 1].y) / 2.0);
+    run(&mut s, "sketch.trim", json!({"curve": sk.curves[piece].id.clone(), "at": [mid.x, mid.y]}));
+    assert!(all_grouped(&s), "trimmed pieces stay in the group");
+    // Undo goes back through.
+    run(&mut s, "edit.undo", json!({}));
+    assert!(all_grouped(&s));
+}
+
 /// Volumes (mm³) of the bodies in the design, smallest first.
 fn body_volumes(s: &mut Session) -> Vec<f64> {
     let m = run(s, "inspect.measure", json!({}));
