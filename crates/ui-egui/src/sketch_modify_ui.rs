@@ -419,18 +419,6 @@ pub(crate) fn selected_star(app: &SolveApp) -> Option<String> {
     matches!(sk.link(link)?.source, LinkSource::Star(_)).then(|| id.clone())
 }
 
-/// Is a star among the selected curves? A pattern of one is not available yet.
-pub(crate) fn selection_has_star(app: &SolveApp) -> bool {
-    let Some(sid) = app.session.active_sketch else { return false };
-    let state = crate::open_meshing::session_world(&app.session);
-    let Some(sk) = state.sketch(sid).map(|ss| &ss.sketch) else { return false };
-    app.session.selection.iter().any(|sel| {
-        let Sel::SketchCurve { id, .. } = sel else { return false };
-        let link = sk.curve_index(id).and_then(|i| sk.curves.get(i)).and_then(|c| c.link.as_deref());
-        link.and_then(|l| sk.link(l)).is_some_and(|l| matches!(l.source, LinkSource::Star(_)))
-    })
-}
-
 /// The equation curve the selection is, when it is one curve that has formulas.
 pub(crate) fn selected_equation(app: &SolveApp) -> Option<String> {
     let [Sel::SketchCurve { id, .. }] = app.session.selection.as_slice() else { return None };

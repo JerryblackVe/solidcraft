@@ -2866,7 +2866,7 @@ fn an_import_can_come_locked_and_nodes_mode_shows_the_points_of_grouped_curves()
 }
 
 #[test]
-fn a_star_copied_and_pasted_stays_a_star_and_patterning_one_is_refused() {
+fn a_star_copied_and_pasted_stays_a_star() {
     // MEJ-4: the pasted copy is a star of its own, still over the parameter its radius was typed as.
     let mut s = new_sketch();
     run(&mut s, "parameters.add", json!({"name": "R", "expression": "10 mm"}));
@@ -2889,16 +2889,17 @@ fn a_star_copied_and_pasted_stays_a_star_and_patterning_one_is_refused() {
     let c = run(&mut s, "sketch.edit_star", json!({"link": copy}));
     assert_eq!((o["star"]["points"].as_u64(), o["star"]["outer_radius"].as_f64()), (Some(5), Some(15.0)), "{o}");
     assert_eq!((c["star"]["points"].as_u64(), c["star"]["outer_radius"].as_f64(), c["star"]["center"].clone()), (Some(8), Some(15.0), at), "{c}");
-    // A pattern of a star is refused with what to do instead, and changes nothing.
+    // A star's point alone can't be copied by a pattern or a mirror, and that changes nothing.
     let before = s.doc.to_json();
     let tip = sketch(&s).link_points(&star)[0];
     let tip = sketch(&s).points[tip].id.clone();
     for (command, p) in [
-        ("sketch.pattern.circular", json!({"entities": curves, "center": [0, 0], "count": 3})),
+        ("sketch.pattern.circular", json!({"entities": [tip], "center": [0, 0], "count": 3})),
         ("sketch.pattern.rectangular", json!({"entities": [tip], "count": 3, "spacing": 30})),
+        ("sketch.mirror", json!({"entities": [tip], "line": "y"})),
     ] {
         let err = s.execute(command, &p).unwrap_err().to_string();
-        assert!(err.contains("Move (copy) or Copy and Paste"), "{command}: {err}");
+        assert!(err.contains("pick the star's outline"), "{command}: {err}");
         assert_eq!(s.doc.to_json(), before, "{command}");
     }
     // Cutting one of its curves takes the whole star, as copying does; pasting brings it back.
@@ -2990,7 +2991,7 @@ fn a_mirrored_star_follows_the_original_until_it_is_moved() {
     assert!((c.center.x + 40.0).abs() < 1e-9);
     // A copy is edited through its original.
     let err = s.execute("sketch.edit_star", &json!({"link": copy, "points": 6})).unwrap_err().to_string();
-    assert!(err.contains("mirror copy"), "{err}");
+    assert!(err.contains("a copy of"), "{err}");
     // Saved and opened, it still follows.
     let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
     assert_eq!(
@@ -3092,6 +3093,80 @@ fn a_mirrored_star_follows_a_mirror_line_that_a_parameter_moves() {
     run(&mut s, "parameters.change", json!({"name": "D", "expression": "10 mm"}));
     // The line is at x = 15 now: the copy of a star at 40 is at -10.
     assert!((copy_x(&s) + 10.0).abs() < 1e-6, "{}", copy_x(&s));
+}
+
+/// MEJ-22: a pattern of a star makes stars that follow the original: its points, size and the rest,
+/// edited or driven by a parameter, and its place moved the pattern's way. The pattern's quantity
+/// adds and takes away whole stars, typed or driven by a parameter.
+#[test]
+fn a_patterned_star_makes_stars_that_follow_the_original() {
+    let mut s = new_sketch();
+    run(&mut s, "parameters.add", json!({"name": "R", "expression": "10 mm"}));
+    run(&mut s, "parameters.add", json!({"name": "N", "expression": "4", "unit": ""}));
+    let r = run(&mut s, "sketch.star", json!({"center": [40, 0], "outer_radius": "R", "points": 5, "angle": 10}));
+    let (star, curves) = (r["link"].as_str().unwrap().to_string(), r["curves"].clone());
+    let made = run(&mut s, "sketch.pattern.circular", json!({"entities": curves, "center": [0, 0], "count": "N"}));
+    let pattern = made["pattern"].as_str().unwrap().to_string();
+    let n = curves.as_array().unwrap().len();
+    assert_eq!(made["curves"].as_array().unwrap().len(), 3 * n, "three whole stars: {made}");
+    let spec = |s: &Session, link: &str| match sketch(s).link(link).unwrap().source.clone() {
+        solidcraft_sketch::LinkSource::Star(spec) => spec,
+        other => panic!("a star, not {other:?}"),
+    };
+    let copies = |s: &Session| -> Vec<String> {
+        sketch(s)
+            .links
+            .iter()
+            .filter(|l| matches!(&l.source, solidcraft_sketch::LinkSource::Star(x) if x.follows.is_some()))
+            .map(|l| l.id.clone())
+            .collect()
+    };
+    // Each copy is the star turned a quarter more about the centre, its tip turned with it.
+    let mut placed: Vec<(f64, f64, f64)> = copies(&s).iter().map(|l| spec(&s, l)).map(|c| (c.center.x, c.center.y, c.angle)).collect();
+    placed.sort_by(|a, b| a.2.total_cmp(&b.2));
+    let want = [(0.0, 40.0, 100.0), (-40.0, 0.0, 190.0), (0.0, -40.0, 280.0)];
+    for ((x, y, a), (wx, wy, wa)) in placed.iter().zip(want) {
+        assert!((x - wx).abs() < 1e-9 && (y - wy).abs() < 1e-9 && (a - wa).abs() < 1e-9, "{placed:?}");
+    }
+    // Edit the original: points, then a parameter. Every copy follows both and keeps its place.
+    run(&mut s, "sketch.edit_star", json!({"link": star, "points": 8}));
+    run(&mut s, "parameters.change", json!({"name": "R", "expression": "15 mm"}));
+    for copy in copies(&s) {
+        let c = spec(&s, &copy);
+        assert_eq!((c.points, c.outer), (8, 15.0), "{c:?}");
+        assert_eq!(sketch(&s).link_curves(&copy).len(), sketch(&s).link_curves(&star).len(), "the same outline, point for point");
+    }
+    // A copy is edited through its original.
+    let err = s.execute("sketch.edit_star", &json!({"link": copies(&s)[0], "points": 6})).unwrap_err().to_string();
+    assert!(err.contains("a copy of"), "{err}");
+    // The quantity, driven by its parameter or typed, adds and takes away whole stars.
+    run(&mut s, "parameters.change", json!({"name": "N", "expression": "6"}));
+    assert_eq!(copies(&s).len(), 5);
+    run(&mut s, "sketch.pattern.circular", json!({"pattern": pattern, "count": 3}));
+    assert_eq!(copies(&s).len(), 2);
+    assert_eq!(sketch(&s).links.len(), 3, "no star is left behind");
+    assert!(sketch(&s).curves.iter().all(|c| c.link.is_some()), "no loose piece of a star");
+    // Moving the original takes its copies round with it.
+    let own: Vec<String> = sketch(&s).link_curves(&star).iter().map(|i| sketch(&s).curves[*i].id.clone()).collect();
+    run(&mut s, "sketch.move", json!({"entities": own, "translate": [10, 0]}));
+    let mut far: Vec<f64> = copies(&s).iter().map(|l| spec(&s, l).center.len()).collect();
+    far.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    assert_eq!(far.len(), 1, "every copy as far from the centre as the original: {far:?}");
+    assert!((far[0] - 50.0).abs() < 1e-9, "{far:?}");
+    // Saved and opened, they still follow.
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    let stored = reopened.doc.sketch(1).unwrap();
+    assert_eq!(stored.links.iter().filter(|l| matches!(&l.source, solidcraft_sketch::LinkSource::Star(x) if x.follows.is_some())).count(), 2);
+    assert_eq!(stored.patterns[0].instances.iter().map(|i| i.stars.len()).sum::<usize>(), 2);
+    // A rectangular pattern of a star with a line: the line is copied as before, the star whole.
+    let line = ids(&run(&mut s, "sketch.line", json!({"points": [[0, 80], [10, 80]], "connect": false}))["curves"])[0].clone();
+    let mut both: Vec<String> = sketch(&s).link_curves(&star).iter().map(|i| sketch(&s).curves[*i].id.clone()).collect();
+    both.push(line);
+    let rect = run(&mut s, "sketch.pattern.rectangular", json!({"entities": both, "count": 2, "spacing": 100}));
+    assert_eq!(copies(&s).len(), 3, "{rect}");
+    let moved = spec(&s, copies(&s).last().unwrap());
+    let o = spec(&s, &star);
+    assert!((moved.center.x - o.center.x - 100.0).abs() < 1e-9 && (moved.center.y - o.center.y).abs() < 1e-9, "{moved:?}");
 }
 
 /// Volumes (mm³) of the bodies in the design, smallest first.

@@ -26,7 +26,8 @@ struct Pattern {
 /// The sketch's patterns, from the stored document, so rolled-back sketches retain their
 /// children without showing preview-only copies.
 fn patterns(app: &SolveApp, sketch: u64) -> Vec<Pattern> {
-    let patterns: Vec<_> = app.session.doc.sketch(sketch).map(|sk| sk.patterns.clone()).unwrap_or_default();
+    let stored = app.session.doc.sketch(sketch).ok();
+    let patterns: Vec<_> = stored.map(|sk| sk.patterns.clone()).unwrap_or_default();
     let active = app.session.active_sketch == Some(sketch);
     patterns
         .into_iter()
@@ -53,6 +54,11 @@ fn patterns(app: &SolveApp, sketch: u64) -> Vec<Pattern> {
                         .filter(|(source, _)| sources.contains(source))
                         .map(|(_, id)| Sel::SketchPoint { id: id.clone() }),
                 )
+                // A copied star is its outline's curves.
+                .chain(stored.into_iter().flat_map(|sk| {
+                    let stars = pattern.instances.iter().flat_map(|instance| &instance.stars).flat_map(|link| sk.link_curves(link));
+                    stars.filter_map(|i| sk.curves.get(i)).map(|c| Sel::SketchCurve { id: c.id.clone(), sketch: None })
+                }))
                 .collect();
             let selected = active && !copies.is_empty() && copies.iter().all(|copy| app.session.selection.contains(copy));
             Pattern { id: pattern.id.clone(), label, icon, selected, copies }
