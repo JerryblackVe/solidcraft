@@ -700,16 +700,103 @@ fn vertical_glyph(p: &egui::Painter, r: egui::Rect, align: TextVerticalAlign, in
     p.hline(r.center().x - half..=r.center().x + half, y, egui::Stroke::new(1.5, t.accent));
 }
 
+/// The font list: favourites and the fonts picked last come first (while nothing is searched),
+/// then the built-in font and the installed ones; each row shows the sample in its font.
 fn font_row(ui: &mut egui::Ui, k: &mut Tx) {
     let builtin = solidcraft_ui_text::format("sketch_text.builtin_font", &[("family", solidcraft_engine::sketch::DEFAULT_FONT_FAMILY)]);
     let current = if k.font.trim().is_empty() { builtin.clone() } else { k.font.clone() };
     let families = families(ui.ctx());
-    let mut options = vec![ui_kit::SearchOption { value: "", label: &builtin, handle: Some("dialog:Font built-in") }];
+    let mut picks = crate::font_preview::picks(ui.ctx());
+    fn label_of<'a>(font: &'a str, builtin: &'a str) -> &'a str {
+        if font.is_empty() { builtin } else { font }
+    }
+    let mut options: Vec<ui_kit::SearchOption> = Vec::new();
+    // Where each list starts in `options`: favourites, recent, all.
+    let mut starts = [0usize; 3];
+    if k.font_filter.trim().is_empty() {
+        let known = |font: &&String| font.is_empty() || families.as_ref().is_none_or(|list| list.contains(*font)) || is_font_file(font);
+        options.extend(picks.favorites.iter().filter(known).map(|f| ui_kit::SearchOption { value: f, label: label_of(f, &builtin), handle: None }));
+        starts[1] = options.len();
+        options.extend(picks.recent.iter().filter(known).map(|f| ui_kit::SearchOption { value: f, label: label_of(f, &builtin), handle: None }));
+    } else {
+        starts[1] = 0;
+    }
+    starts[2] = options.len();
+    options.push(ui_kit::SearchOption { value: "", label: &builtin, handle: Some("dialog:Font built-in") });
     if let Some(list) = &families {
         options.extend(list.iter().map(|family| ui_kit::SearchOption { value: family, label: family, handle: None }));
     }
+    // The sample: typed in the list, else the text being edited (its first line), else each font's name.
+    let typed: String = k.text.lines().next().unwrap_or_default().trim().chars().take(crate::font_preview::MAX_SAMPLE_CHARS).collect();
+    let mut sample = picks.sample.clone();
     let custom = is_font_file(&k.font_filter).then(|| solidcraft_ui_text::format("sketch_text.use_font_file", &[("path", k.font_filter.trim())]));
-    if let Some(font) = ui_kit::searchable_dropdown(
+    // A caption over each list that has fonts, while favourites or recent fonts are shown.
+    let ends = [starts[1], starts[2], options.len()];
+    let captions: Vec<(usize, String)> = if starts[2] == 0 {
+        Vec::new()
+    } else {
+        ["sketch_text.favorite_fonts", "sketch_text.recent_fonts", "sketch_text.all_fonts"]
+            .iter()
+            .zip(starts.iter().zip(ends))
+            .filter(|(_, (start, end))| **start < *end)
+            .map(|(key, (start, _))| (*start, solidcraft_ui_text::tr(key).to_string()))
+            .collect()
+    };
+    let shown_sample = picks.sample.trim().to_owned();
+    let star_tip = solidcraft_ui_text::tr("sketch_text.favorite_font");
+    let mut star_clicked: Option<String> = None;
+    let mut header = |ui: &mut egui::Ui| {
+        let hint = solidcraft_ui_text::tr("sketch_text.sample_hint");
+        ui_kit::text_field(ui, &mut sample, hint);
+    };
+    let mut row = |ui: &mut egui::Ui, index: usize, option: &ui_kit::SearchOption<'_>, selected: bool| -> egui::Response {
+        let t = solidcraft_theme::Tokens::get();
+        if let Some((_, caption)) = captions.iter().find(|(start, _)| *start == index) {
+            ui.label(egui::RichText::new(caption.as_str()).size(t.font_small).color(t.text_dim));
+        }
+        let height = t.control_height * 1.6;
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::click());
+        if ui.is_rect_visible(rect) {
+            if selected || response.hovered() {
+                ui.painter().rect_filled(rect, f32::from(t.radius_sm), if selected { t.selected_bg } else { t.hover });
+            }
+            let name_rect = egui::Rect::from_min_size(rect.min + egui::vec2(t.space_4, 0.0), egui::vec2(rect.width() * 0.4, height));
+            ui.painter().with_clip_rect(name_rect).text(
+                name_rect.left_center(),
+                egui::Align2::LEFT_CENTER,
+                option.label,
+                egui::FontId::proportional(t.font_small),
+                t.text_dim,
+            );
+            let shown = [shown_sample.as_str(), typed.as_str(), option.label].into_iter().find(|s| !s.is_empty()).unwrap_or_default();
+            let left = name_rect.right() + t.space_4;
+            let star_width = t.form_close_size + t.space_4;
+            if let Some(texture) = crate::font_preview::preview(ui.ctx(), option.value, shown, height.round().max(8.0) as usize) {
+                let size = texture.size_vec2();
+                let room = egui::Rect::from_min_max(egui::pos2(left, rect.top()), egui::pos2(rect.right() - star_width, rect.bottom()));
+                let image = egui::Rect::from_min_size(egui::pos2(left, rect.center().y - size.y / 2.0), size);
+                ui.painter().with_clip_rect(room).image(
+                    texture.id(),
+                    image,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    t.text,
+                );
+            }
+            let star = egui::Rect::from_center_size(
+                egui::pos2(rect.right() - star_width / 2.0, rect.center().y),
+                egui::vec2(t.form_close_size, t.form_close_size),
+            );
+            let favorite = picks.is_favorite(option.value);
+            let on = ui.put(star, |ui: &mut egui::Ui| ui_kit::compact_button(ui, if favorite { "★" } else { "☆" }, star_tip, true, favorite));
+            crate::scenario::publish_handle(&format!("dialog:Font star:{}", option.label), on.rect.center());
+            if on.clicked() {
+                star_clicked = Some(option.value.to_owned());
+            }
+        }
+        crate::scenario::publish_handle(&format!("dialog:Font:{}", option.label), response.rect.center());
+        response
+    };
+    let chosen = ui_kit::searchable_dropdown_rows(
         ui,
         "sketch_text_font",
         &current,
@@ -717,10 +804,20 @@ fn font_row(ui: &mut egui::Ui, k: &mut Tx) {
         &options,
         custom.as_deref(),
         families.is_none().then(|| solidcraft_ui_text::tr("sketch_text.loading_fonts")),
-    ) {
+        ui_kit::SearchRows { header: &mut header, row: &mut row },
+    );
+    // A click on a star marks the font; it does not pick it.
+    let chosen = if star_clicked.is_some() { None } else { chosen };
+    picks.sample = sample.chars().take(crate::font_preview::MAX_SAMPLE_CHARS).collect();
+    if let Some(font) = &star_clicked {
+        picks.toggle_favorite(font);
+    }
+    if let Some(font) = chosen {
+        picks.remember(font.trim());
         k.font = font;
         k.font_filter.clear();
     }
+    crate::font_preview::change(ui.ctx(), |p| *p = picks);
 }
 
 /// The command OK runs. Fields take expressions with units and parameters; a bare number is
@@ -1018,6 +1115,35 @@ mod tests {
         assert!((size - 6.35).abs() < 1e-12);
         assert_eq!(rotation, angle);
         assert_eq!(h.app.session.undo.len(), undo + 1);
+    }
+
+    /// A star marks a font as a favourite without picking it, and the next list shows it first;
+    /// a font picked from the list goes to the front of the recent ones. Both are kept in the
+    /// saved settings.
+    #[test]
+    fn a_star_marks_a_favourite_without_picking_it_and_a_pick_is_remembered() {
+        let font = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/biz-udp-gothic/BIZUDPGothic-Regular.ttf");
+        let (mut h, _, _) = setup();
+        h.app.start("sketch.edit_text");
+        h.frames(3);
+        let builtin = solidcraft_ui_text::format("sketch_text.builtin_font", &[("family", solidcraft_engine::sketch::DEFAULT_FONT_FAMILY)]);
+        h.step(&json!({"click":{"handle":"dialog:Font"}})).unwrap();
+        h.frames(2);
+        h.step(&json!({"click":{"handle": format!("dialog:Font star:{builtin}")}})).unwrap();
+        h.frames(2);
+        assert_eq!(h.app.ui.font_picks.favorites, [""]);
+        assert!(h.app.dialog.is_some() && tx(&h.app).font.is_empty(), "the star picks nothing");
+        // A font file picked from the list is the newest recent font.
+        h.step(&json!({"click":{"handle":"dialog:Font search"}})).unwrap();
+        h.step(&json!({"text": font})).unwrap();
+        h.frames(2);
+        h.step(&json!({"click":{"handle":"dialog:Font file"}})).unwrap();
+        h.frames(3);
+        assert_eq!(tx(&h.app).font, font);
+        assert_eq!(h.app.ui.font_picks.recent.first().map(String::as_str), Some(font));
+        // Saved and read back with the other settings.
+        let saved = crate::font_preview::FontPicks::load(&h.app.ui.font_picks.store());
+        assert_eq!(saved, h.app.ui.font_picks);
     }
 
     #[test]

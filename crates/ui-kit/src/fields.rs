@@ -470,13 +470,39 @@ pub fn searchable_dropdown(
     custom: Option<&str>,
     pending: Option<&str>,
 ) -> Option<String> {
-    searchable_dropdown_with(ui, id, current, filter, options, SearchMenu { custom, pending, icon: None })
+    searchable_dropdown_with(ui, id, current, filter, options, SearchMenu { custom, pending, icon: None, rows: None })
 }
 
-struct SearchMenu<'a> {
+/// How a [`searchable_dropdown_rows`] draws its list: something above the list (a sample text
+/// field), and each option's row, drawn by the caller.
+pub struct SearchRows<'a> {
+    /// Drawn above the list, under the search field.
+    pub header: &'a mut dyn FnMut(&mut Ui),
+    /// Draws option `index` of the options given (`selected`: it is the current one) and returns
+    /// its row's response: a click on it chooses the option. Rows out of view are drawn too, so a
+    /// row checks `ui.is_rect_visible` before costly painting.
+    pub row: &'a mut dyn FnMut(&mut Ui, usize, &SearchOption<'_>, bool) -> Response,
+}
+
+/// [`searchable_dropdown`] whose rows the caller draws (a font list showing each font in itself).
+pub fn searchable_dropdown_rows(
+    ui: &mut Ui,
+    id: &str,
+    current: &str,
+    filter: &mut String,
+    options: &[SearchOption<'_>],
+    custom: Option<&str>,
+    pending: Option<&str>,
+    rows: SearchRows<'_>,
+) -> Option<String> {
+    searchable_dropdown_with(ui, id, current, filter, options, SearchMenu { custom, pending, icon: None, rows: Some(rows) })
+}
+
+struct SearchMenu<'a, 'r> {
     custom: Option<&'a str>,
     pending: Option<&'a str>,
     icon: Option<&'static str>,
+    rows: Option<SearchRows<'r>>,
 }
 
 fn searchable_dropdown_with(
@@ -485,9 +511,9 @@ fn searchable_dropdown_with(
     current: &str,
     filter: &mut String,
     options: &[SearchOption<'_>],
-    menu: SearchMenu<'_>,
+    menu: SearchMenu<'_, '_>,
 ) -> Option<String> {
-    let SearchMenu { custom, pending, icon } = menu;
+    let SearchMenu { custom, pending, icon, mut rows } = menu;
     super::settings_search::note_current(ui, current);
     let mut chosen = None;
     let row = label(ui).to_owned();
@@ -513,6 +539,9 @@ fn searchable_dropdown_with(
             super::settings_search::note_key_sink(ui.ctx());
         }
         solidcraft_ui_registry::publish_handle(&format!("dialog:{row} search"), search.rect.center());
+        if let Some(rows) = rows.as_mut() {
+            (rows.header)(ui);
+        }
         if let Some(custom) = custom {
             let response = ui.selectable_label(false, custom);
             solidcraft_ui_registry::publish_handle(&format!("dialog:{row} file"), response.rect.center());
@@ -529,8 +558,12 @@ fn searchable_dropdown_with(
             .min_scrolled_height(Tokens::get().space_24 * 10.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for option in options.iter().filter(|o| o.label.to_lowercase().contains(&query)) {
-                    let response = ui.selectable_label(current == option.label, option.label);
+                for (index, option) in options.iter().enumerate().filter(|(_, o)| o.label.to_lowercase().contains(&query)) {
+                    let selected = current == option.label;
+                    let response = match rows.as_mut() {
+                        Some(rows) => (rows.row)(ui, index, option, selected),
+                        None => ui.selectable_label(selected, option.label),
+                    };
                     if let Some(handle) = option.handle {
                         solidcraft_ui_registry::publish_handle(handle, response.rect.center());
                     }
@@ -1549,7 +1582,7 @@ pub fn shell_search_field(ui: &mut Ui, id: egui::Id, value: &mut String, hint: &
 
 /// Compact icon action opening the shared searchable menu.
 pub fn searchable_icon_dropdown(ui: &mut Ui, icon: &'static str, label: &str, filter: &mut String, options: &[SearchOption<'_>]) -> Option<String> {
-    searchable_dropdown_with(ui, "icon_search_menu", label, filter, options, SearchMenu { custom: None, pending: None, icon: Some(icon) })
+    searchable_dropdown_with(ui, "icon_search_menu", label, filter, options, SearchMenu { custom: None, pending: None, icon: Some(icon), rows: None })
 }
 
 /// The filter at the top of a long menu: a search glyph, a frameless editor and a rule under

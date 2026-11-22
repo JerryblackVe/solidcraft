@@ -1,0 +1,65 @@
+{
+  "en": {
+    "sketch_text.all_fonts": "All fonts",
+    "sketch_text.favorite_font": "Favourite: keep this font at the top of the list",
+    "sketch_text.favorite_fonts": "Favourites",
+    "sketch_text.recent_fonts": "Recent",
+    "sketch_text.sample_hint": "Sample text (default: your text)"
+  },
+  "es": {
+    "sketch_text.all_fonts": "Todas las fuentes",
+    "sketch_text.favorite_font": "Favorita: deja esta fuente arriba de la lista",
+    "sketch_text.favorite_fonts": "Favoritas",
+    "sketch_text.recent_fonts": "Recientes",
+    "sketch_text.sample_hint": "Texto de ejemplo (por defecto: tu texto)"
+  },
+  "de": {
+    "sketch_text.all_fonts": "Alle Schriften",
+    "sketch_text.favorite_font": "Favorit: diese Schrift oben in der Liste halten",
+    "sketch_text.favorite_fonts": "Favoriten",
+    "sketch_text.recent_fonts": "Zuletzt verwendet",
+    "sketch_text.sample_hint": "Beispieltext (Standard: Ihr Text)"
+  },
+  "ko": {
+    "sketch_text.all_fonts": "모든 글꼴",
+    "sketch_text.favorite_font": "즐겨찾기: 이 글꼴을 목록 맨 위에 둡니다",
+    "sketch_text.favorite_fonts": "즐겨찾기",
+    "sketch_text.recent_fonts": "최근",
+    "sketch_text.sample_hint": "예시 텍스트 (기본값: 입력한 텍스트)"
+  },
+  "ar": {
+    "sketch_text.all_fonts": "كل الخطوط",
+    "sketch_text.favorite_font": "مفضل: إبقاء هذا الخط أعلى القائمة",
+    "sketch_text.favorite_fonts": "المفضلة",
+    "sketch_text.recent_fonts": "الأخيرة",
+    "sketch_text.sample_hint": "نص المثال (الافتراضي: نصك)"
+  },
+  "he": {
+    "sketch_text.all_fonts": "כל הגופנים",
+    "sketch_text.favorite_font": "מועדף: להשאיר את הגופן הזה בראש הרשימה",
+    "sketch_text.favorite_fonts": "מועדפים",
+    "sketch_text.recent_fonts": "אחרונים",
+    "sketch_text.sample_hint": "טקסט לדוגמה (ברירת מחדל: הטקסט שלך)"
+  },
+  "ja": {
+    "sketch_text.all_fonts": "すべてのフォント",
+    "sketch_text.favorite_font": "お気に入り: このフォントをリストの先頭に置く",
+    "sketch_text.favorite_fonts": "お気に入り",
+    "sketch_text.recent_fonts": "最近使用",
+    "sketch_text.sample_hint": "サンプルテキスト（既定: 入力中のテキスト）"
+  },
+  "vi": {
+    "sketch_text.all_fonts": "Tất cả phông chữ",
+    "sketch_text.favorite_font": "Yêu thích: giữ phông chữ này ở đầu danh sách",
+    "sketch_text.favorite_fonts": "Yêu thích",
+    "sketch_text.recent_fonts": "Gần đây",
+    "sketch_text.sample_hint": "Văn bản mẫu (mặc định: văn bản của bạn)"
+  },
+  "zh": {
+    "sketch_text.all_fonts": "所有字体",
+    "sketch_text.favorite_font": "收藏：将此字体保留在列表顶部",
+    "sketch_text.favorite_fonts": "收藏",
+    "sketch_text.recent_fonts": "最近",
+    "sketch_text.sample_hint": "示例文本（默认：你的文本）"
+  }
+}
