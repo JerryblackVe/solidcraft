@@ -78,7 +78,11 @@ pub(super) fn group_ids(sk: &Sketch, ids: &[String]) -> Vec<String> {
 
 /// `p` with its `entities` widened by [`group_ids`].
 pub(super) fn with_group_members(sk: &Sketch, p: &Value, cmd: &str) -> Result<Value> {
-    let mut out = p.clone();
+    // `out["entities"] = …` below panics on anything but an object.
+    if !(p.is_object() || p.is_null()) {
+        return Err(bad(cmd, "params must be an object"));
+    }
+    let mut out = if p.is_null() { json!({}) } else { p.clone() };
     out["entities"] = json!(group_ids(sk, &string_list(cmd, p, "entities")?));
     Ok(out)
 }
