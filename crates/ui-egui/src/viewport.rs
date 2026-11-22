@@ -8068,6 +8068,17 @@ fn show_view(app: &mut SolveApp, ui: &mut egui::Ui) {
         {
             crate::sketch_text::open(app, &entity);
         }
+        // Double-click a star (one outline curve picked by the first click): edit its numbers.
+        if resp.double_clicked()
+            && !pen_select
+            && !held
+            && !dim_edit
+            && app.tool.is_none()
+            && app.dialog.is_none()
+            && let Some(curve) = crate::sketch_modify_ui::selected_star(app)
+        {
+            crate::sketch_modify_ui::edit_star(app, &curve);
+        }
         // Double-click a sketch curve: select the chain joined to it end to end.
         if resp.double_clicked()
             && !pen_select
