@@ -152,7 +152,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("sketch_move")
         .key("G")
         .enabled(in_sketch)
-        .params("entities: [curve/point ids] (one curve of a group takes the whole group), factor?: number (scale), scale_x?, scale_y?: width and height factors apart (default factor; lines and splines only), angle?: degrees (turn), center?: [x,y] or point ref (what scales and turns stay put; default [0,0]), translate?: [dx,dy] (applied last); scales, turns and moves in one step; a free point held only to the picked geometry (a rounded rectangle's centre) goes with it; returns `released`: the constraints tying the picked geometry to what stays that the change let go, as {id, kind}"),
+        .params("entities: [curve/point ids] (one curve of a group takes the whole group), factor?: number (scale), scale_x?, scale_y?: width and height factors apart (default factor, along the sketch's axes or a turned group's own; an arc becomes an exact rational spline and a circle an ellipse; refused with texts or dimensions in the sketch); angle?: degrees (turn), center?: [x,y] or point ref (what scales and turns stay put; default [0,0]), translate?: [dx,dy] (applied last); scales, turns and moves in one step; a free point held only to the picked geometry (a rounded rectangle's centre) goes with it; returns `released`: the constraints tying the picked geometry to what stays that the change let go, as {id, kind}"),
     CommandSpec::new("sketch.move", "Move/Copy Sketch Entities", crate::checked!("sketch.move", move_copy))
         .in_sketch_part()
         .contract(&MOVE_CONTRACT)
@@ -4606,9 +4606,12 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         let (mut cs, mut ps) = entities(sk, p, cmd)?;
         let c = if p.get("center").is_some() { point_or_ref(sk, p, "center", cmd)? } else { Vec2::ZERO };
         let rot = rotate(c, ang);
+        // Width and height go along the box's own axes: a turned group's, else the sketch's.
+        let axes = if stretched { sk.box_angle(&cs).to_radians() } else { 0.0 };
+        let (to_box, from_box) = (rotate(Vec2::ZERO, -axes), rotate(Vec2::ZERO, axes));
         let f = move |q: Vec2| {
-            let d = q - c;
-            rot(c + Vec2::new(d.x * sx, d.y * sy)) + t
+            let d = to_box(q - c);
+            rot(c + from_box(Vec2::new(d.x * sx, d.y * sy))) + t
         };
         // A text's outline points follow its source: the text turns, scales and moves as a
         // unit, as Move turns it, instead of its points being refused as projected (#17315).
@@ -4622,19 +4625,20 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         }
         cs.retain(|&i| !sk.curves.get(i).and_then(|c| c.link.as_ref()).is_some_and(|link| links.contains(link)));
         ps.retain(|&i| !sk.points.get(i).and_then(|p| p.link.as_ref()).is_some_and(|link| links.contains(link)));
+        // Arcs, circles and ellipses stretched: their stretched shapes, put in place after the points move.
+        let mut ellipses = Vec::new();
+        let mut centres = Vec::new();
         if stretched {
-            // Only what an affine stretch keeps exact: lines and splines. An arc, circle or
-            // ellipse would stop being one; dimensions and texts would no longer measure what
-            // they say. Nothing is changed.
-            let bad_curve = cs.iter().find(|&&i| {
-                !matches!(sk.curves.get(i).map(|c| &c.kind), Some(CurveKind::Line { .. } | CurveKind::Spline { .. } | CurveKind::Conic { .. }))
-            });
-            if bad_curve.is_some() || !links.is_empty() || sk.constraints.iter().any(|c| !c.driven && c.kind.is_dimension()) {
+            // Dimensions and texts would no longer measure what they say. Nothing is changed.
+            if !links.is_empty() || sk.constraints.iter().any(|c| !c.driven && c.kind.is_dimension()) {
                 return Err(bad(
                     cmd,
-                    "a different width and height need lines and splines only: this has arcs, circles, ellipses, texts or dimensions. Scale it proportionally with `factor`",
+                    "a different width and height cannot keep texts or dimensions: this sketch has some. Scale it proportionally with `factor`",
                 ));
             }
+            with_ellipse_axes(sk, &mut cs);
+            (ellipses, centres) = stretch_round_curves(sk, &cs, &mut released)?;
+            ps.extend(centres.iter().copied());
         }
         let mut text_curves = Vec::new();
         for link in links {
@@ -4647,15 +4651,134 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         // after the turn is let go, else the solve drags the shape back and bends it (#15697).
         let held = holding(sk, &involved_points(sk, &cs, &ps));
         transform_in_place(sk, &cs, &ps, &f, k, cmd)?;
+        place_stretched_ellipses(sk, &ellipses, &f);
         let moved = involved_points(sk, &cs, &ps);
         let _ = rotate_axis_constraints(sk, doc, &moved, ang)?;
         scale_dimensions(sk, doc, &cs, &moved, k)?;
-        released = release_broken(sk, &held);
+        released.extend(release_broken(sk, &held));
+        sk.turn_object_groups(&cs, ang.to_degrees());
+        // An arc's centre that nothing else uses goes with the arc it was the centre of.
+        let used: std::collections::BTreeSet<usize> =
+            sk.curves.iter().flat_map(|c| c.kind.point_ids()).chain(sk.constraints.iter().flat_map(|c| sk.constraint_points(&c.kind))).collect();
+        let lone: Vec<usize> = centres.into_iter().filter(|q| !used.contains(q)).collect();
+        sk.remove_points(&lone);
         cs.extend(text_curves);
         Ok(ids_of(sk, &cs))
     })?;
     s.doc_mut().prune_model_params();
     reply(cmd, TransformResult { curves: out, released, sketch: info, param_warnings: Vec::new() })
+}
+
+/// Before a stretch (a different width and height): every arc of `cs` becomes the exact rational
+/// spline it is, which the stretch then keeps exact, and every circle an ellipse. Constraints that
+/// name those arcs or circles as curves (a tangency, an equal radius) are let go into `released`.
+/// Returns each ellipse with its centre and two conjugate half axes before the stretch (for
+/// [`place_stretched_ellipses`]), and the arcs' former centres.
+fn stretch_round_curves(sk: &mut Sketch, cs: &[usize], released: &mut Vec<Value>) -> Result<(Vec<(usize, Vec2, Vec2, Vec2)>, Vec<usize>)> {
+    let (mut ellipses, mut centres, mut changed) = (Vec::new(), Vec::new(), std::collections::BTreeSet::new());
+    for &i in cs {
+        let Some(kind) = sk.curves.get(i).map(|c| c.kind.clone()) else { continue };
+        let pos = |sk: &Sketch, q: usize| sk.point(q).unwrap_or_default();
+        match kind {
+            CurveKind::Arc { c, a, b } => {
+                let (o, from, to) = (pos(sk, c), pos(sk, a), pos(sk, b));
+                let r = (from - o).len();
+                let start = (from.y - o.y).atan2(from.x - o.x);
+                let mut sweep = ((to.y - o.y).atan2(to.x - o.x) - start).rem_euclid(TAU);
+                if sweep < 1e-12 {
+                    sweep = TAU;
+                }
+                // Spans of a quarter turn at most, each a rational quadratic Bézier.
+                let spans = (sweep / FRAC_PI_2).ceil().max(1.0) as usize;
+                let half = sweep / spans as f64 / 2.0;
+                let (mut pts, mut weights, mut knots) = (vec![a], vec![1.0], vec![0.0; 3]);
+                for n in 0..spans {
+                    let mid = start + half * (2 * n + 1) as f64;
+                    let apex = o + Vec2::new(mid.cos(), mid.sin()) * (r / half.cos());
+                    let end = start + half * (2 * n + 2) as f64;
+                    let last = if n + 1 == spans { b } else { sk.add_point(o + Vec2::new(end.cos(), end.sin()) * r, None)? };
+                    pts.extend([sk.add_point(apex, None)?, last]);
+                    weights.extend([half.cos(), 1.0]);
+                    let knot = (n + 1) as f64;
+                    knots.extend(if n + 1 == spans { vec![knot; 3] } else { vec![knot; 2] });
+                }
+                if let Some(curve) = sk.curves.get_mut(i) {
+                    curve.kind = CurveKind::Spline {
+                        pts,
+                        control: true,
+                        degree: 2,
+                        periodic: false,
+                        nurbs: Some(solidcraft_sketch::Nurbs { knots, weights }),
+                        handles: Vec::new(),
+                    };
+                }
+                centres.push(c);
+                changed.insert(i);
+            }
+            CurveKind::Circle { c, r } => {
+                let o = pos(sk, c);
+                let m = sk.add_point(o + Vec2::new(r, 0.0), None)?;
+                if let Some(curve) = sk.curves.get_mut(i) {
+                    curve.kind = CurveKind::Ellipse { c, m, r };
+                }
+                ellipses.push((i, o, Vec2::new(r, 0.0), Vec2::new(0.0, r)));
+                changed.insert(i);
+            }
+            // An ellipse stays one: its constraints keep their meaning.
+            CurveKind::Ellipse { c, m, r } => {
+                let major = pos(sk, m) - pos(sk, c);
+                let len = major.len().max(1e-12);
+                ellipses.push((i, pos(sk, c), major, Vec2::new(-major.y, major.x) * (r / len)));
+            }
+            _ => {}
+        }
+    }
+    sk.constraints.retain(|k| {
+        let names = k.kind.indices().1.iter().any(|l| changed.contains(l));
+        if names {
+            released.push(json!({"id": k.id, "kind": k.kind.name()}));
+        }
+        !names
+    });
+    Ok((ellipses, centres))
+}
+
+/// After a stretch: each ellipse of `ellipses` (centre and conjugate half axes before it) gets the
+/// major axis end and minor radius of its image through `f`, and its axis lines follow.
+fn place_stretched_ellipses(sk: &mut Sketch, ellipses: &[(usize, Vec2, Vec2, Vec2)], f: &dyn Fn(Vec2) -> Vec2) {
+    for &(i, o, u, v) in ellipses {
+        let c = f(o);
+        let (u, v) = (f(o + u) - c, f(o + v) - c);
+        // The principal axes of the ellipse c + u cos t + v sin t: the eigenvectors of [u v][u v]^T.
+        let (p, s, q) = (u.x * u.x + v.x * v.x, u.y * u.y + v.y * v.y, u.x * u.y + v.x * v.y);
+        let spread = (((p - s) / 2.0).powi(2) + q * q).sqrt();
+        let (big, small) = ((p + s) / 2.0 + spread, ((p + s) / 2.0 - spread).max(0.0));
+        let phi = 0.5 * (2.0 * q).atan2(p - s);
+        let mut major = Vec2::new(phi.cos(), phi.sin()) * big.sqrt();
+        if major.dot(u) < 0.0 {
+            major = major * -1.0;
+        }
+        let minor = Vec2::new(-major.y, major.x) * (small.sqrt() / major.len().max(1e-12));
+        let axes = sk.ellipse_axis_lines(i);
+        let Some(CurveKind::Ellipse { m, r, .. }) = sk.curves.get_mut(i).map(|x| &mut x.kind) else { continue };
+        *r = small.sqrt();
+        let mut at = vec![(*m, c + major)];
+        if let Some((major_line, minor_line)) = axes {
+            if let Some((_, other)) = major_line {
+                at.push((other, c - major));
+            }
+            if let Some((_, a, b)) = minor_line {
+                // Each end of the minor axis keeps its side.
+                let side = if sk.point(a).is_some_and(|q| (q - c).dot(minor) < 0.0) { -1.0 } else { 1.0 };
+                at.extend([(a, c + minor * side), (b, c - minor * side)]);
+            }
+        }
+        for (q, to) in at {
+            if let Some(x) = sk.points.get_mut(q) {
+                x.pos = to;
+            }
+        }
+    }
 }
 
 /// The driving lengths wholly inside a transformed selection scale with it. Keep formulas

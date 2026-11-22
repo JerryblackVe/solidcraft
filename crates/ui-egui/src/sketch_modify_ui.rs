@@ -128,13 +128,21 @@ pub enum Mod {
     /// `sketch.transform`: the picked entities scaled, turned and moved as one, about the picked
     /// Center point or else the middle of their box. `x` and `y` move that point, `factor` scales
     /// and `angle` turns about it.
-    /// `frame` is the box (middle and size in the sketch, kept up to date from the picks by
+    /// `frame` is the box (middle, size and turn in the sketch, kept up to date from the picks by
     /// `sketch_transform_ui`) the window's size rows and the handles work on.
     ///
     /// `aspect` is the height's scale over the width's (1: the shape is kept; a side handle or the
     /// Height row changes it), and `pivot` the point the scale and the turn hold when the pivot
     /// handle has been moved (else a picked Center, else the box middle).
-    Transform { x: String, y: String, factor: String, angle: String, frame: Option<([f64; 2], [f64; 2])>, aspect: String, pivot: Option<[f64; 2]> },
+    Transform {
+        x: String,
+        y: String,
+        factor: String,
+        angle: String,
+        frame: Option<([f64; 2], [f64; 2], f64)>,
+        aspect: String,
+        pivot: Option<[f64; 2]>,
+    },
     /// `sketch.pattern.rectangular`: how many instances along the picked direction and how far
     /// apart, then the same along a second picked direction (perpendicular by default).
     PatternRect {
@@ -663,7 +671,7 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Mod, doc: &Document) -> bool {
             enter |= ui_kit::value_pair(ui, "Position", [x, y], ["X", "Y"], Some(["X Distance", "Y Distance"]));
             // The size in millimetres follows the scale and the other way round: the width sets the
             // scale, the height the aspect, so each can be typed on its own.
-            if let Some((_, size)) = frame {
+            if let Some((_, size, _)) = frame {
                 for (label, natural, high) in [("Width", size[0], false), ("Height", size[1], true)] {
                     let k = crate::ui_kit::parse_number(factor.trim()).filter(|k| *k > 0.0).unwrap_or(1.0);
                     let a = crate::ui_kit::parse_number(aspect.trim()).filter(|a| *a > 0.0).unwrap_or(1.0);
@@ -1038,7 +1046,7 @@ pub fn commands(app: &SolveApp, k: &Mod, inputs: &[SelInput], extra: &Map<String
             if entities.is_empty() {
                 return Err("Select the sketch curves or points to transform first".into());
             }
-            let Some((middle, _)) = frame else { return Err("Select the sketch curves or points to transform first".into()) };
+            let Some((middle, ..)) = frame else { return Err("Select the sketch curves or points to transform first".into()) };
             let f = factor(app, text)?;
             let turn = value(app, angle, ValueKind::Angle, "Angle")?.to_degrees();
             let (dx, dy) = (value(app, x, ValueKind::Length, "X")?, value(app, y, ValueKind::Length, "Y")?);

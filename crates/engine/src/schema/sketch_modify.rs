@@ -990,13 +990,15 @@ pub struct TransformParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "factor_schema")]
     pub factor: Option<f64>,
-    /// The width factor, along the sketch's X axis, a number above 1e-9 and below 1e6. Default:
-    /// `factor`. With `scale_x` and `scale_y` apart, only lines and splines can be transformed
-    /// (an arc, circle, ellipse, text or dimension is refused and nothing changes).
+    /// The width factor, a number above 1e-9 and below 1e6, along the sketch's X axis, or a turned
+    /// group's own width when the entities are groups turned alike. Default: `factor`. With
+    /// `scale_x` and `scale_y` apart, an arc becomes the exact rational spline the stretch makes of
+    /// it and a circle an ellipse (constraints naming them as curves are let go); a sketch with a
+    /// text or a dimension is refused and nothing changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "factor_schema")]
     pub scale_x: Option<f64>,
-    /// The height factor, along the sketch's Y axis. Default: `factor`.
+    /// The height factor, along the sketch's Y axis or a turned group's own height. Default: `factor`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "factor_schema")]
     pub scale_y: Option<f64>,

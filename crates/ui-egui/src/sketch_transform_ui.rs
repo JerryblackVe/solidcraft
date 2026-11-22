@@ -59,7 +59,10 @@ struct Frame {
     scale: f64,
     /// The height's scale over the width's: 1 keeps the shape.
     aspect: f64,
+    /// The total turn, `base` and the window's Angle together.
     angle: f64,
+    /// The box's own turn before this transform: a turned group's (its width runs this way).
+    base: f64,
     natural: (f64, f64),
     pivot: Vec2,
     middle: Vec2,
@@ -70,9 +73,14 @@ fn stretch(f: &Frame, v: Vec2) -> Vec2 {
     Vec2::new(v.x * f.scale, v.y * f.scale * f.aspect)
 }
 
+/// `v` from the pivot, stretched in the box's own frame (before the total turn).
+fn in_box(f: &Frame, v: Vec2) -> Vec2 {
+    stretch(f, turn(v, -f.base))
+}
+
 /// Where the box's middle is placed.
 fn center(f: &Frame) -> Vec2 {
-    Vec2::new(f.x, f.y) + turn(stretch(f, f.middle - f.pivot), f.angle)
+    Vec2::new(f.x, f.y) + turn(in_box(f, f.middle - f.pivot), f.angle)
 }
 
 fn turn(v: Vec2, degrees: f64) -> Vec2 {
@@ -95,8 +103,9 @@ fn pointer_on_sketch(plane: &Plane, proj: &Proj, at: Pos2) -> Option<Vec2> {
 }
 
 /// The picked curves (as polylines on the sketch) and the box around them and the picked points:
-/// its middle and its size. None when nothing usable is picked or the box has no extent.
-fn picked_box(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<(Vec<Vec<Vec2>>, [f64; 2], [f64; 2])> {
+/// its middle, its size and its turn (a turned group's, else 0: along the sketch's axes). None
+/// when nothing usable is picked or the box has no extent.
+fn picked_box(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<(Vec<Vec<Vec2>>, [f64; 2], [f64; 2], f64)> {
     let state = crate::open_meshing::session_world(&app.session);
     let sk = &state.sketch(app.session.active_sketch?)?.sketch;
     let mut lines: Vec<Vec<Vec2>> = Vec::new();
@@ -117,18 +126,21 @@ fn picked_box(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<(Vec<Vec<Vec
             points.push(p);
         }
     }
-    let all: Vec<Vec2> = lines.iter().flatten().copied().chain(points).collect();
+    let base = sk.box_angle(&drawn);
+    // Measured in the box's own frame, then its middle back on the sketch.
+    let all: Vec<Vec2> = lines.iter().flatten().copied().chain(points).map(|q| turn(q, -base)).collect();
     let first = *all.first()?;
     let (lo, hi) = all.iter().fold((first, first), |(lo, hi), p| (Vec2::new(lo.x.min(p.x), lo.y.min(p.y)), Vec2::new(hi.x.max(p.x), hi.y.max(p.y))));
     let size = [hi.x - lo.x, hi.y - lo.y];
+    let middle = turn(Vec2::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0), base);
     // A single point or a straight line along an axis has no area to take hold of.
-    (size[0] > 1e-9 && size[1] > 1e-9).then(|| (lines, [(lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0], size))
+    (size[0] > 1e-9 && size[1] > 1e-9).then_some((lines, [middle.x, middle.y], size, base))
 }
 
 /// Keep the Transform window's box up to date with what is picked.
 pub fn refresh(app: &mut SolveApp) {
     let Some(d) = app.dialog.as_ref().filter(|d| matches!(d.kind, Kind::SketchModify(Mod::Transform { .. }))) else { return };
-    let boxed = picked_box(app, d).map(|(_, middle, size)| (middle, size));
+    let boxed = picked_box(app, d).map(|(_, middle, size, base)| (middle, size, base));
     if let Some(Kind::SketchModify(Mod::Transform { frame, .. })) = app.dialog.as_mut().map(|d| &mut d.kind) {
         *frame = boxed;
     }
@@ -145,7 +157,7 @@ fn picked_pivot(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<Vec2> {
 /// The placement the window's fields describe, as a frame.
 fn frame_of(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<Frame> {
     let Kind::SketchModify(Mod::Transform { x, y, factor, angle, frame, aspect, pivot: moved_pivot }) = &d.kind else { return None };
-    let (middle, size) = (*frame)?;
+    let (middle, size, base) = (*frame)?;
     let middle = Vec2::new(middle[0], middle[1]);
     // The pivot the box was given by hand wins over a picked Center, which wins over the middle.
     let pivot = moved_pivot.map(|q| Vec2::new(q[0], q[1])).or_else(|| picked_pivot(app, d)).unwrap_or(middle);
@@ -154,7 +166,7 @@ fn frame_of(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<Frame> {
         (crate::sketch_modify_ui::value(app, x, ValueKind::Length, "X").ok()?, crate::sketch_modify_ui::value(app, y, ValueKind::Length, "Y").ok()?);
     let scale = crate::sketch_modify_ui::factor(app, factor).ok()?;
     let turned = crate::sketch_modify_ui::value(app, angle, ValueKind::Angle, "Angle").ok()?.to_degrees();
-    Some(Frame { x: pivot.x + dx, y: pivot.y + dy, scale, aspect, angle: turned, natural: (size[0], size[1]), pivot, middle })
+    Some(Frame { x: pivot.x + dx, y: pivot.y + dy, scale, aspect, angle: base + turned, base, natural: (size[0], size[1]), pivot, middle })
 }
 
 use solidcraft_engine::doc::expr::Kind as ValueKind;
@@ -166,7 +178,7 @@ fn store(k: &mut Mod, f: &Frame, pivot_moved: bool) {
         *y = format!("{} mm", plain(f.y - f.pivot.y));
         *factor = format!("{}", (f.scale * 1e6).round() / 1e6);
         *aspect = format!("{}", (f.aspect * 1e6).round() / 1e6);
-        *angle = format!("{} deg", plain(f.angle));
+        *angle = format!("{} deg", plain(f.angle - f.base));
         if pivot_moved {
             *pivot = Some([f.pivot.x, f.pivot.y]);
         }
@@ -188,9 +200,10 @@ fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
             let pivot = Vec2::new(start.x, start.y);
             let (to, from) = (p - pivot, drag.from - pivot);
             if to.len() > 1e-9 && from.len() > 1e-9 {
-                let a = start.angle + (to.angle() - from.angle()).to_degrees();
+                // The window's Angle, from the box's own turn, is what snaps.
+                let a = start.angle - start.base + (to.angle() - from.angle()).to_degrees();
                 let a = if snap { (a / 15.0).round() * 15.0 } else { a };
-                now.angle = (a + 180.0).rem_euclid(360.0) - 180.0;
+                now.angle = start.base + (a + 180.0).rem_euclid(360.0) - 180.0;
             }
         }
         Part::Side(axis, sign) => {
@@ -211,7 +224,7 @@ fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
                 Vec2::new(0.0, sign * tall * start.natural.1 / 2.0)
             };
             let middle = fixed + turn(reach, start.angle);
-            let pivot = middle - turn(stretch(&now, start.middle - start.pivot), start.angle);
+            let pivot = middle - turn(in_box(&now, start.middle - start.pivot), start.angle);
             if pivot.x.is_finite() && pivot.y.is_finite() {
                 now.x = pivot.x;
                 now.y = pivot.y;
@@ -235,7 +248,7 @@ fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
                 let reach = turn(Vec2::new(u * k * start.natural.0 / 2.0, v * k * high / 2.0), start.angle);
                 now.scale = k;
                 // The pivot goes where it keeps the box middle at `fixed + reach`.
-                let pivot = fixed + reach - turn(stretch(&now, start.middle - start.pivot), start.angle);
+                let pivot = fixed + reach - turn(in_box(&now, start.middle - start.pivot), start.angle);
                 now.x = pivot.x;
                 now.y = pivot.y;
             }
@@ -246,7 +259,7 @@ fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
 
 /// Where a point of the original box goes: scaled and turned about the pivot, then moved.
 fn moved(f: &Frame, q: Vec2) -> Vec2 {
-    Vec2::new(f.x, f.y) + turn(stretch(f, q - f.pivot), f.angle)
+    Vec2::new(f.x, f.y) + turn(in_box(f, q - f.pivot), f.angle)
 }
 
 /// The Transform window's picks with their handles; a drag on them edits the window's values.
@@ -255,7 +268,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
         app.viewport.transform_drag = None;
         return;
     };
-    let Some((lines, _, _)) = picked_box(app, d) else { return };
+    let Some((lines, ..)) = picked_box(app, d) else { return };
     let Some(frame) = frame_of(app, d) else { return };
     let Some(plane) = app.session.active_sketch.and_then(|id| crate::canvas::profile_plane(app, id)) else { return };
     let t = solidcraft_theme::Tokens::get();
@@ -346,7 +359,7 @@ mod tests {
 
     fn frame() -> Frame {
         let middle = Vec2::new(10.0, 5.0);
-        Frame { x: 10.0, y: 5.0, scale: 1.0, aspect: 1.0, angle: 0.0, natural: (20.0, 10.0), pivot: middle, middle }
+        Frame { x: 10.0, y: 5.0, scale: 1.0, aspect: 1.0, angle: 0.0, base: 0.0, natural: (20.0, 10.0), pivot: middle, middle }
     }
 
     /// The box of `frame()` with its lower left corner (0, 0) as the pivot.
@@ -461,7 +474,7 @@ mod tests {
         h.step(&serde_json::json!({"start": "sketch.transform"})).unwrap();
         h.frames(3);
         let d = h.app.dialog.as_ref().expect("the Transform window");
-        let (lines, middle, size) = picked_box(&h.app, d).expect("a box round the ellipse");
+        let (lines, middle, size, _) = picked_box(&h.app, d).expect("a box round the ellipse");
         assert_eq!(lines.len(), 3, "the ellipse and its two axes");
         assert!(
             middle[0].abs() < 1e-6 && middle[1].abs() < 1e-6 && (size[0] - 40.0).abs() < 1e-3 && (size[1] - 16.0).abs() < 1e-3,
@@ -477,7 +490,7 @@ mod tests {
         h.step(&serde_json::json!({"start": "sketch.transform"})).unwrap();
         h.frames(3);
         let d = h.app.dialog.as_ref().expect("the Transform window");
-        let (lines, _, size) = picked_box(&h.app, d).expect("a box round the ellipse");
+        let (lines, _, size, _) = picked_box(&h.app, d).expect("a box round the ellipse");
         assert_eq!(lines.len(), 2, "the ellipse and its major axis");
         assert!((size[0] - 40.0).abs() < 1e-3, "{size:?}");
     }
