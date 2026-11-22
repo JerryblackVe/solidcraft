@@ -6971,6 +6971,10 @@ fn build_highlight_with_projection(app: &SolveApp, projection: impl FnOnce() -> 
     hovered.extend(component_hover.into_iter().flatten());
     let body_hover = hovered_body(app);
     hovered.extend(body_hover.iter().map(|name| Sel::Body { name: name.clone() }));
+    // On a body made from a text, what a click there takes: every letter's body, then the letter's.
+    if let Some((_, sel)) = app.viewport.hover.as_ref().and_then(|hit| candidate(app, std::slice::from_ref(hit))) {
+        hovered.extend(crate::text_pick::hover(app, &sel).into_iter().flatten());
+    }
     if let Some((_, item @ (Sel::Body { .. } | Sel::Occurrence { .. } | Sel::Feature { .. }))) =
         app.dialog.as_ref().and_then(|d| d.list_hover.as_ref())
     {
@@ -9679,12 +9683,20 @@ fn hover_highlight(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
         // Trim shows the piece it would take away instead (`sketch_tools::preview`, #3052).
         Some(Hit::SketchCurve { sketch, id, .. }) if crate::sketch_tools::trim_hover_piece(app, *sketch, id).is_some() => {}
         Some(Hit::SketchCurve { sketch, id, .. }) => {
-            if let Some(ss) = st.sketch(*sketch)
-                && let Some(ci) = ss.sketch.curve_index(id)
-            {
-                for part in &crate::sketch_display::curve_sample(app, *sketch, ci, &ss.plane, proj).parts {
-                    let mode = ss.sketch.curves.get(ci).map_or(0, |c| if c.centerline { 2 } else { u8::from(c.construction) });
-                    crate::tools::paint_sketch_path(part, mode, painter, proj, Stroke::new(3.0, col));
+            if let Some(ss) = st.sketch(*sketch) {
+                // On a text's outline, what a click there takes: the whole text, then the letter.
+                let text = (app.session.active_sketch == Some(*sketch))
+                    .then(|| crate::text_pick::hover(app, &Sel::SketchCurve { id: id.clone(), sketch: None }))
+                    .flatten();
+                let ids: Vec<&str> = match &text {
+                    Some(items) => items.iter().filter_map(|x| if let Sel::SketchCurve { id, .. } = x { Some(id.as_str()) } else { None }).collect(),
+                    None => vec![id.as_str()],
+                };
+                for ci in ids.into_iter().filter_map(|id| ss.sketch.curve_index(id)) {
+                    for part in &crate::sketch_display::curve_sample(app, *sketch, ci, &ss.plane, proj).parts {
+                        let mode = ss.sketch.curves.get(ci).map_or(0, |c| if c.centerline { 2 } else { u8::from(c.construction) });
+                        crate::tools::paint_sketch_path(part, mode, painter, proj, Stroke::new(3.0, col));
+                    }
                 }
             }
         }
