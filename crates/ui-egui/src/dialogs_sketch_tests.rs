@@ -707,7 +707,7 @@ fn transform_handles_and_fields_scale_move_and_turn_the_picks() {
         other => panic!("no transform window: {other:?}"),
     };
     // The box is the rectangle's: 30 x 20 around (25, 20).
-    assert_eq!(state(&h).4, Some(([25.0, 20.0], [30.0, 20.0])));
+    assert_eq!(state(&h).4, Some(([25.0, 20.0], [30.0, 20.0], 0.0)));
     // The corner at (40, 30) dragged to (55, 40): one and a half times the size about the corner at (10, 10).
     h.step(&json!({"drag": [{"handle": "transform:handle:3"}, {"world": [55, 40, 0]}]})).unwrap();
     h.frames(3);
@@ -1071,6 +1071,43 @@ fn a_clicked_imported_drawing_shows_its_box_and_a_side_changes_its_width() {
     assert!((lo2.0 - lo.0).abs() < 0.3 && (hi2.0 - lo2.0 - 1.5 * w).abs() < 0.5, "width x1.5: {lo2:?} {hi2:?}");
     assert!((hi2.1 - lo2.1 - t).abs() < 0.3, "height as it was: {lo2:?} {hi2:?}");
     assert_eq!(h.app.session.doc.sketch(1).unwrap().object_groups.len(), 1);
+}
+
+/// MEJ-9: a drawing turned earlier gets its box turned with it, and a different height stretches
+/// it along that turned box, so a rectangle stays a rectangle.
+#[test]
+fn a_turned_drawing_gets_a_turned_box_and_stretches_along_it() {
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 20"><path d="M0,0 L30,0 L30,20 L0,20 Z"/></svg>"#;
+    h.app.run("sketch.insert_svg", json!({"text": svg, "width": 30})).unwrap();
+    let member = h.app.session.doc.sketch(1).unwrap().object_groups[0].curves[0].clone();
+    h.app.run("sketch.transform", json!({"entities": [member], "angle": 30, "center": [0, 0]})).unwrap();
+    h.step(&json!({"call": "ui.view", "params": {"view": "top"}})).unwrap();
+    h.settle();
+    let sides = |h: &Harness| {
+        let sk = h.app.session.doc.sketch(1).unwrap();
+        let mut l: Vec<f64> = (0..sk.curves.len()).map(|i| sk.polyline(i)).map(|p| p[0].dist(p[p.len() - 1])).collect();
+        l.sort_by(f64::total_cmp);
+        (l, sk.polyline(0))
+    };
+    let (_, edge) = sides(&h);
+    let at = edge[0] * 0.6 + edge[edge.len() - 1] * 0.4;
+    h.step(&json!({"click": {"sketch": [at.x, at.y]}})).unwrap();
+    h.frames(4);
+    let Some(Kind::SketchModify(Mod::Transform { frame: Some((_, size, base)), .. })) = h.app.dialog.as_ref().map(|d| d.kind.clone()) else {
+        panic!("a click on the group should open its box: {:?}", h.app.dialog.as_ref().map(|d| &d.kind))
+    };
+    assert!((base - 30.0).abs() < 1e-9 && (size[0] - 30.0).abs() < 1e-6 && (size[1] - 20.0).abs() < 1e-6, "{size:?} {base}");
+    if let Some(Kind::SketchModify(Mod::Transform { aspect, .. })) = h.app.dialog.as_mut().map(|d| &mut d.kind) {
+        *aspect = "2".into();
+    }
+    h.step(&json!({"key": "Enter"})).unwrap();
+    h.settle();
+    assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog.as_ref().and_then(|d| d.error.clone()));
+    let (l, _) = sides(&h);
+    assert!(l.len() == 4 && (l[0] - 30.0).abs() < 1e-6 && (l[1] - 30.0).abs() < 1e-6 && (l[2] - 40.0).abs() < 1e-6, "{l:?}");
 }
 
 /// The pivot moved on a drawing's box is saved with the group: the box opens with it again, and

@@ -2579,11 +2579,12 @@ fn an_imported_drawing_is_one_group_that_moves_and_stretches_as_one() {
     let (lo2, hi2) = points_box(&s);
     assert!(close((hi2.x - lo2.x) / (hi1.x - lo1.x), 2.0 * (hi1.y - lo1.y) / (hi1.x - lo1.x)), "a quarter turn swaps width and height");
     assert!(close(area(&s) / a0, 4.0), "area x4");
-    // Width and height apart.
+    // Width and height apart, along the drawing's own axes (MEJ-9): after the quarter turn its
+    // width runs along the sketch's Y.
     let (wlo, whi) = points_box(&s);
     run(&mut s, "sketch.transform", json!({"entities": [members[7].clone()], "scale_x": 2.0, "scale_y": 0.5, "center": [wlo.x, wlo.y]}));
     let (lo3, hi3) = points_box(&s);
-    assert!(close((hi3.x - lo3.x) / (whi.x - wlo.x), 2.0) && close((hi3.y - lo3.y) / (whi.y - wlo.y), 0.5));
+    assert!(close((hi3.x - lo3.x) / (whi.x - wlo.x), 0.5) && close((hi3.y - lo3.y) / (whi.y - wlo.y), 2.0), "{lo3:?} {hi3:?}");
     assert!(close(area(&s) / (a0 * 4.0), 1.0), "x2 and x0.5 keep the area");
     // Saved and opened, the group is still there; undo and redo go through.
     let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
@@ -2600,19 +2601,68 @@ fn an_imported_drawing_is_one_group_that_moves_and_stretches_as_one() {
     assert!(points_box(&s).1.x > before.1.x + 100.0 && points_box(&s).0.x < before.0.x + 1.0, "only that curve left");
 }
 
+/// MEJ-9: a turned group stretches along its own width and height, and its arcs and circles
+/// become the exact elliptical shapes the stretch makes of them.
 #[test]
-fn a_group_refuses_a_stretch_it_cannot_keep_exact_and_changes_nothing() {
+fn a_turned_group_stretches_along_its_own_axes_with_its_arcs_and_circles() {
     let mut s = new_sketch();
+    let circle = run(&mut s, "sketch.circle.center", json!({"center": [0, 0], "radius": 10}));
+    let arc = run(&mut s, "sketch.arc.three_point", json!({"start": [50, 0], "end": [30, 0], "through": [40, 10]}));
+    let a = ids(&arc["curves"])[0].clone();
+    let line = run(&mut s, "sketch.line", json!({"points": [format!("{a}.end"), format!("{a}.start")]}));
+    let curves: Vec<String> = [&circle, &arc, &line].iter().flat_map(|r| ids(&r["curves"])).collect();
+    assert_eq!(curves.len(), 3, "{circle} {arc} {line}");
+    run(&mut s, "sketch.group", json!({"curves": curves, "name": "d"}));
+    run(&mut s, "sketch.transform", json!({"entities": [curves[2].clone()], "angle": 30, "center": [0, 0]}));
+    assert!(close(sketch(&s).object_groups[0].angle, 30.0), "the group remembers its turn");
+    let half_disc = std::f64::consts::PI * 100.0 / 2.0;
+    run(&mut s, "sketch.transform", json!({"entities": [curves[0].clone()], "scale_x": 2.0, "scale_y": 1.0, "center": [0, 0]}));
+    let sk = sketch(&s);
+    assert!(close(sk.object_groups[0].angle, 30.0) && sk.object_groups[0].curves.len() == 3, "{:?}", sk.object_groups);
+    // The circle is an ellipse twice as long along the group's turned width.
+    let along = Vec2::new(30f64.to_radians().cos(), 30f64.to_radians().sin());
+    let Some(solidcraft_sketch::CurveKind::Ellipse { c, m, r }) = sk.curve_index(&curves[0]).map(|i| sk.curves[i].kind.clone()) else {
+        panic!("{:?}", sk.curves)
+    };
+    let (c, m) = (sk.point(c).unwrap(), sk.point(m).unwrap());
+    assert!(c.len() < 1e-9 && close(r, 10.0) && (m - c).dist(along * 20.0) < 1e-9, "{c:?} {m:?} {r}");
+    // The arc is one exact spline on the stretched circle it was on; its centre is gone.
+    let i = sk.curve_index(&curves[1]).unwrap();
+    assert!(matches!(&sk.curves[i].kind, solidcraft_sketch::CurveKind::Spline { degree: 2, nurbs: Some(_), .. }), "{:?}", sk.curves[i].kind);
+    let back = |q: Vec2| {
+        // Undo the stretch: along the turned width by a half.
+        let d = Vec2::new(q.dot(along), -q.cross(along));
+        along * (d.x / 2.0) + Vec2::new(-along.y, along.x) * d.y
+    };
+    let centre = along * 40.0;
+    for q in sk.polyline(i) {
+        assert!(close(back(q).dist(centre), 10.0), "{q:?} is off the stretched arc");
+    }
+    assert!(sk.points.iter().all(|q| q.pos.dist(along * 80.0) > 1e-6), "the arc's centre is not left behind");
+    let areas = profiles(&s);
+    assert!(areas.len() == 2 && (areas[0] - 2.0 * half_disc).abs() < 1e-3 && (areas[1] - 200.0 * std::f64::consts::PI).abs() < 1e-3, "{areas:?}");
+    // An ellipse taller than wide after the stretch turns its major axis and keeps its axis lines on it.
+    let e = run(&mut s, "sketch.ellipse", json!({"center": [100, 0], "major": [120, 0], "minor_radius": 8}));
+    let e = ids(&e["curves"])[0].clone();
+    run(&mut s, "sketch.transform", json!({"entities": [e.clone()], "scale_x": 1.0, "scale_y": 3.0, "center": [100, 0]}));
+    let sk = sketch(&s);
+    let i = sk.curve_index(&e).unwrap();
+    let Some(solidcraft_sketch::CurveKind::Ellipse { c, m, r }) = sk.curves.get(i).map(|x| x.kind.clone()) else { panic!() };
+    let (c, m) = (sk.point(c).unwrap(), sk.point(m).unwrap());
+    assert!(c.dist(Vec2::new(100.0, 0.0)) < 1e-9 && close(r, 20.0) && close((m - c).x, 0.0) && close((m - c).len(), 24.0), "{c:?} {m:?} {r}");
+    if let Some((major, minor)) = sk.ellipse_axis_lines(i) {
+        if let Some((_, other)) = major {
+            assert!(sk.point(other).unwrap().dist(c - (m - c)) < 1e-9);
+        }
+        if let Some((_, a, b)) = minor {
+            assert!(close(sk.point(a).unwrap().dist(c), 20.0) && close(sk.point(b).unwrap().dist(c), 20.0));
+        }
+    }
+}
+
+#[test]
+fn a_group_is_made_by_import_or_by_hand_and_holds_a_curve_once() {
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="20"/><rect x="0" y="0" width="30" height="30"/></svg>"#;
-    let r = run(&mut s, "sketch.insert_svg", json!({"text": svg}));
-    assert!(r["group"].is_string());
-    let member = sketch(&s).object_groups[0].curves[0].clone();
-    let before = s.doc.to_json();
-    let err = s.execute("sketch.transform", &json!({"entities": [member.clone()], "scale_x": 2.0, "scale_y": 1.0})).unwrap_err().to_string();
-    assert!(err.contains("lines and splines"), "{err}");
-    assert_eq!(s.doc.to_json(), before);
-    // Equal factors are an ordinary proportional scale, which arcs and circles allow.
-    run(&mut s, "sketch.transform", json!({"entities": [member], "scale_x": 2.0, "scale_y": 2.0}));
     // No group when asked not to; a hand-made group; a curve in one group at most.
     let mut t = new_sketch();
     let r = run(&mut t, "sketch.insert_svg", json!({"text": svg, "group": false}));

@@ -67,6 +67,14 @@ pub struct ObjectGroup {
     /// the group's box. It moves, turns and scales with the group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pivot: Option<Vec2>,
+    /// How far (degrees) the group has been turned since it was made: its box's width runs this
+    /// way, so a later stretch goes along the group's own width and height (0 when absent).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub angle: f64,
+}
+
+fn is_zero(a: &f64) -> bool {
+    *a == 0.0
 }
 
 impl Sketch {
@@ -97,6 +105,7 @@ impl Sketch {
             curves: curves.to_vec(),
             lock: GroupLock::Free,
             pivot: None,
+            angle: 0.0,
         });
         Ok(id)
     }
@@ -145,6 +154,27 @@ impl Sketch {
                 && g.curves.iter().all(|c| ids.contains(c.as_str()))
             {
                 g.pivot = Some(f(p));
+            }
+        }
+    }
+
+    /// The direction (degrees) of the width of the box around `curves` (indices): the turn of the
+    /// groups that hold them when those are turned alike, else 0, the sketch's own axes.
+    pub fn box_angle(&self, curves: &[usize]) -> f64 {
+        let ids: std::collections::BTreeSet<&str> = curves.iter().filter_map(|&i| self.curves.get(i)).map(|c| c.id.as_str()).collect();
+        let mut angles = self.object_groups.iter().filter(|g| g.curves.iter().any(|c| ids.contains(c.as_str()))).map(|g| g.angle);
+        match angles.next() {
+            Some(a) if angles.all(|b| (b - a).abs() < 1e-9) => a,
+            _ => 0.0,
+        }
+    }
+
+    /// The groups whose every curve is in `curves` (indices) have been turned by `degrees`.
+    pub fn turn_object_groups(&mut self, curves: &[usize], degrees: f64) {
+        let ids: std::collections::BTreeSet<String> = curves.iter().filter_map(|&i| self.curves.get(i)).map(|c| c.id.clone()).collect();
+        for g in &mut self.object_groups {
+            if g.curves.iter().all(|c| ids.contains(c)) {
+                g.angle = (g.angle + degrees + 180.0).rem_euclid(360.0) - 180.0;
             }
         }
     }
@@ -294,5 +324,18 @@ mod tests {
         sk.remove_object_group(&g).unwrap();
         assert!(sk.object_group_of(&ids[0]).is_none() && sk.curves.len() == 2);
         assert!(sk.remove_object_group(&g).is_err());
+    }
+
+    #[test]
+    fn a_turned_group_gives_its_box_its_angle() {
+        let (mut sk, ids) = two_lines();
+        sk.add_object_group("g", &ids).unwrap();
+        assert_eq!(sk.box_angle(&[0, 1]), 0.0);
+        sk.turn_object_groups(&[0], 30.0);
+        assert_eq!(sk.box_angle(&[0, 1]), 0.0, "half a group is not turned");
+        sk.turn_object_groups(&[0, 1], 30.0);
+        sk.turn_object_groups(&[0, 1], 170.0);
+        assert!((sk.box_angle(&[0]) + 160.0).abs() < 1e-9, "{}", sk.box_angle(&[0]));
+        assert_eq!(sk.box_angle(&[]), 0.0);
     }
 }
