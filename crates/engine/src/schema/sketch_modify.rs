@@ -993,8 +993,8 @@ pub struct TransformParams {
     /// The width factor, a number above 1e-9 and below 1e6, along the sketch's X axis, or a turned
     /// group's own width when the entities are groups turned alike. Default: `factor`. With
     /// `scale_x` and `scale_y` apart, an arc becomes the exact rational spline the stretch makes of
-    /// it and a circle an ellipse (constraints naming them as curves are let go); a sketch with a
-    /// text or a dimension is refused and nothing changes.
+    /// it and a circle an ellipse (constraints naming them as curves are let go); a selection with
+    /// a text, or with a dimension on what moves, is refused and nothing changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "factor_schema")]
     pub scale_x: Option<f64>,
