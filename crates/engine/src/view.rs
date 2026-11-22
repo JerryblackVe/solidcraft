@@ -842,8 +842,13 @@ impl<'a> SketchPointVisibility<'a> {
     pub fn shown(s: &crate::Session, sk: &'a Sketch) -> Self {
         let mut v = Self::new(sk);
         if !s.sketch_nodes {
-            let grouped = sk.object_groups.iter().flat_map(|g| &g.curves).filter_map(|c| sk.curve_index(c)).filter_map(|i| sk.curves.get(i));
-            v.hidden.extend(grouped.flat_map(|c| c.kind.point_ids()).filter_map(|i| sk.points.get(i).map(|p| p.id.as_str())));
+            let grouped: std::collections::HashSet<usize> =
+                sk.object_groups.iter().flat_map(|g| &g.curves).filter_map(|c| sk.curve_index(c)).collect();
+            // A point a loose curve also uses stays: it is where that curve starts or ends.
+            let loose: std::collections::HashSet<usize> =
+                sk.curves.iter().enumerate().filter(|(i, _)| !grouped.contains(i)).flat_map(|(_, c)| c.kind.point_ids()).collect();
+            let nodes = grouped.iter().filter_map(|i| sk.curves.get(*i)).flat_map(|c| c.kind.point_ids()).filter(|i| !loose.contains(i));
+            v.hidden.extend(nodes.filter_map(|i| sk.points.get(i).map(|p| p.id.as_str())));
         }
         v
     }

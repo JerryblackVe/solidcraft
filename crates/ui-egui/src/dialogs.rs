@@ -2536,7 +2536,7 @@ fn single_hole_point(app: &SolveApp, d: &Dialog, x: &Sel) -> Option<(u64, String
     let st = crate::open_meshing::session_world(&app.session);
     crate::viewport::visible_sketches(app).into_iter().find_map(|sid| {
         let ss = st.sketch(sid)?;
-        let shown = SnapPoints::of(&ss.sketch);
+        let shown = SnapPoints::shown(&app.session, &ss.sketch);
         let p = ss.sketch.points.iter().find(|p| shown.takes(p) && ss.plane.to_world(p.pos).dist(*point) < 1e-9)?;
         Some((sid, p.id.clone()))
     })
@@ -2569,8 +2569,14 @@ pub(crate) struct SnapPoints<'a> {
 }
 
 impl<'a> SnapPoints<'a> {
+    #[cfg(test)]
     pub(crate) fn of(sk: &'a solidcraft_engine::sketch::Sketch) -> Self {
         Self { hide_linked: sk.view.hide_projected, shown: solidcraft_engine::view::SketchPointVisibility::new(sk) }
+    }
+
+    /// As [`Self::of`], with the window's object or nodes mode: object mode leaves out the points of grouped curves.
+    pub(crate) fn shown(s: &solidcraft_engine::Session, sk: &'a solidcraft_engine::sketch::Sketch) -> Self {
+        Self { hide_linked: sk.view.hide_projected, shown: solidcraft_engine::view::SketchPointVisibility::shown(s, sk) }
     }
 
     /// Does a face place snap to point `p` of the sketch?
