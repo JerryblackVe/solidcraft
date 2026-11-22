@@ -954,6 +954,7 @@ pub(crate) fn absorb(before: &ModelState, after: &ModelState, f: &Feature, weigh
             f.kind,
             FeatureKind::Move { .. }
                 | FeatureKind::Align { .. }
+                | FeatureKind::PlaceOnPlane { .. }
                 | FeatureKind::Rest { .. }
                 | FeatureKind::BodyTransfer { .. }
                 | FeatureKind::SplitFace { .. }

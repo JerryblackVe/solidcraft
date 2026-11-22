@@ -287,6 +287,7 @@ pub const DOCUMENTED: &[&str] = &[
     "solid.pattern.path",
     "solid.pattern.rectangular",
     "solid.pipe",
+    "solid.place_on_plane",
     "solid.press_pull",
     "solid.remove",
     "solid.replace_face",

@@ -543,7 +543,7 @@ pub(crate) fn rigid_predecessor(b: &ModelBody) -> Option<&ModelBody> {
 
     let origin = b.names.origin.as_ref()?;
     let bodies = match &origin.feature.kind {
-        FeatureKind::Move { bodies, copy: false, .. } | FeatureKind::Align { bodies, .. } => bodies,
+        FeatureKind::Move { bodies, copy: false, .. } | FeatureKind::Align { bodies, .. } | FeatureKind::PlaceOnPlane { bodies, .. } => bodies,
         _ => return None,
     };
     if !bodies.iter().any(|name| *name == b.name) {
@@ -587,7 +587,7 @@ pub(crate) fn inherited_edge_predecessor(b: &ModelBody, edge: usize) -> Option<(
 
     let origin = b.names.origin.as_ref()?;
     match &origin.feature.kind {
-        FeatureKind::Move { copy: false, .. } | FeatureKind::Align { .. } => {
+        FeatureKind::Move { copy: false, .. } | FeatureKind::Align { .. } | FeatureKind::PlaceOnPlane { .. } => {
             rigid_predecessor(b)?;
         }
         FeatureKind::Combine { operation: Operation::Join | Operation::NewBody, .. }

@@ -1,0 +1,58 @@
+{
+  "en": {
+    "cmd.solid_place_on_plane": "Place on Plane",
+    "help.solid.place_on_plane": "Moves the selected bodies straight along a plane's normal, without turning them, until the lowest of them rests on the plane, or each rests on it by itself. Use it to set a finished part or a group of parts down on the ground or on another part, keeping where they are relative to each other.",
+    "Place on Plane": "Place on Plane",
+    "PLACE ON PLANE": "PLACE ON PLANE",
+    "Plane (XY if none)": "Plane (XY if none)",
+    "Each body by itself": "Each body by itself"
+  },
+  "es": {
+    "cmd.solid_place_on_plane": "Apoyar en el plano",
+    "help.solid.place_on_plane": "Mueve los cuerpos seleccionados en línea recta según la normal de un plano, sin girarlos, hasta que el más bajo quede apoyado en el plano, o cada uno por separado. Sirve para apoyar una pieza terminada o un grupo de piezas sobre el suelo o sobre otra pieza, conservando su posición relativa.",
+    "Place on Plane": "Apoyar en el plano",
+    "PLACE ON PLANE": "APOYAR EN EL PLANO",
+    "Plane (XY if none)": "Plano (XY si no hay)",
+    "Each body by itself": "Cada cuerpo por separado"
+  },
+  "ja": {
+    "help.solid.place_on_plane": "選択したボディを回転させずに平面の法線方向へまっすぐ動かし、最も低いボディが平面に接するまで、または各ボディがそれぞれ接するまで移動します。完成した部品や部品のまとまりを、互いの位置関係を保ったまま床や別の部品の上に置くときに使います。",
+    "cmd.solid_place_on_plane": "平面に置く",
+    "Place on Plane": "平面に置く",
+    "PLACE ON PLANE": "平面に置く",
+    "Plane (XY if none)": "平面（未選択なら XY）",
+    "Each body by itself": "ボディごとに個別に"
+  },
+  "zh": {
+    "help.solid.place_on_plane": "沿平面法线方向直线移动所选实体，不旋转，直到最低的实体落在平面上，或每个实体各自落在平面上。用于将完成的零件或一组零件放到地面或另一个零件上，并保持它们之间的相对位置。",
+    "cmd.solid_place_on_plane": "放置到平面",
+    "Place on Plane": "放置到平面",
+    "PLACE ON PLANE": "放置到平面",
+    "Plane (XY if none)": "平面（未选则为 XY）",
+    "Each body by itself": "每个实体单独放置"
+  },
+  "ar": {
+    "cmd.solid_place_on_plane": "وضع على المستوى",
+    "help.solid.place_on_plane": "يحرّك الأجسام المحددة في خط مستقيم على طول العمودي على المستوى، دون تدويرها، حتى يستقر أدناها على المستوى، أو يستقر كل منها عليه بمفرده. استخدمه لوضع قطعة منتهية أو مجموعة قطع على الأرض أو على قطعة أخرى مع الحفاظ على مواضعها بعضها بالنسبة لبعض.",
+    "Place on Plane": "وضع على المستوى",
+    "PLACE ON PLANE": "وضع على المستوى",
+    "Plane (XY if none)": "المستوى (XY إن لم يُحدَّد)",
+    "Each body by itself": "كل جسم بمفرده"
+  },
+  "he": {
+    "cmd.solid_place_on_plane": "הנחה על מישור",
+    "help.solid.place_on_plane": "מזיז את הגופים שנבחרו בקו ישר לאורך הנורמל של מישור, בלי לסובב אותם, עד שהנמוך שבהם נח על המישור, או שכל אחד נח עליו בנפרד. השתמשו בזה כדי להניח חלק גמור או קבוצת חלקים על הרצפה או על חלק אחר, תוך שמירה על המיקום שלהם זה ביחס לזה.",
+    "Place on Plane": "הנחה על מישור",
+    "PLACE ON PLANE": "הנחה על מישור",
+    "Plane (XY if none)": "מישור (XY אם לא נבחר)",
+    "Each body by itself": "כל גוף בנפרד"
+  },
+  "vi": {
+    "cmd.solid_place_on_plane": "Đặt lên mặt phẳng",
+    "help.solid.place_on_plane": "Di chuyển các khối đã chọn theo đường thẳng dọc pháp tuyến của một mặt phẳng, không xoay chúng, cho đến khi khối thấp nhất nằm trên mặt phẳng, hoặc từng khối nằm trên đó riêng rẽ. Dùng để đặt một chi tiết đã xong hoặc một nhóm chi tiết lên mặt đất hay lên chi tiết khác mà vẫn giữ vị trí tương đối giữa chúng.",
+    "Place on Plane": "Đặt lên mặt phẳng",
+    "PLACE ON PLANE": "ĐẶT LÊN MẶT PHẲNG",
+    "Plane (XY if none)": "Mặt phẳng (XY nếu không chọn)",
+    "Each body by itself": "Từng khối riêng rẽ"
+  }
+}
