@@ -46,5 +46,11 @@
     "cmd.sketch.star": "Ngôi sao",
     "help.sketch.star": "Vẽ ngôi sao từ tâm, số cánh và kích thước, có thể bo tròn đầu cánh và chỗ lõm. Dùng cho ngôi sao bạn có thể đổi sau: Sửa ngôi sao đổi số cánh, kích thước, độ sâu, độ bo và góc xoay mà không cần vẽ lại.",
     "ui.star.construction_circles": "Vòng tròn dựng hình"
+  },
+  "es": {
+    "cmd.sketch.edit_star": "Editar estrella",
+    "cmd.sketch.star": "Estrella",
+    "help.sketch.star": "Dibuja una estrella a partir de su centro, el número de puntas y el tamaño, con puntas y valles redondeados si quieres. Úsala para una estrella que quizá cambies después: Editar estrella cambia las puntas, el tamaño, la profundidad, el redondeo y el giro sin volver a dibujarla.",
+    "ui.star.construction_circles": "Círculos de construcción"
   }
 }
