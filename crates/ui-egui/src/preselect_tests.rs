@@ -5278,7 +5278,8 @@ fn emboss_keeps_profiles_of_two_sketches_preselected_or_picked() {
 #[test]
 fn emboss_adds_a_sketch_clicked_in_the_browser_to_the_profiles() {
     // Emboss takes profiles of several sketches: a sketch clicked in the Browser joins the
-    // profiles already picked instead of replacing them, and a second click adds nothing twice.
+    // profiles already picked instead of replacing them, and a second click adds nothing twice
+    // and moves nothing.
     let mut h = crate::scenario::Harness::new();
     h.app.run("solid.box", json!({"length":40,"width":40,"height":10})).unwrap();
     let mut sketch = |name: &str, x: f64| {
@@ -5299,5 +5300,8 @@ fn emboss_adds_a_sketch_clicked_in_the_browser_to_the_profiles() {
     assert!(d.pick_sketch(&h.app.session, b));
     assert_eq!(d.inputs[0].items, both);
     assert!(d.pick_sketch(&h.app.session, b));
+    assert_eq!(d.inputs[0].items, both);
+    // A sketch clicked again keeps its place: A stays the first sketch (BUG-6).
+    assert!(d.pick_sketch(&h.app.session, a));
     assert_eq!(d.inputs[0].items, both);
 }
