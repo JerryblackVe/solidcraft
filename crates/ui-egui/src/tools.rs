@@ -42,6 +42,7 @@ pub const MODIFIERS: &[ToolModifiers] = &[
     ToolModifiers { tool: "sketch.polygon.inscribed", scopes: DRAW_SCOPES, bindings: &[], audit: Audit::Implemented },
     ToolModifiers { tool: "sketch.polygon.circumscribed", scopes: DRAW_SCOPES, bindings: &[], audit: Audit::Implemented },
     ToolModifiers { tool: "sketch.polygon.edge", scopes: DRAW_SCOPES, bindings: &[], audit: Audit::Implemented },
+    ToolModifiers { tool: "sketch.star", scopes: DRAW_SCOPES, bindings: &[], audit: Audit::Implemented },
     ToolModifiers { tool: "sketch.slot.center_to_center", scopes: DRAW_SCOPES, bindings: &[], audit: Audit::Implemented },
     ToolModifiers { tool: "sketch.slot.overall", scopes: DRAW_SCOPES, bindings: &[], audit: Audit::Implemented },
     ToolModifiers { tool: "sketch.point", scopes: DRAW_SCOPES, bindings: &[], audit: Audit::Implemented },
@@ -149,6 +150,7 @@ impl Tool {
             "sketch.polygon.inscribed" => ("sketch.polygon.inscribed", Kind::Draw(2)),
             "sketch.polygon.circumscribed" => ("sketch.polygon.circumscribed", Kind::Draw(2)),
             "sketch.polygon.edge" => ("sketch.polygon.edge", Kind::Draw(2)),
+            "sketch.star" => ("sketch.star", Kind::Draw(2)),
             "sketch.slot.center_to_center" => ("sketch.slot.center_to_center", Kind::Draw(3)),
             "sketch.slot.overall" => ("sketch.slot.overall", Kind::Draw(3)),
             "sketch.point" => ("sketch.point", Kind::Draw(1)),
@@ -201,6 +203,7 @@ pub fn hint(id: &str) -> String {
         "sketch.spline3d" => tr("sketch.hint.spline3d").into(),
         "sketch.point3d" => tr("sketch.hint.point3d").into(),
         "sketch.arc.center_point" => tr("sketch.hint.arc.center_point").into(),
+        "sketch.star" => tr("sketch.hint.star").into(),
         "sketch.dimension" => tr("sketch.hint.dimension").into(),
         "sketch.constraint.horizontal_vertical" => tr("sketch.hint.constraint.horizontal_vertical").into(),
         "sketch.slot.center_to_center" | "sketch.slot.overall" => tr("sketch.hint.slot").into(),
@@ -773,6 +776,9 @@ fn run_shape(app: &mut SolveApp, t: &Tool) -> Result<Vec<String>, String> {
             json!({"center": xy(&p[0]), "radius": d(0, 1), "sides": sides, "angle": a})
         }
         "sketch.polygon.edge" => json!({"p0": xy(&p[0]), "p1": xy(&p[1]), "sides": sides}),
+        // The click is the centre, the drag the tip radius, and the first tip points at the cursor
+        // (0 degrees is a tip straight up). Points and depth are the defaults: Edit Star changes them.
+        "sketch.star" => json!({"center": xy(&p[0]), "outer_radius": d(0, 1), "angle": (p[1].0 - p[0].0).angle().to_degrees() - 90.0}),
         "sketch.slot.center_to_center" | "sketch.slot.overall" => {
             let dir = (p[1].0 - p[0].0).normalized().unwrap_or(Vec2::X);
             // Seed the creator with the typed width too: an Overall slot places its cap
@@ -1289,6 +1295,22 @@ pub(crate) fn polygon_outline(t: &Tool, hover: Vec2, sides: f64) -> Option<Vec<V
     Some(corners)
 }
 
+/// The star the Star tool would draw: its tips and valleys with the default 5 points and depth,
+/// the first tip towards the cursor, closed. None until the cursor is off the centre.
+pub(crate) fn star_outline(t: &Tool, hover: Vec2) -> Option<Vec<Vec2>> {
+    let a = t.pts.first()?.0;
+    if t.cmd != "sketch.star" || t.pts.len() != 1 || !a.is_finite() || !hover.is_finite() || a.dist(hover) <= 1e-9 {
+        return None;
+    }
+    let (n, inner) = (5, 0.4);
+    let tip = (hover - a).angle();
+    let mut v: Vec<_> = (0..2 * n)
+        .map(|i| a + Vec2::from_angle(tip + std::f64::consts::PI * i as f64 / n as f64) * (a.dist(hover) * if i % 2 == 0 { 1.0 } else { inner }))
+        .collect();
+    v.push(*v.first()?);
+    Some(v)
+}
+
 /// The pointer ring is left out where it would touch a dimension's value being placed: drawn
 /// after the value, it would sit on the number (#14231). Its largest radius and half its stroke
 /// count, so a ring centred just outside the value is left out too.
@@ -1359,6 +1381,11 @@ pub fn preview(app: &SolveApp, t: &Tool, painter: &egui::Painter, proj: &Proj) {
         }
     }
 
+    if let Some(corners) = star_outline(t, h) {
+        let outline: Vec<_> = corners.iter().map(|c| ss.plane.to_world(*c)).collect();
+        paint_sketch_path(&outline, crate::sketch_palette::mode(app), painter, proj, stroke);
+        return;
+    }
     if let Some(curve) = preview_curve(
         t,
         h,

@@ -11,6 +11,7 @@ fn repeated_first_point_is_neutral_and_drawing_can_continue() {
         ("sketch.circle.three_point", vec![[10, 0, 0], [5, 5, 0]]),
         ("sketch.line", vec![[10, 5, 0]]),
         ("sketch.polygon.inscribed", vec![[10, 5, 0]]),
+        ("sketch.star", vec![[10, 5, 0]]),
         ("sketch.slot.center_to_center", vec![[10, 0, 0], [10, 3, 0]]),
     ] {
         let mut h = Harness::new();
@@ -62,4 +63,43 @@ fn a_squared_corner_keeps_its_snap_only_where_it_was_clicked() {
         assert_eq!(moved, (Vec2::new(50.0, 30.0), None), "{command}: moved to the square");
         assert_eq!(free, (Vec2::new(50.0, 25.0), snap), "{command}: without the chord");
     }
+}
+
+/// The Star tool draws with the mouse: a click is the centre, the second click (or the release of a
+/// drag) the size and the turn, with a preview before it. Double-clicking a curve of the star
+/// opens Edit Star on it.
+#[test]
+fn a_star_is_drawn_from_its_centre_and_a_double_click_edits_it() {
+    use solidcore_record::Vec2;
+    use solidcraft_engine::geom::prelude::*;
+    let mut h = Harness::new();
+    h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+    h.app.cam.distance = 50.0;
+    h.step(&json!({"start":"sketch.star"})).unwrap();
+    assert!(h.app.dialog.is_none() && h.app.tool.is_some(), "Star starts as a drawing tool");
+    h.step(&json!({"click":{"world":[0, 0, 0]}})).unwrap();
+    let tool = h.app.tool.as_ref().unwrap();
+    let outline = super::star_outline(tool, Vec2::new(0.0, 10.0)).unwrap();
+    assert_eq!(outline.len(), 11, "5 tips and 5 valleys, closed");
+    assert!(outline[0].dist(Vec2::new(0.0, 10.0)) < 1e-9 && (outline[1].dist(Vec2::ZERO) - 4.0).abs() < 1e-9, "{outline:?}");
+    assert!(super::star_outline(tool, Vec2::ZERO).is_none());
+    h.step(&json!({"click":{"world":[0, 10, 0]}})).unwrap();
+    let state = h.app.session.world_state().unwrap();
+    let sketch = &state.sketches[0].sketch;
+    let Some(solidcraft_engine::sketch::LinkSource::Star(star)) = sketch.links.first().map(|l| l.source.clone()) else {
+        panic!("a star was drawn: {:?} {:?}", h.app.status, sketch.links)
+    };
+    assert!((star.outer - 10.0).abs() < 1e-9 && star.center.dist(Vec2::ZERO) < 1e-9 && star.angle.abs() < 1e-9, "{star:?}");
+    // A quarter of the way along the edge from the top tip to the next valley (its middle is a snap point).
+    h.app.tool = None;
+    h.app.session.selection.clear();
+    h.frames(2);
+    h.step(&json!({"click":{"world":[-0.588, 8.309, 0]},"double":true})).unwrap();
+    h.frames(2);
+    assert!(
+        matches!(h.app.dialog.as_ref().map(|d| &d.kind), Some(crate::dialogs::Kind::SketchModify(crate::sketch_modify_ui::Mod::Star { .. }))),
+        "the double-click opened Edit Star: {:?} {:?}",
+        h.app.session.selection,
+        h.app.status
+    );
 }
