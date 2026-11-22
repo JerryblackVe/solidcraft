@@ -431,6 +431,12 @@ pub struct EmbossParams {
     /// Raise or sink toward the sketch's back rather than its front. Not with a selected face.
     #[serde(default)]
     pub flip: Option<bool>,
+    /// For each profile in order (the first sketch's, then `more_profiles`'), the index in `faces`
+    /// of the face it goes on, centred on that point. Default: each profile goes onto the face it
+    /// lies over.
+    #[serde(default)]
+    #[schemars(length(min = 1, max = 4096))]
+    pub distribute: Option<Vec<u32>>,
     #[serde(flatten, deserialize_with = "feature_common")]
     pub common: FeatureCommon,
 }

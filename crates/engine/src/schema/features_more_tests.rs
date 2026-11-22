@@ -98,6 +98,7 @@ fn schemas_and_the_key_check_agree() {
             "body_name",
             "body_names",
             "depth",
+            "distribute",
             "dx",
             "dy",
             "face",

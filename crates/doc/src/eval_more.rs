@@ -11,20 +11,24 @@ use solidcraft_geom::{Aabb3, ArcMap, Ring};
 
 pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st: &mut ModelState, warning: &mut Option<String>) -> Result<()> {
     match &f.kind {
-        FeatureKind::Emboss { sketch, profiles, depth, deboss, targets, face, more_profiles, more_faces, dx, dy, angle, flip } => {
+        FeatureKind::Emboss { sketch, profiles, depth, deboss, targets, face, more_profiles, more_faces, dx, dy, angle, flip, distribute } => {
             let d = val(vals, depth, Kind::Length)?;
             if !(d > 0.0) {
                 return Err(DocError::Invalid("the emboss depth must be positive".into()));
             }
             let opt = |e: &Option<crate::Expr>, kind| e.as_ref().map(|e| val(vals, e, kind)).transpose();
             let shift = (opt(dx, Kind::Length)?.unwrap_or(0.0), opt(dy, Kind::Length)?.unwrap_or(0.0), opt(angle, Kind::Angle)?.unwrap_or(0.0));
-            // Each source: its sketch's feature, its plane moved by the shift, its profiles.
+            // Each source: its sketch's feature, its plane moved by the shift, its profiles, and
+            // its plane unmoved (distributed profiles are shifted each on its own face).
             let mut sources = Vec::with_capacity(1 + more_profiles.len());
             for (sk, sel) in std::iter::once((sketch, profiles)).chain(more_profiles.iter().map(|m| (&m.sketch, &m.profiles))) {
                 let ss = st.sketch(sk.0).ok_or_else(|| DocError::Unknown(format!("sketch {sk}")))?;
                 let regions = select_profiles(ss, sel)?;
                 let plane = emboss_shifted_plane(&ss.plane, &regions, shift)?;
-                sources.push((ss.feature, plane, regions));
+                sources.push((ss.feature, plane, regions, ss.plane));
+            }
+            if !distribute.is_empty() && face.is_none() {
+                return Err(DocError::Invalid("an emboss distributes its profiles onto selected faces: select the faces".into()));
             }
             if let Some(first) = face {
                 if *flip {
@@ -39,10 +43,13 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                     return Err(DocError::Invalid("an emboss on selected faces must keep their bodies as its targets".into()));
                 }
                 let signed = if *deboss { -d } else { d };
+                if !distribute.is_empty() {
+                    return emboss_distribute(doc, f, st, &faces, &sources, distribute, shift, signed);
+                }
                 // One face, one sketch: a sketch tangent to a complete cylinder wall, outside or a
                 // bore, takes the wrap (whose refusals stand); a partial wall, a sketch off the wall
                 // and every other face are projected.
-                if let ([face], [(feature, plane, regions)]) = (faces.as_slice(), sources.as_slice()) {
+                if let ([face], [(feature, plane, regions, _)]) = (faces.as_slice(), sources.as_slice()) {
                     let (i, mb, hit, plane) = emboss_face_hit(doc, f, st, face, 0, *feature, plane)?;
                     let result = match kernel::cylinder_emboss_anchor(&mb.body, hit.face, hit.point) {
                         Ok(at) if kernel::infer_cylinder_emboss(&mb.body, &plane, regions, signed)?.is_some() => {
@@ -61,10 +68,10 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                 // Several faces or sketches: each profile is projected onto the selected face it
                 // lies over (laid round a cylinder wall), all of one body's in one step. A profile
                 // over no selected face refuses the whole emboss, so no letter goes missing.
-                let mut placed: Vec<Vec<bool>> = sources.iter().map(|(_, _, r)| vec![false; r.len()]).collect();
+                let mut placed: Vec<Vec<bool>> = sources.iter().map(|(_, _, r, _)| vec![false; r.len()]).collect();
                 let mut per_body: BTreeMap<usize, (ModelBody, Vec<Body>)> = BTreeMap::new();
                 for (slot, face) in faces.iter().enumerate() {
-                    for (k, (feature, plane, regions)) in sources.iter().enumerate() {
+                    for (k, (feature, plane, regions, _)) in sources.iter().enumerate() {
                         let (i, mb, hit, plane) = emboss_face_hit(doc, f, st, face, slot, *feature, plane)?;
                         let at = kernel::emboss_anchor(&mb.body, hit.face, hit.point)?;
                         let pieces = kernel::emboss_face_pieces(&mb.body, hit.face, at, &plane, regions, signed)?;
@@ -104,7 +111,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
             }
             let (a, b) = if *deboss != *flip { (-d, 0.0) } else { (0.0, d) };
             let mut tools = Vec::new();
-            for (_, plane, regions) in &sources {
+            for (_, plane, regions, _) in &sources {
                 tools.extend(kernel::extrude(plane, regions, a, b)?);
             }
             if st.bodies.is_empty() {
@@ -3088,17 +3095,97 @@ fn emboss_shifted_plane(plane: &Plane, regions: &[Region2], (dx, dy, angle): (f6
     if !(dx.is_finite() && dy.is_finite() && angle.is_finite()) || dx.abs().max(dy.abs()) > 1e9 {
         return Err(DocError::Invalid("the emboss shift must be finite".into()));
     }
-    let (mut lo, mut hi) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
-    for p in regions.iter().flat_map(|r| r.outer.polyline(1e-4)) {
-        (lo, hi) = (Vec2::new(lo.x.min(p.x), lo.y.min(p.y)), Vec2::new(hi.x.max(p.x), hi.y.max(p.y)));
-    }
-    let c = if lo.x <= hi.x { Vec2::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0) } else { Vec2::new(0.0, 0.0) };
+    let c = regions_centre(regions);
     let (sin, cos) = angle.sin_cos();
     // A sketch point p lands where the plane put c + R(p - c) + (dx, dy): the new axes are the
     // old ones turned, and the new origin is the old one at c + (dx, dy) - R c.
     let t = Vec2::new(c.x + dx - (cos * c.x - sin * c.y), c.y + dy - (sin * c.x + cos * c.y));
     Plane::new(plane.origin + plane.x * t.x + plane.y * t.y, plane.x * cos + plane.y * sin, plane.y * cos - plane.x * sin)
         .ok_or_else(|| DocError::Invalid("the emboss shift makes no sketch frame".into()))
+}
+
+/// The centre of the box round `regions`' outlines, in sketch coordinates (0, 0 for none).
+fn regions_centre(regions: &[Region2]) -> Vec2 {
+    let (mut lo, mut hi) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
+    for p in regions.iter().flat_map(|r| r.outer.polyline(1e-4)) {
+        (lo, hi) = (Vec2::new(lo.x.min(p.x), lo.y.min(p.y)), Vec2::new(hi.x.max(p.x), hi.y.max(p.y)));
+    }
+    if lo.x <= hi.x { Vec2::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0) } else { Vec2::new(0.0, 0.0) }
+}
+
+/// An Emboss's sources: each sketch's feature, its shifted plane, its profiles and its plane.
+type EmbossSources = [(u64, Plane, Vec<Region2>, Plane)];
+
+/// Distribute: profile `n` (in source order) goes on selected face `distribute[n]`, the centre of
+/// its box on the face's picked point and the sketch laid square to the face's outward normal
+/// (along the sketch's normal on a surface with none), then shifted and turned on its own. All
+/// pieces of a body go on in one step; a profile that runs off its face refuses the emboss.
+#[allow(clippy::too_many_arguments)]
+fn emboss_distribute(
+    doc: &Document,
+    f: &Feature,
+    st: &mut ModelState,
+    faces: &[&EmbossFace],
+    sources: &EmbossSources,
+    distribute: &[u32],
+    shift: (f64, f64, f64),
+    signed: f64,
+) -> Result<()> {
+    let total: usize = sources.iter().map(|(_, _, r, _)| r.len()).sum();
+    if distribute.len() != total {
+        return Err(DocError::Invalid(format!(
+            "emboss: the distribution names a face for {} profiles but there are {total}; give one face for each profile",
+            distribute.len()
+        )));
+    }
+    // Each profile sits centred on its face's point, so two on one face would lie on each other.
+    for (n, slot) in distribute.iter().enumerate() {
+        if let Some(m) = distribute.iter().take(n).position(|other| other == slot) {
+            return Err(DocError::Invalid(format!(
+                "emboss: profiles {} and {} both go on face {}, centred on the same point; give each its own face (pick a face again at another point for a second profile on it)",
+                m + 1,
+                n + 1,
+                u64::from(*slot) + 1
+            )));
+        }
+    }
+    let mut per_body: BTreeMap<usize, (ModelBody, Vec<Body>)> = BTreeMap::new();
+    let profiles = sources.iter().flat_map(|(feature, _, regions, plane)| regions.iter().map(move |r| (*feature, plane, r)));
+    for (n, ((feature, plane, region), slot)) in profiles.zip(distribute).enumerate() {
+        let slot = usize::try_from(*slot).unwrap_or(usize::MAX);
+        let face = faces.get(slot).ok_or_else(|| {
+            DocError::Invalid(format!("emboss: profile {} goes on face {} but {} faces are selected", n + 1, slot.saturating_add(1), faces.len()))
+        })?;
+        let (i, mb, hit, plane) = emboss_face_hit(doc, f, st, face, slot, feature, plane)?;
+        let at = kernel::emboss_anchor(&mb.body, hit.face, hit.point)?;
+        let normal = kernel::emboss_face_normal(&mb.body, hit.face, at)?.unwrap_or_else(|| plane.normal());
+        // The sketch's x laid on the face; on a face square to it (a side wall under a sketch
+        // above), the sketch's normal is the profile's up, so it stands upright. y completes it.
+        let along = |v: Vec3| (v - normal * v.dot(normal)).normalized();
+        let x = along(plane.x)
+            .or_else(|| along(plane.normal()).map(|up| up.cross(normal)))
+            .ok_or_else(|| DocError::Invalid("emboss face frame".into()))?;
+        let c = regions_centre(std::slice::from_ref(region));
+        let y = normal.cross(x);
+        let place = Plane::new(at - x * c.x - y * c.y, x, y).ok_or_else(|| DocError::Invalid("emboss face frame".into()))?;
+        let place = emboss_shifted_plane(&place, std::slice::from_ref(region), shift)?;
+        let piece = kernel::emboss_face_pieces(&mb.body, hit.face, at, &place, std::slice::from_ref(region), signed)?.into_iter().next().flatten();
+        let piece = piece.ok_or_else(|| {
+            DocError::Invalid(format!(
+                "emboss: profile {} runs off face {}: make it smaller or pick a bigger face, or a point nearer the face's middle",
+                n + 1,
+                slot + 1
+            ))
+        })?;
+        per_body.entry(i).or_insert_with(|| (mb, Vec::new())).1.push(piece);
+    }
+    for (i, (mb, pieces)) in per_body {
+        let result = kernel::emboss_apply(&mb.body, pieces, signed)?;
+        if let Some(slot) = st.bodies.get_mut(i) {
+            *slot = ModelBody::new(mb.name, result, mb.feature);
+        }
+    }
+    Ok(())
 }
 
 /// Selected face `slot` of Emboss `f` (`face_names[slot]` names it), found on its body as built so

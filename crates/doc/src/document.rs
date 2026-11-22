@@ -1561,6 +1561,11 @@ pub enum FeatureKind {
         /// Raise or sink toward the sketch's back rather than its front (no face selected).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         flip: bool,
+        /// Distribute: for each profile, in order (the first sketch's, then `more_profiles`'), the
+        /// selected face it goes on (0: `face`, 1 on: `more_faces`), centred on the face's picked
+        /// point. Empty: each profile goes onto the face it lies over.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        distribute: Vec<u32>,
     },
     /// A thin wall from open sketch curves: `thickness` across the sketch plane, filling from
     /// the curves toward the body (to the next face, or `depth`), or with `normal` along the
