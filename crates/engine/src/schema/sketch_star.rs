@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::types::Point2;
+use super::types::{AngleExpr, LengthExpr, NumberExpr};
 
 /// Draw a star in the sketch being edited: outlines kept linked to their numbers, so
 /// `sketch.edit_star` can change the star later (points, size, depth, rounding, turn) without
@@ -15,31 +15,32 @@ use super::types::Point2;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct StarParams {
-    /// The centre, in mm: `[x, y]`.
-    pub center: Point2,
-    /// Distance from the centre to a tip, in mm, above 0.
-    pub outer_radius: f64,
+    /// The centre: `[x, y]`, each a number in mm or an expression over the design's parameters.
+    #[schemars(with = "[LengthExpr; 2]")]
+    pub center: Value,
+    /// Distance from the centre to a tip, in mm, above 0 (a number or an expression).
+    pub outer_radius: LengthExpr,
     /// How many tips, 3 to 200. Default: 5.
     #[serde(default)]
-    pub points: Option<u32>,
+    pub points: Option<NumberExpr>,
     /// How deep the valleys go, as a share of the outer radius: the valley radius, above 0 and
     /// under 100. Default: 40. Ignored with a `skip` of 2 or more.
     #[serde(default)]
-    pub inner_percent: Option<f64>,
+    pub inner_percent: Option<NumberExpr>,
     /// 0 or 1: valleys by `inner_percent`. 2 or more: the regular star `{points/skip}` (a skip
     /// of 2 on 5 points is the pentagram); it must be under half the points and share no factor
     /// with them. Default: 0.
     #[serde(default)]
-    pub skip: Option<u32>,
+    pub skip: Option<NumberExpr>,
     /// Radius in mm of the rounding of each tip. Default: 0 (sharp).
     #[serde(default)]
-    pub tip_round: Option<f64>,
+    pub tip_round: Option<LengthExpr>,
     /// Radius in mm of the rounding of each valley. Default: 0 (sharp).
     #[serde(default)]
-    pub valley_round: Option<f64>,
+    pub valley_round: Option<LengthExpr>,
     /// Turn in degrees, counter-clockwise; 0 has a tip straight up. Default: 0.
     #[serde(default)]
-    pub angle: Option<f64>,
+    pub angle: Option<AngleExpr>,
     /// `true` also draws the construction circles through the tips and the valleys (never a
     /// profile). Default: false.
     #[serde(default)]
@@ -58,30 +59,31 @@ pub struct EditStarParams {
     /// One of the star's curves, by id.
     #[serde(default)]
     pub entity: Option<String>,
-    /// The new centre `[x, y]` in mm.
+    /// The new centre `[x, y]`: numbers in mm or expressions.
     #[serde(default)]
-    pub center: Option<Point2>,
-    /// The new outer radius in mm.
+    #[schemars(with = "Option<[LengthExpr; 2]>")]
+    pub center: Option<Value>,
+    /// The new outer radius in mm (a number or an expression).
     #[serde(default)]
-    pub outer_radius: Option<f64>,
+    pub outer_radius: Option<LengthExpr>,
     /// The new number of tips, 3 to 200.
     #[serde(default)]
-    pub points: Option<u32>,
+    pub points: Option<NumberExpr>,
     /// The new valley depth, a share of the outer radius (above 0, under 100).
     #[serde(default)]
-    pub inner_percent: Option<f64>,
+    pub inner_percent: Option<NumberExpr>,
     /// The new skip (0 or 1: none).
     #[serde(default)]
-    pub skip: Option<u32>,
+    pub skip: Option<NumberExpr>,
     /// The new tip rounding radius in mm.
     #[serde(default)]
-    pub tip_round: Option<f64>,
+    pub tip_round: Option<LengthExpr>,
     /// The new valley rounding radius in mm.
     #[serde(default)]
-    pub valley_round: Option<f64>,
+    pub valley_round: Option<LengthExpr>,
     /// The new turn in degrees.
     #[serde(default)]
-    pub angle: Option<f64>,
+    pub angle: Option<AngleExpr>,
     /// Draw (or stop drawing) the construction circles.
     #[serde(default)]
     pub circles: Option<bool>,
@@ -95,7 +97,9 @@ pub struct StarResult {
     /// Its curves' ids (outline, then construction circles).
     pub curves: Vec<String>,
     /// The star's numbers now: `{center, points, outer_radius, inner_percent, skip, tip_round,
-    /// valley_round, angle, circles}`.
+    /// valley_round, angle, circles}`, and `exprs`: the expressions behind those typed over the
+    /// design's parameters (`{x, y, points, outer, inner_percent, skip, tip_round, valley_round,
+    /// angle}`), absent when none was.
     pub star: Value,
     /// In the warn parameter-check mode: what the call's parameters got wrong.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

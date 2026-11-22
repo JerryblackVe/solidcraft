@@ -361,17 +361,20 @@ pub fn edit_star(app: &mut SolveApp, id: &str) -> bool {
     let Some(sk) = state.sketch(sid).map(|s| &s.sketch) else { return false };
     let Some(link) = sk.curve_index(id).and_then(|i| sk.curves.get(i)).and_then(|c| c.link.clone()) else { return false };
     let Some(LinkSource::Star(star)) = sk.link(&link).map(|l| l.source.clone()) else { return false };
+    // A number typed as an expression over the parameters shows that expression again.
+    let e = &star.exprs;
+    let shown = |expr: &Option<String>, number: String| expr.clone().unwrap_or(number);
     let mm = |v: f64| format!("{v} mm");
     let kind = Mod::Star {
-        x: mm(star.center.x),
-        y: mm(star.center.y),
-        points: star.points.to_string(),
-        outer: mm(star.outer),
-        inner: star.inner_percent.to_string(),
-        skip: star.skip.to_string(),
-        tip_round: mm(star.tip_round),
-        valley_round: mm(star.valley_round),
-        angle: format!("{} deg", star.angle),
+        x: shown(&e.x, mm(star.center.x)),
+        y: shown(&e.y, mm(star.center.y)),
+        points: shown(&e.points, star.points.to_string()),
+        outer: shown(&e.outer, mm(star.outer)),
+        inner: shown(&e.inner_percent, star.inner_percent.to_string()),
+        skip: shown(&e.skip, star.skip.to_string()),
+        tip_round: shown(&e.tip_round, mm(star.tip_round)),
+        valley_round: shown(&e.valley_round, mm(star.valley_round)),
+        angle: shown(&e.angle, format!("{} deg", star.angle)),
         circles: star.circles,
     };
     let mut dialog = Dialog::new(Kind::SketchModify(kind), Vec::new());
@@ -1287,16 +1290,33 @@ pub fn commands(app: &SolveApp, k: &Mod, inputs: &[SelInput], extra: &Map<String
                 }
                 Ok(v.round() as u32)
             };
+            // A field that names a parameter goes as its expression, so the star follows the
+            // parameter; any other as the number it comes to.
+            let follows = |text: &str| !solidcraft_engine::doc::expr::references(text.trim()).is_empty();
+            let value = |label: &str, text: &str, kind: ValueKind| -> Result<Value, String> {
+                let v = number(label, text, kind)?;
+                Ok(if follows(text) {
+                    json!(text.trim())
+                } else if kind == ValueKind::Angle {
+                    // The command takes degrees; an evaluated angle is in radians.
+                    json!(v.to_degrees())
+                } else {
+                    json!(v)
+                })
+            };
+            let whole = |label: &str, text: &str| -> Result<Value, String> {
+                let n = count(label, text)?;
+                Ok(if follows(text) { json!(text.trim()) } else { json!(n) })
+            };
             let p = json!({
-                "center": [number("X", x, ValueKind::Length)?, number("Y", y, ValueKind::Length)?],
-                "points": count("Points", points)?,
-                "outer_radius": number("Outer Radius", outer, ValueKind::Length)?,
-                "inner_percent": number("Valley Depth %", inner, ValueKind::Unitless)?,
-                "skip": count("Skip", skip)?,
-                "tip_round": number("Tip Rounding", tip_round, ValueKind::Length)?,
-                "valley_round": number("Valley Rounding", valley_round, ValueKind::Length)?,
-                // The command takes degrees; an evaluated angle is in radians.
-                "angle": number("Angle", angle, ValueKind::Angle)?.to_degrees(),
+                "center": [value("X", x, ValueKind::Length)?, value("Y", y, ValueKind::Length)?],
+                "points": whole("Points", points)?,
+                "outer_radius": value("Outer Radius", outer, ValueKind::Length)?,
+                "inner_percent": value("Valley Depth %", inner, ValueKind::Unitless)?,
+                "skip": whole("Skip", skip)?,
+                "tip_round": value("Tip Rounding", tip_round, ValueKind::Length)?,
+                "valley_round": value("Valley Rounding", valley_round, ValueKind::Length)?,
+                "angle": value("Angle", angle, ValueKind::Angle)?,
                 "circles": *circles,
             });
             (if extra.contains_key("link") { "sketch.edit_star" } else { "sketch.star" }, p)

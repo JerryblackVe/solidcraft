@@ -41,6 +41,83 @@ pub struct StarSpec {
     /// Also draw the construction circles through the tips and through the valleys.
     #[serde(default)]
     pub circles: bool,
+    /// The expressions behind the numbers above that were typed over the design's parameters.
+    #[serde(default, skip_serializing_if = "StarExprs::is_empty")]
+    pub exprs: StarExprs,
+}
+
+/// The expressions behind a star's numbers that were typed over the design's parameters (`"R / 2"`,
+/// `"n"`). The numbers of [`StarSpec`] are what they gave last: the document evaluates them against
+/// its parameters before the star's outline is rebuilt, so the star follows a parameter. A number
+/// typed without an expression is kept as typed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StarExprs {
+    /// The centre's x and y (lengths).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<String>,
+    /// How many tips (a whole number).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub points: Option<String>,
+    /// The outer radius (a length).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outer: Option<String>,
+    /// The valley depth in percent (no unit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_percent: Option<String>,
+    /// The skip (a whole number).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip: Option<String>,
+    /// The roundings (lengths).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip_round: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valley_round: Option<String>,
+    /// The turn (an angle).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<String>,
+}
+
+impl StarExprs {
+    pub fn is_empty(&self) -> bool {
+        *self == StarExprs::default()
+    }
+
+    /// The expressions with what each one sets, for finding and renaming the parameters they use.
+    pub fn list(&self) -> Vec<(&'static str, &String)> {
+        [
+            ("Star X", &self.x),
+            ("Star Y", &self.y),
+            ("Star points", &self.points),
+            ("Star radius", &self.outer),
+            ("Star depth", &self.inner_percent),
+            ("Star skip", &self.skip),
+            ("Star tip rounding", &self.tip_round),
+            ("Star valley rounding", &self.valley_round),
+            ("Star angle", &self.angle),
+        ]
+        .into_iter()
+        .filter_map(|(what, e)| e.as_ref().map(|e| (what, e)))
+        .collect()
+    }
+
+    pub fn list_mut(&mut self) -> Vec<&mut String> {
+        [
+            &mut self.x,
+            &mut self.y,
+            &mut self.points,
+            &mut self.outer,
+            &mut self.inner_percent,
+            &mut self.skip,
+            &mut self.tip_round,
+            &mut self.valley_round,
+            &mut self.angle,
+        ]
+        .into_iter()
+        .filter_map(Option::as_mut)
+        .collect()
+    }
 }
 
 impl StarSpec {
@@ -187,6 +264,7 @@ mod tests {
             valley_round: 0.0,
             angle: 0.0,
             circles: false,
+            exprs: Default::default(),
         }
     }
 
