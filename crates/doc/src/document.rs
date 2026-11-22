@@ -5789,6 +5789,8 @@ impl Document {
         if sk.wires.iter().any(|w| w.link.is_none() && !w.fit.is_empty()) {
             report.wires = Some(sk.solve_wires_with(None, analysis != solidcraft_sketch::Analysis::StatusOnly));
         }
+        // A mirror copy of a star follows its mirror line to where the solve left it.
+        sk.refresh_star_followers()?;
         Ok(report)
     }
 }

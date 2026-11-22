@@ -209,7 +209,7 @@ impl Sketch {
             }
             let transform = |p| rotate(c, angle)(p) + displacement;
             let follow =
-                |source: &String| crate::StarFollow { source: source.clone(), flip: false, turn: angle.to_degrees(), shift: transform(Vec2::ZERO) };
+                |source: &String| crate::StarFollow { source: source.clone(), flip: false, turn: angle.to_degrees(), shift: transform(Vec2::ZERO), line: None };
             let instance = if let Some(i) = existing.iter().position(|instance| instance.index == index) {
                 let instance = existing.remove(i);
                 for (seed, copy) in old.stars.iter().zip(&instance.stars) {
