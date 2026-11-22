@@ -77,6 +77,7 @@ pub(super) fn run(s: &mut Session, p: &Value, circular: bool) -> Result<Value> {
             expressions.insert("spacing2".into(), e);
         }
         let (mut cs, mut ps) = entities(sk, &params, cmd)?;
+        refuse_star(sk, &cs, &ps, cmd)?;
         cs.sort_unstable();
         cs.dedup();
         ps.sort_unstable();

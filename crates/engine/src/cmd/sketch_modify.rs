@@ -168,21 +168,21 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SKETCH", "PATTERN")
         .icon("sketch_mirror")
         .enabled(in_sketch)
-        .params(concat!("entities: [curve/point ids], line: straight curve id, x / y for a sketch axis, or {axis: X|Y|Z} for an origin axis (the mirror line is the axis's projection into the sketch plane; an axis perpendicular to the plane is refused) (symmetry constraints are added)", created_doc!())),
+        .params(concat!("entities: [curve/point ids], line: straight curve id, x / y for a sketch axis, or {axis: X|Y|Z} for an origin axis (the mirror line is the axis's projection into the sketch plane; an axis perpendicular to the plane is refused) (symmetry constraints are added; a star is refused: copy it with sketch.move copy: true or sketch.copy and sketch.paste, and each copy stays an editable star)", created_doc!())),
     CommandSpec::new("sketch.pattern.circular", "Circular Pattern", crate::checked!("sketch.pattern.circular", pattern_circular))
         .contract(&CIRCULAR_PATTERN_CONTRACT)
         .output(output_schema_for::<PatternResult>)
         .at("SKETCH", "PATTERN")
         .icon("sketch_circ_pattern")
         .enabled(in_sketch)
-        .params(concat!("entities: [ids], center: [x,y] or point ref, count: 2…500 (number or unitless expression, retained through edits), angle?: total deg, number or expression (default 360); alignment?: left|center|right (default right); reversed?: bool (default false). Quantity includes the original. Center balances copies around it; reversed flips the direction and extra side for even totals. Partial arcs span angle with angle/(count-1) spacing; full turns use angle/count. Adds associative pattern constraints; a coordinate center creates a constrainable point. Returns pattern and center ids. pattern?: existing pattern id to edit (omitted values retained; surviving instance ids retained)", created_doc!())),
+        .params(concat!("entities: [ids], center: [x,y] or point ref, count: 2…500 (number or unitless expression, retained through edits; a star is refused, as by sketch.mirror), angle?: total deg, number or expression (default 360); alignment?: left|center|right (default right); reversed?: bool (default false). Quantity includes the original. Center balances copies around it; reversed flips the direction and extra side for even totals. Partial arcs span angle with angle/(count-1) spacing; full turns use angle/count. Adds associative pattern constraints; a coordinate center creates a constrainable point. Returns pattern and center ids. pattern?: existing pattern id to edit (omitted values retained; surviving instance ids retained)", created_doc!())),
     CommandSpec::new("sketch.pattern.rectangular", "Rectangular Pattern", crate::checked!("sketch.pattern.rectangular", pattern_rect))
         .contract(&RECTANGULAR_PATTERN_CONTRACT)
         .output(output_schema_for::<PatternResult>)
         .at("SKETCH", "PATTERN")
         .icon("sketch_rect_pattern")
         .enabled(in_sketch)
-        .params(concat!("entities: [ids], count, spacing; count2?, spacing2?; counts: positive integer numbers or expressions, at most 500 instances total; spacings: length numbers or expressions; direction?, direction2?: sketch line ids (live references); dir?, dir2?: [x,y] vectors (defaults: sketch x, perpendicular to direction 1); alignment?, alignment2?: left|center|right (default right). Signed spacings reverse each direction. reversed?, reversed2?: bool (default false); reverses placement and the extra side of even centered totals. Quantities include the original. Adds associative pattern constraints. Returns pattern id. pattern?: existing pattern id to edit (omitted values retained; surviving instance ids retained)", created_doc!())),
+        .params(concat!("entities: [ids] (a star is refused, as by sketch.mirror), count, spacing; count2?, spacing2?; counts: positive integer numbers or expressions, at most 500 instances total; spacings: length numbers or expressions; direction?, direction2?: sketch line ids (live references); dir?, dir2?: [x,y] vectors (defaults: sketch x, perpendicular to direction 1); alignment?, alignment2?: left|center|right (default right). Signed spacings reverse each direction. reversed?, reversed2?: bool (default false); reverses placement and the extra side of even centered totals. Quantities include the original. Adds associative pattern constraints. Returns pattern id. pattern?: existing pattern id to edit (omitted values retained; surviving instance ids retained)", created_doc!())),
 ];
 
 /// A reply built from its typed value, which is what the command's output schema describes.
@@ -4005,6 +4005,21 @@ fn freeze_offset_profiles(doc: &mut solidcraft_doc::Document, sketch: u64, bound
 // Copies: mirror, patterns, move, scale
 
 /// Curves and lone points named in `entities`.
+/// Refuse copying a star through a mirror or a pattern: the copies would be loose curves tied to
+/// the star's points, and they come apart when the star gets more or fewer tips.
+fn refuse_star(sk: &Sketch, cs: &[usize], ps: &[usize], cmd: &str) -> Result<()> {
+    let star = |l: Option<&str>| l.and_then(|l| sk.link(l)).is_some_and(|l| l.kind == solidcraft_sketch::LinkKind::Star);
+    if cs.iter().any(|c| star(sk.curves.get(*c).and_then(|c| c.link.as_deref())))
+        || ps.iter().any(|q| star(sk.points.get(*q).and_then(|x| x.link.as_deref())))
+    {
+        return Err(bad(
+            cmd,
+            "a star can't be mirrored or patterned yet: copy it with Move (copy) or Copy and Paste, and each copy stays a star you can edit",
+        ));
+    }
+    Ok(())
+}
+
 fn entities(sk: &Sketch, p: &Value, cmd: &str) -> Result<(Vec<usize>, Vec<usize>)> {
     let ids = string_list(cmd, p, "entities")?;
     if ids.is_empty() {
@@ -4175,6 +4190,7 @@ fn mirror(s: &mut Session, p: &Value) -> Result<Value> {
         p.get("line").filter(|line| line.is_object()).map(|line| super::sketch_project::origin_axis_line(s, p, line, cmd)).transpose()?;
     let (out, info) = edit(s, p, cmd, false, |sk, _| {
         let (cs, ps) = entities(sk, p, cmd)?;
+        refuse_star(sk, &cs, &ps, cmd)?;
         let l = if let Some((source, geom)) = origin_axis {
             let link =
                 sk.links.iter().find(|link| link.kind == solidcraft_sketch::LinkKind::Project && link.source == source).map(|link| link.id.clone());

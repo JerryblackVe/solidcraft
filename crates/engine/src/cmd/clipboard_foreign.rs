@@ -31,7 +31,7 @@ fn independent_links(sketch: &solidcraft_sketch::Sketch, features: &BTreeSet<u64
     use solidcraft_sketch::LinkSource as L;
     for link in &sketch.links {
         let supported = match &link.source {
-            L::Text { .. } | L::SketchAxis { .. } => true,
+            L::Text { .. } | L::Star(_) | L::SketchAxis { .. } => true,
             L::SketchCurve { sketch, .. } | L::SketchPoint { sketch, .. } => features.contains(sketch),
             L::Origin | L::Axis { .. } => !moved,
             L::Plane { name } => !moved && solidcore_record::Plane::named(name).is_some(),
@@ -81,6 +81,7 @@ fn parameters(target: &mut Document, source: &Document, features: &[Feature], ma
                 .iter()
                 .filter_map(|l| match &l.source {
                     solidcraft_sketch::LinkSource::Text { exprs, .. } => Some(exprs.list()),
+                    solidcraft_sketch::LinkSource::Star(spec) => Some(spec.exprs.list()),
                     _ => None,
                 })
                 .flatten()

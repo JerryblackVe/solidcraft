@@ -83,7 +83,7 @@ pub struct SketchClip {
     pub points: Vec<Vec2>,
     pub curves: Vec<ClipCurve>,
     pub constraints: Vec<ClipConstraint>,
-    /// Text sources (their outlines are made again on paste). A path, when kept, is the index of
+    /// Text and star sources (their outlines are made again on paste). A path, when kept, is the index of
     /// a clipboard curve.
     pub texts: Vec<(LinkSource, Option<usize>)>,
     /// Lone points (not used by a copied curve), as indices into `points`.
@@ -126,8 +126,10 @@ impl SketchClip {
             *expr = format!("{}", if shown.is_finite() { shown } else { 0.0 });
         }
         for (src, _) in &mut clip.texts {
-            if let LinkSource::Text { exprs, .. } = src {
-                *exprs = Default::default();
+            match src {
+                LinkSource::Text { exprs, .. } => *exprs = Default::default(),
+                LinkSource::Star(spec) => spec.exprs = Default::default(),
+                _ => {}
             }
         }
         clip
@@ -148,9 +150,10 @@ fn chosen(s: &Session, p: &Value, cmd: &str) -> Result<Vec<String>> {
         .collect())
 }
 
+/// The text or star curve `ci` is part of: copied as its source, so the paste is one too.
 fn text_of(sk: &Sketch, ci: usize) -> Option<&str> {
     let link = sk.curves.get(ci)?.link.as_deref()?;
-    sk.link(link).filter(|l| l.kind == LinkKind::Text).map(|l| l.id.as_str())
+    sk.link(link).filter(|l| matches!(l.kind, LinkKind::Text | LinkKind::Star)).map(|l| l.id.as_str())
 }
 
 fn copy(s: &mut Session, p: &Value) -> Result<Value> {
@@ -180,7 +183,13 @@ fn clip_of(doc: &Document, sk: &Sketch, id: u64, ids: &[String], whole: bool, cm
                 None => {}
             }
         } else if let Some(q) = sk.resolve_point(e) {
-            match sk.points.get(q).and_then(|x| x.link.as_deref()).and_then(|l| sk.link(l)).filter(|l| l.kind == LinkKind::Text) {
+            match sk
+                .points
+                .get(q)
+                .and_then(|x| x.link.as_deref())
+                .and_then(|l| sk.link(l))
+                .filter(|l| matches!(l.kind, LinkKind::Text | LinkKind::Star))
+            {
                 Some(l) if !texts.contains(&l.id) => texts.push(l.id.clone()),
                 Some(_) => {}
                 None if !ps.contains(&q) => ps.push(q),
@@ -240,6 +249,10 @@ fn clip_of(doc: &Document, sk: &Sketch, id: u64, ids: &[String], whole: bool, cm
     }
     for t in &texts {
         let Some(mut src) = sk.link(t).map(|l| l.source.clone()) else { continue };
+        if matches!(src, LinkSource::Star(_)) {
+            clip.texts.push((src, None));
+            continue;
+        }
         let LinkSource::Text { style, .. } = &mut src else { continue };
         // A text on a path copied with its path follows the copy; otherwise it is set straight.
         let path = style.path.as_deref().and_then(|pid| sk.curve_index(pid)).and_then(|pc| cmap.get(&pc).copied());
@@ -273,7 +286,7 @@ fn clip_of(doc: &Document, sk: &Sketch, id: u64, ids: &[String], whole: bool, cm
     let out = Copied {
         curves: clip.curves.len() + texts.iter().map(|t| sk.link_curves(t).len()).sum::<usize>(),
         points: clip.lone.len(),
-        texts: texts.len(),
+        texts: texts.iter().filter(|t| sk.link(t).is_some_and(|l| l.kind == LinkKind::Text)).count(),
         constraints: clip.constraints.len(),
         center: [clip.center.x, clip.center.y],
         param_warnings: Vec::new(),
@@ -294,8 +307,17 @@ fn cut(s: &mut Session, p: &Value) -> Result<Value> {
     let mut q = if p.is_null() { json!({}) } else { p.clone() };
     q["entities"] = json!(entities);
     let out = copy(s, &q)?;
+    // A text or a star was copied whole, so it goes whole: by its link, not curve by curve.
+    let sk = sketch_store::read(&s.doc, sketch_store::target(s, p, "sketch.cut")?)?;
+    let mut gone: Vec<String> = Vec::new();
+    for e in &entities {
+        let e = super::sketch_create::text_link(sk, e).unwrap_or(e).to_string();
+        if !gone.contains(&e) {
+            gone.push(e);
+        }
+    }
     let delete = super::find_command("sketch.delete").ok_or_else(|| bad("sketch.cut", "sketch.delete is missing"))?;
-    let mut d = json!({ "entities": entities });
+    let mut d = json!({ "entities": gone });
     if let Some(sk) = p.get("sketch") {
         d["sketch"] = sk.clone();
     }
@@ -498,6 +520,15 @@ fn paste_clip(sk: &mut Sketch, doc: &mut Document, clip: &SketchClip, t: Vec2) -
     let mut curve_ids: Vec<String> = made.iter().filter_map(|i| sk.curves.get(*i).map(|c| c.id.clone())).collect();
     for (src, path) in &clip.texts {
         let mut src = src.clone();
+        if let LinkSource::Star(spec) = &mut src {
+            // As a text: the copy sits where it was pasted, its other numbers keep their expressions.
+            spec.center += t;
+            (spec.exprs.x, spec.exprs.y) = (None, None);
+            let geom = solidcraft_sketch::star_geometry(spec)?;
+            let link = sk.add_link(LinkKind::Star, src, &geom)?;
+            curve_ids.extend(sk.link_curves(&link).into_iter().filter_map(|i| sk.curves.get(i).map(|c| c.id.clone())));
+            continue;
+        }
         let LinkSource::Text { at, style, exprs, .. } = &mut src else { continue };
         style.path = path.and_then(|k| made.get(k)).and_then(|i| sk.curves.get(*i)).map(|c| c.id.clone());
         *at += t;

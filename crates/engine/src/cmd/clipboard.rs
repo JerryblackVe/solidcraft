@@ -367,6 +367,27 @@ mod tests {
     }
 
     #[test]
+    fn a_star_pasted_into_another_design_brings_the_parameter_it_was_typed_over() {
+        // MEJ-4: the other design's own `R` is another thing; the star keeps the copied one.
+        let mut source = Session::default();
+        run(&mut source, "parameters.add", json!({"name": "R", "expression": "10 mm"}));
+        run(&mut source, "sketch.create", json!({"plane": "XY", "name": "S"}));
+        run(&mut source, "sketch.star", json!({"center": [0, 0], "outer_radius": "R"}));
+        run(&mut source, "sketch.finish", json!({}));
+        run(&mut source, "timeline.copy", json!({"features": ["S"]}));
+        let mut target = Session::default();
+        run(&mut target, "parameters.add", json!({"name": "R", "expression": "7 mm"}));
+        target.foreign_copy = source.foreign_copy.clone();
+        let id = run(&mut target, "timeline.paste", json!({"from_design": true}))["pasted"][0]["id"].as_u64().unwrap();
+        let sk = target.doc.sketch(id).unwrap();
+        let Some(solidcraft_sketch::LinkSource::Star(spec)) = sk.links.first().map(|l| &l.source) else { panic!("a star") };
+        let name = spec.exprs.outer.clone().unwrap();
+        assert_ne!(name, "R", "not the other design's R");
+        assert_eq!(target.doc.param(&name).unwrap().expr, "10 mm");
+        assert!((spec.outer - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn foreign_sketch_paste_keeps_parameter_graph_snapshot_and_undo() {
         let mut source = dimensioned_sketch();
         run(&mut source, "timeline.copy", json!({"features": ["S"]}));

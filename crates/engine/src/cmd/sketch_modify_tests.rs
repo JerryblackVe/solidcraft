@@ -2725,6 +2725,53 @@ fn an_import_can_come_locked_and_nodes_mode_shows_the_points_of_grouped_curves()
     assert!(s.execute("sketch.nodes_mode", &json!({"nodes": "yes"})).is_err());
 }
 
+#[test]
+fn a_star_copied_and_pasted_stays_a_star_and_mirroring_or_patterning_one_is_refused() {
+    // MEJ-4: the pasted copy is a star of its own, still over the parameter its radius was typed as.
+    let mut s = new_sketch();
+    run(&mut s, "parameters.add", json!({"name": "R", "expression": "10 mm"}));
+    let r = run(&mut s, "sketch.star", json!({"center": [40, 0], "outer_radius": "R", "points": 5}));
+    let (star, curves) = (r["link"].as_str().unwrap().to_string(), r["curves"].clone());
+    let copied = run(&mut s, "sketch.copy", json!({"entities": curves}));
+    assert_eq!(copied["texts"], json!(0), "a star is not a text");
+    run(&mut s, "sketch.paste", json!({"at": [0, 40]}));
+    let links: Vec<String> = sketch(&s).links.iter().map(|l| l.id.clone()).collect();
+    assert_eq!(links.len(), 2, "two stars");
+    let copy = links.iter().find(|l| **l != star).unwrap().clone();
+    let e = run(&mut s, "sketch.edit_star", json!({"link": copy}));
+    assert_eq!((e["star"]["points"].as_u64(), e["star"]["exprs"].clone()), (Some(5), json!({"outer": "R"})), "{e}");
+    let at = e["star"]["center"].clone();
+    assert!(at[1].as_f64().unwrap() > 30.0, "the copy sits where it was pasted: {at}");
+    // Both follow R; the copy turns into an 8 point star alone.
+    run(&mut s, "parameters.change", json!({"name": "R", "expression": "15 mm"}));
+    run(&mut s, "sketch.edit_star", json!({"link": copy, "points": 8}));
+    let o = run(&mut s, "sketch.edit_star", json!({"link": star}));
+    let c = run(&mut s, "sketch.edit_star", json!({"link": copy}));
+    assert_eq!((o["star"]["points"].as_u64(), o["star"]["outer_radius"].as_f64()), (Some(5), Some(15.0)), "{o}");
+    assert_eq!((c["star"]["points"].as_u64(), c["star"]["outer_radius"].as_f64(), c["star"]["center"].clone()), (Some(8), Some(15.0), at), "{c}");
+    // A mirror or a pattern of a star is refused with what to do instead, and changes nothing.
+    let before = s.doc.to_json();
+    let tip = sketch(&s).link_points(&star)[0];
+    let tip = sketch(&s).points[tip].id.clone();
+    for (command, p) in [
+        ("sketch.mirror", json!({"entities": curves, "line": "y"})),
+        ("sketch.pattern.circular", json!({"entities": curves, "center": [0, 0], "count": 3})),
+        ("sketch.pattern.rectangular", json!({"entities": [tip], "count": 3, "spacing": 30})),
+    ] {
+        let err = s.execute(command, &p).unwrap_err().to_string();
+        assert!(err.contains("Move (copy) or Copy and Paste"), "{command}: {err}");
+        assert_eq!(s.doc.to_json(), before, "{command}");
+    }
+    // Cutting one of its curves takes the whole star, as copying does; pasting brings it back.
+    let one = sketch(&s).link_curves(&copy)[0];
+    let one = sketch(&s).curves[one].id.clone();
+    run(&mut s, "sketch.cut", json!({"entities": [one]}));
+    assert_eq!(sketch(&s).links.len(), 1, "the cut star is gone whole");
+    assert!(sketch(&s).curves.iter().all(|c| c.link.is_some()), "no loose piece of it is left");
+    run(&mut s, "sketch.paste", json!({}));
+    assert_eq!(sketch(&s).links.len(), 2);
+}
+
 /// Volumes (mm³) of the bodies in the design, smallest first.
 fn body_volumes(s: &mut Session) -> Vec<f64> {
     let m = run(s, "inspect.measure", json!({}));
