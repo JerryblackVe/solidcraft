@@ -129,8 +129,67 @@ fn picked_box(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<(Vec<Vec<Vec
 pub fn refresh(app: &mut SolveApp) {
     let Some(d) = app.dialog.as_ref().filter(|d| matches!(d.kind, Kind::SketchModify(Mod::Transform { .. }))) else { return };
     let boxed = picked_box(app, d).map(|(_, middle, size)| (middle, size));
-    if let Some(Kind::SketchModify(Mod::Transform { frame, .. })) = app.dialog.as_mut().map(|d| &mut d.kind) {
+    // The pivot a group saves comes into the window when the group does (not while a handle is
+    // dragged: the window's pivot is the newer one then).
+    let group = picked_group(app, d);
+    let seen = d.extra.get("pivot_group").and_then(|v| v.as_str()).map(str::to_owned);
+    let load = group.as_ref().map(|g| g.0.clone()) != seen && app.viewport.transform_drag.is_none();
+    if let Some(Kind::SketchModify(Mod::Transform { frame, pivot, .. })) = app.dialog.as_mut().map(|d| &mut d.kind) {
         *frame = boxed;
+        if load && let Some((_, saved)) = &group {
+            *pivot = saved.map(|p| [p.x, p.y]);
+        }
+    }
+    if load && let Some(d) = app.dialog.as_mut() {
+        match group {
+            Some((id, _)) => d.extra.insert("pivot_group".into(), serde_json::json!(id)),
+            None => d.extra.remove("pivot_group"),
+        };
+    }
+}
+
+/// The group all the picked curves are in (its id) and the pivot it saves; None when a point or a
+/// curve outside a group is picked, or the curves are of several groups.
+fn picked_group(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<(String, Option<Vec2>)> {
+    let state = crate::open_meshing::session_world(&app.session);
+    let sk = &state.sketch(app.session.active_sketch?)?.sketch;
+    let ids = crate::sketch_modify_ui::entity_ids(&app.session, &d.inputs, 0);
+    let g = sk.object_group_of(ids.first()?)?;
+    // One set lookup per curve: a drawing may hold thousands, and this runs every frame.
+    let members: std::collections::HashSet<&str> = g.curves.iter().map(String::as_str).collect();
+    ids.iter().all(|id| members.contains(id.as_str())).then(|| (g.id.clone(), g.pivot))
+}
+
+/// Save the window's pivot with the group the picked curves are (`sketch.group_pivot`), or the
+/// group's middle again with None.
+fn save_pivot(app: &mut SolveApp, pivot: Option<Vec2>) {
+    let Some((group, saved)) = app.dialog.as_ref().and_then(|d| picked_group(app, d)) else { return };
+    if saved == pivot {
+        return;
+    }
+    let params = match pivot {
+        Some(p) => serde_json::json!({"group": group, "pivot": [p.x, p.y]}),
+        None => serde_json::json!({"group": group}),
+    };
+    if let Err(e) = app.run("sketch.group_pivot", params) {
+        app.set_status(e, true);
+    }
+}
+
+/// Under the Transform window's fields: Center Pivot, when the pivot was moved, puts it back at the
+/// middle of the box (and in a group, in the design too).
+pub(crate) fn pivot_row(app: &mut SolveApp, d: &mut crate::dialogs::Dialog, ui: &mut egui::Ui) {
+    let Kind::SketchModify(Mod::Transform { pivot: Some(_), .. }) = &d.kind else { return };
+    if crate::ui_kit::button(ui, solidcraft_ui_text::tr("ui.transform_center_pivot"), crate::ui_kit::Button::Small).clicked() {
+        if let Kind::SketchModify(Mod::Transform { pivot, .. }) = &mut d.kind {
+            *pivot = None;
+        }
+        // `d` is out of the app while the window is drawn, so the group is found through it.
+        if let Some((group, Some(_))) = picked_group(app, d)
+            && let Err(e) = app.run("sketch.group_pivot", serde_json::json!({"group": group}))
+        {
+            app.set_status(e, true);
+        }
     }
 }
 
@@ -334,8 +393,13 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
                 store(k, &now, drag.part == Part::Pivot);
             }
         }
-        if response.drag_stopped() {
-            app.viewport.transform_drag = None;
+        if response.drag_stopped()
+            && let Some(drag) = app.viewport.transform_drag.take()
+            && drag.part == Part::Pivot
+            && let Some(Kind::SketchModify(Mod::Transform { pivot: Some(q), .. })) = app.dialog.as_ref().map(|d| &d.kind)
+        {
+            let q = Vec2::new(q[0], q[1]);
+            save_pivot(app, Some(q));
         }
     }
 }

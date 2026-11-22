@@ -1,18 +1,20 @@
 //! `sketch.group` and `sketch.ungroup`: curves made one object, and taken apart again.
 
 use serde_json::{Value, json};
+use solidcore_record::Vec2;
 use solidcraft_sketch::{GroupLock, Sketch};
 
 use super::sketch_store;
 use super::{CommandSpec, in_sketch};
 use crate::params::{bad, str_, string_list};
-use crate::schema::sketch_object::{GroupLockParams, GroupParams, GroupResult, NodesModeParams, NodesModeResult, UngroupParams};
+use crate::schema::sketch_object::{GroupLockParams, GroupParams, GroupPivotParams, GroupResult, NodesModeParams, NodesModeResult, UngroupParams};
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};
 
 const GROUP_CONTRACT: TypedContract<GroupParams> = TypedContract::new();
 const UNGROUP_CONTRACT: TypedContract<UngroupParams> = TypedContract::new();
 const GROUP_LOCK_CONTRACT: TypedContract<GroupLockParams> = TypedContract::new();
+const GROUP_PIVOT_CONTRACT: TypedContract<GroupPivotParams> = TypedContract::new();
 const NODES_MODE_CONTRACT: TypedContract<NodesModeParams> = TypedContract::new();
 
 pub static COMMANDS: &[CommandSpec] = &[
@@ -37,6 +39,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&GROUP_LOCK_CONTRACT)
         .output(output_schema_for::<GroupResult>)
         .params("group: the group's id, or entity: one of its curves; lock: \"free\" | \"protect\" (the whole object may move, turn and scale, its points may not be edited one by one) | \"total\" (nothing changes). An edit that would break the lock is refused and nothing changes; this is not a Fix constraint on every point"),
+    CommandSpec::new("sketch.group_pivot", "Group Pivot", crate::checked!("sketch.group_pivot", group_pivot))
+        .in_sketch_part()
+        .icon("point")
+        .enabled(in_sketch)
+        .contract(&GROUP_PIVOT_CONTRACT)
+        .output(output_schema_for::<GroupResult>)
+        .params("group: the group's id, or entity: one of its curves; pivot?: [x,y] mm, the point the Transform box scales and turns the group about (left out or null: the middle of its box again). Saved with the group; it moves, turns and scales with the group"),
     CommandSpec::new("sketch.nodes_mode", "Nodes Mode", crate::checked!("sketch.nodes_mode", nodes_mode))
         .in_sketch_part()
         .icon("point")
@@ -120,6 +129,28 @@ fn group_lock(s: &mut Session, p: &Value) -> Result<Value> {
             _ => return Err(bad(cmd, "give `group` or `entity`")),
         };
         sk.set_group_lock(&g, lock).map_err(|e| bad(cmd, e.to_string()))?;
+        let curves = sk.object_groups.iter().find(|x| x.id == g).map(|x| x.curves.clone()).unwrap_or_default();
+        reply(&g, curves)
+    })
+}
+
+fn group_pivot(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "sketch.group_pivot";
+    let pivot = match p.get("pivot").filter(|v| !v.is_null()) {
+        None => None,
+        Some(v) => match v.as_array().map(|a| a.iter().map(Value::as_f64).collect::<Vec<_>>()).as_deref() {
+            Some([Some(x), Some(y)]) if x.is_finite() && y.is_finite() => Some(Vec2::new(*x, *y)),
+            _ => return Err(bad(cmd, "`pivot` must be [x, y]: two finite numbers in mm")),
+        },
+    };
+    let id = sketch_store::active(s).ok_or_else(|| bad(cmd, "no sketch is being edited"))?;
+    sketch_store::update(s, id, |_, _, sk| {
+        let g = match (str_(p, "group"), str_(p, "entity")) {
+            (Some(g), _) => g.to_string(),
+            (None, Some(e)) => sk.object_group_of(e).map(|g| g.id.clone()).ok_or_else(|| bad(cmd, format!("`{e}` is not in a group")))?,
+            _ => return Err(bad(cmd, "give `group` or `entity`")),
+        };
+        sk.set_group_pivot(&g, pivot).map_err(|e| bad(cmd, e.to_string()))?;
         let curves = sk.object_groups.iter().find(|x| x.id == g).map(|x| x.curves.clone()).unwrap_or_default();
         reply(&g, curves)
     })

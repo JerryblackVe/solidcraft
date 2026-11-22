@@ -58,6 +58,23 @@ pub struct GroupLockParams {
     pub lock: String,
 }
 
+/// Set where the Transform box scales and turns a group about, when it is not the middle of the
+/// group's box. The pivot is saved with the group and moves, turns and scales with it. One undo
+/// step.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct GroupPivotParams {
+    /// The group's id, as `sketch.group` or an import returned it.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// One of the group's curves, by id.
+    #[serde(default)]
+    pub entity: Option<String>,
+    /// The pivot `[x, y]` on the sketch in mm; left out or null, the middle of the group's box.
+    #[serde(default)]
+    pub pivot: Option<[f64; 2]>,
+}
+
 /// Switch between object mode (a group is picked and edited as one object, its points are neither
 /// drawn nor picked) and nodes mode (the points of grouped curves show and can be picked). A view
 /// setting of the window: not saved with the design, not an undo step.
