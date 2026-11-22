@@ -201,6 +201,17 @@ pub(crate) fn selected_link(app: &SolveApp) -> Option<String> {
     sk.curves.iter().find(|curve| curve.id == entity)?.link.clone()
 }
 
+/// The curves of the whole text and of the letter that the selected text curve is in (the letter
+/// is empty when the letters cannot be told apart), for selecting either in one step.
+pub(crate) fn text_and_letter(app: &SolveApp) -> Option<(Vec<String>, Vec<String>)> {
+    let entity = selected_entity(app)?;
+    let state = app.session.model.state();
+    let sk = &state.sketch(app.session.active_sketch?)?.sketch;
+    let (group, member) = sk.curve_group_of(&entity)?;
+    let letter = member.and_then(|m| group.members.get(m)).map(|m| m.curves.clone()).unwrap_or_default();
+    Some((group.curves, letter))
+}
+
 /// Show every outline affected by the open editor without changing feature selections.
 pub(crate) fn highlighted(app: &SolveApp) -> Vec<Sel> {
     let Some(Kind::Text(tx)) = app.dialog.as_ref().map(|dialog| &dialog.kind) else { return Vec::new() };

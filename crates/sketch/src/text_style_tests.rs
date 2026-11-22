@@ -484,3 +484,25 @@ fn a_text_is_one_group_whose_members_are_its_letters_with_their_outlines() {
     assert_eq!((found.id, member), (link, Some(2)));
     assert!(sk.curve_group_of("nope").is_none());
 }
+
+#[test]
+fn a_long_text_finds_every_letter() {
+    // A long text (as many letters as the outline limit lets a text have): each letter is found, with its own outlines.
+    let mut sk = Sketch::new();
+    let text = "AbcO".repeat(60);
+    let source = LinkSource::Text {
+        text: text.clone(),
+        at: v(0.0, 0.0),
+        height: 2.0,
+        angle: 0.0,
+        font: None,
+        style: TextStyle::default(),
+        exprs: Default::default(),
+    };
+    let geom = sk.text_source_geometry(&source).unwrap();
+    sk.add_link(LinkKind::Text, source, &geom).unwrap();
+    let g = sk.curve_groups().pop().unwrap();
+    assert_eq!(g.members.len(), text.chars().count());
+    assert_eq!(g.members.iter().map(|m| m.curves.len()).sum::<usize>(), g.curves.len());
+    assert!(g.members.iter().zip(text.chars()).all(|(m, ch)| m.label == ch.to_string()));
+}

@@ -958,6 +958,15 @@ fn body_items(app: &SolveApp, bodies: &[String], browser: bool) -> Vec<Item> {
     {
         v.insert(at + 1, item.on(!locked));
     }
+    // A body made from a text: every letter's body, or this letter's (an accent with its letter).
+    if let Some((whole, letter)) = bodies.first().and_then(|b| solidcraft_engine::cmd::sketch_groups::text_bodies(&app.session, b)) {
+        let pick = |names: &[String]| json!({ "items": names.iter().map(|b| json!({"type": "body", "name": b})).collect::<Vec<_>>() });
+        v.push(Item::sep());
+        v.push(cmd(app, "select.set", "Select Whole Text").with(pick(&whole)));
+        if !letter.is_empty() && letter.len() < whole.len() {
+            v.push(cmd(app, "select.set", "Select Letter").with(pick(&letter)));
+        }
+    }
     if one {
         let b = bodies.first().cloned().unwrap_or_default();
         if let Some(component) = crate::dialogs_part_size::component_for_bodies(app, bodies) {
@@ -1411,6 +1420,18 @@ fn component_items(app: &SolveApp, id: u64) -> Vec<Item> {
     v
 }
 
+/// Select Whole Text and Select Letter: the selected text's outlines, or those of the letter a
+/// selected outline is in (an accent and the dot of an i with it), in one step.
+fn select_text_items(app: &SolveApp) -> Vec<Item> {
+    let Some((whole, letter)) = crate::sketch_text::text_and_letter(app) else { return Vec::new() };
+    let items = |ids: &[String]| json!({ "items": ids.iter().map(|id| json!({"type": "sketch_curve", "id": id})).collect::<Vec<_>>() });
+    let mut v = vec![cmd(app, "select.set", "Select Whole Text").with(items(&whole))];
+    if !letter.is_empty() && letter.len() < whole.len() {
+        v.push(cmd(app, "select.set", "Select Letter").with(items(&letter)));
+    }
+    v
+}
+
 /// Explode Text (#1842): the selected text's outlines become normal sketch lines, arcs and
 /// curves, no longer tied to the text, so they can be picked, trimmed and edited one by one.
 fn explode_text(app: &SolveApp) -> Option<Item> {
@@ -1516,6 +1537,7 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
         }
         if crate::sketch_text::selected_entity(app).is_some() {
             v.push(cmd(app, "sketch.edit_text", "Edit Text"));
+            v.extend(select_text_items(app));
             v.extend(explode_text(app));
         }
         v.push(cmd(app, "sketch.line", "Line"));
@@ -1536,6 +1558,7 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
     }
     if crate::sketch_text::selected_entity(app).is_some() {
         v.push(cmd(app, "sketch.edit_text", "Edit Text"));
+        v.extend(select_text_items(app));
         v.extend(explode_text(app));
     }
     v.extend(break_link(app, &ss.sketch, &ents));

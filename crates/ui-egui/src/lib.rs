@@ -363,6 +363,7 @@ mod theme_files_tests;
 use solidcraft_ui_kit::theme_options;
 #[cfg(test)]
 mod test_pictures;
+mod text_pick;
 #[cfg(test)]
 mod thin_extrude_tests;
 pub mod tickets;

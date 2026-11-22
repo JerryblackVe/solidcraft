@@ -815,6 +815,15 @@ impl Sketch {
         let (geom, letters) = lay_text_letters(&data, slant, text, *at, *height, *angle, style, path.as_deref())?;
         let ends: Vec<Vec<Vec2>> =
             letters.iter().map(|l| geom.get(l.geom.clone()).unwrap_or_default().iter().flat_map(geom_ends).collect()).collect();
+        // Each outline end on a micrometre grid, with its letter: a curve starts exactly on one, so
+        // finding its letter is one lookup, however long the text.
+        let cell = |p: Vec2| ((p.x * 1e3).round() as i64, (p.y * 1e3).round() as i64);
+        let mut at_end: std::collections::HashMap<(i64, i64), usize> = std::collections::HashMap::new();
+        for (i, pts) in ends.iter().enumerate() {
+            for p in pts {
+                at_end.entry(cell(*p)).or_insert(i);
+            }
+        }
         let mut members: Vec<crate::groups::GroupMember> =
             letters.iter().map(|l| crate::groups::GroupMember { label: l.text.clone(), curves: Vec::new() }).collect();
         for ci in self.link_curves(link) {
@@ -825,12 +834,15 @@ impl Sketch {
                 kind => kind.ends().map(|(a, _)| a),
             };
             let Some(p) = start.and_then(|i| self.point(i)) else { continue };
-            let nearest = ends
-                .iter()
-                .enumerate()
-                .map(|(i, pts)| (i, pts.iter().map(|q| q.dist(p)).fold(f64::INFINITY, f64::min)))
-                .min_by(|a, b| a.1.total_cmp(&b.1));
-            if let Some(member) = nearest.and_then(|(i, _)| members.get_mut(i)) {
+            // A start the grid misses (a point merged with a neighbour) goes to the nearest end.
+            let letter = at_end.get(&cell(p)).copied().or_else(|| {
+                ends.iter()
+                    .enumerate()
+                    .map(|(i, pts)| (i, pts.iter().map(|q| q.dist(p)).fold(f64::INFINITY, f64::min)))
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(i, _)| i)
+            });
+            if let Some(member) = letter.and_then(|i| members.get_mut(i)) {
                 member.curves.push(curve.id.clone());
             }
         }
