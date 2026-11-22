@@ -601,6 +601,14 @@ pub enum AxisRef {
     Construction { name: FeatureName },
 }
 
+/// More profiles of an Emboss: a sketch and which of its profiles.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, solidcraft_derive::Walk)]
+pub struct EmbossProfiles {
+    pub sketch: SketchId,
+    #[walk(profiles_of = sketch)]
+    pub profiles: ProfileSel,
+}
+
 /// Persistent cylindrical Emboss selection, authored in the feature component frame.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, solidcraft_derive::Walk)]
 pub struct EmbossFace {
@@ -1532,6 +1540,27 @@ pub enum FeatureKind {
         face: Option<EmbossFace>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         targets: Vec<BodyName>,
+        /// More profiles, from this sketch or others, raised or sunk with the first ones.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        more_profiles: Vec<EmbossProfiles>,
+        /// More faces after `face`: each profile goes on the selected face it lies over.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        more_faces: Vec<EmbossFace>,
+        /// How far the profiles move along their sketch's x (#19616); absent: not at all.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[walk(length = "Horizontal")]
+        dx: Option<Expr>,
+        /// How far the profiles move along their sketch's y; absent: not at all.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[walk(length = "Vertical")]
+        dy: Option<Expr>,
+        /// How far the profiles turn about their centre, in their sketch; absent: not at all.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[walk(angle = "Rotation")]
+        angle: Option<Expr>,
+        /// Raise or sink toward the sketch's back rather than its front (no face selected).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        flip: bool,
     },
     /// A thin wall from open sketch curves: `thickness` across the sketch plane, filling from
     /// the curves toward the body (to the next face, or `depth`), or with `normal` along the

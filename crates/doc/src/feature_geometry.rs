@@ -91,7 +91,7 @@ impl FeatureKind {
             FeatureKind::SheetConvert { .. } | FeatureKind::Lip { .. } | FeatureKind::SurfaceUntrim { .. } | FeatureKind::SurfaceRuled { .. } => {
                 &["face"]
             }
-            FeatureKind::Emboss { .. } => &["face"],
+            FeatureKind::Emboss { .. } => &["face", "faces"],
             FeatureKind::Revolve { .. } => &["to"],
             FeatureKind::Extrude { .. } | FeatureKind::SurfaceExtrude { .. } => &["extent.to", "extent.from"],
             FeatureKind::SurfaceExtend { .. } => &["up_to"],

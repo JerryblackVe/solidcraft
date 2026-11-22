@@ -2617,13 +2617,18 @@ fn redefine(s: &mut Session, p: &Value) -> Result<Value> {
     }?;
     let made = r.get("feature").and_then(Value::as_u64).ok_or_else(|| bad(cmd, format!("`{cid}` did not make a feature")))?;
     let mut new = trial.doc.feature(made).cloned().ok_or_else(|| bad(cmd, format!("`{cid}` did not make a feature")))?;
-    if let (FeatureKind::Emboss { face: Some(before), .. }, FeatureKind::Emboss { face: Some(after), .. }) = (&old.kind, &mut new.kind)
-        && before.body == after.body
-        && before.path == after.path
-        && before.author_path == after.author_path
-        && before.at.dist(after.at.0) < 1e-8
+    // An Emboss face picked again where it was keeps its saved selection.
+    if let (
+        FeatureKind::Emboss { face: Some(before), more_faces: old_more, .. },
+        FeatureKind::Emboss { face: Some(after), more_faces: new_more, .. },
+    ) = (&old.kind, &mut new.kind)
     {
-        *after = before.clone();
+        for (before, after) in std::iter::once(before).chain(old_more.iter()).zip(std::iter::once(after).chain(new_more.iter_mut())) {
+            if before.body == after.body && before.path == after.path && before.author_path == after.author_path && before.at.dist(after.at.0) < 1e-8
+            {
+                *after = before.clone();
+            }
+        }
     }
     // A perforation keeps its outline through an edit that names no sketch (the Perforate dialog has no outline).
     if let (FeatureKind::SheetPerforate { sketch: Some(before), profiles: picked, .. }, FeatureKind::SheetPerforate { sketch, profiles, .. }) =

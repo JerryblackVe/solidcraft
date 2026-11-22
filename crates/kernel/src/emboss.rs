@@ -149,6 +149,24 @@ pub fn emboss_anchor(body: &Body, face: usize, at: Vec3) -> Result<Vec3> {
 /// (either side) each region is laid on the wall at its centroid's arc length from the sketch;
 /// on any other face it is projected along the sketch normal.
 pub fn emboss_project_face(body: &Body, face: usize, at: Vec3, plane: &Plane, regions: &[Region2], depth: f64) -> Result<Body> {
+    let pieces = emboss_face_pieces(body, face, at, plane, regions, depth)?;
+    // Every region must reach the face: one that misses it would leave its letter out.
+    let missed: Vec<String> = pieces.iter().enumerate().filter(|(_, p)| p.is_none()).map(|(i, _)| (i + 1).to_string()).collect();
+    if let Some((last, rest)) = missed.split_last() {
+        let which = match rest {
+            [] => format!("profile {last} of {} lies", pieces.len()),
+            _ => format!("profiles {} and {last} of {} lie", rest.join(", "), pieces.len()),
+        };
+        return Err(refuse(&format!("{NOT_FITTING} ({which} off it)")));
+    }
+    emboss_apply(body, pieces.into_iter().flatten().collect(), depth)
+}
+
+/// The piece of an emboss (`depth > 0`) or deboss (`depth < 0`) of each of `regions` on face
+/// `face` of `body`, as [`emboss_project_face`] lays it: `None` for a region that lies off the
+/// face. Nothing is applied: [`emboss_apply`] joins or cuts the pieces, so pieces of several faces
+/// (of one body) go on in one step.
+pub fn emboss_face_pieces(body: &Body, face: usize, at: Vec3, plane: &Plane, regions: &[Region2], depth: f64) -> Result<Vec<Option<Body>>> {
     body.require_brep("emboss")?;
     if !depth.is_finite() || depth.abs() < 1e-6 || depth.abs() > 1e6 || regions.is_empty() || regions.len() > 4096 {
         return Err(refuse("needs finite nonzero depth and 1..4096 profiles"));
@@ -166,7 +184,7 @@ pub fn emboss_project_face(body: &Body, face: usize, at: Vec3, plane: &Plane, re
         // overlap the body rather than touch it.
         let overlap = (d * 0.2).clamp(0.1, 2.0);
         let (lo, hi) = if depth > 0.0 { (-overlap, d) } else { (-d, overlap) };
-        let mut prisms = Vec::new();
+        let mut prisms: Vec<Option<Body>> = Vec::new();
         let mut through = false;
         let slab = if let Some(Surf::Cylinder { o, a, r, convex }) = surf_of(&rec, face) {
             // The prisms below reach at most the radius either side of the wall (further, they
@@ -238,52 +256,55 @@ pub fn emboss_project_face(body: &Body, face: usize, at: Vec3, plane: &Plane, re
                     .fold((c, c), |(l, h), p| (Vec2::new(l.x.min(p.x), l.y.min(p.y)), Vec2::new(h.x.max(p.x), h.y.max(p.y))));
                 let corners = [lo2, Vec2::new(hi2.x, lo2.y), hi2, Vec2::new(lo2.x, hi2.y)];
                 if !on_wall((theta, height)) || !corners.into_iter().all(|p| on_wall(laid(p))) {
-                    return Err(refuse(NOT_FITTING));
+                    prisms.push(None);
+                    continue;
                 }
                 let radial = radial0 * theta.cos() + tangent0 * theta.sin();
                 let tangent = tangent0 * theta.cos() - radial0 * theta.sin();
                 let at_c = o + a * height + radial * r;
                 let (x, y) = if along_axis { (a * kx.signum(), tangent) } else { (tangent, a * ky.signum()) };
                 // The region keeps its sketch coordinates: the frame's origin sits so its centroid lands on the wall.
-                let Some(local) = Plane::new(at_c - x * c.x - y * c.y, x, y) else { continue };
-                prisms.extend(crate::extrude(&local, std::slice::from_ref(reg), -pad, pad)?);
+                let Some(local) = Plane::new(at_c - x * c.x - y * c.y, x, y) else {
+                    prisms.push(None);
+                    continue;
+                };
+                prisms.push(crate::extrude(&local, std::slice::from_ref(reg), -pad, pad)?.into_iter().next());
             }
             slab
         } else {
             let sheet = crate::surfaces::offset_faces(body, &[face], lo, (body.size() * 1e-7).max(1e-7))?;
             let slab = crate::thicken(&sheet, hi - lo, false)?;
             let (h0, h1) = span(slab.exact_bounds()?, plane.origin, plane.normal());
-            prisms = crate::extrude(plane, regions, h0 - d - 1.0, h1 + d + 1.0)?;
+            prisms = crate::extrude(plane, regions, h0 - d - 1.0, h1 + d + 1.0)?.into_iter().map(Some).collect();
             through = true;
             slab
         };
-        // Every region must reach the face: one that misses it would leave its letter out.
-        let mut pieces = Vec::new();
-        let mut missed = Vec::new();
-        for (i, prism) in prisms.iter().enumerate() {
-            match crate::boolean(prism, &slab, crate::BoolOp::Intersect)? {
+        let mut pieces = Vec::with_capacity(prisms.len());
+        for prism in &prisms {
+            let piece = match prism {
+                None => None,
                 // A prism runs right through the slab: what is left of it is one part above and
                 // one below, unless the slab cuts it short (over the face's edge or a hole),
                 // where the two join round the side.
-                Some(_)
-                    if through && crate::boolean(prism, &slab, crate::BoolOp::Cut)?.map_or(0, |rest| rest.lumps().map_or(0, |l| l.len())) != 2 =>
-                {
-                    missed.push((i + 1).to_string())
-                }
-                Some(piece) => pieces.push(piece),
-                None => missed.push((i + 1).to_string()),
-            }
-        }
-        if !missed.is_empty() {
-            let which = match missed.split_last() {
-                Some((last, [])) => format!("profile {last} of {} lies", prisms.len()),
-                Some((last, rest)) => format!("profiles {} and {last} of {} lie", rest.join(", "), prisms.len()),
-                None => String::new(),
+                Some(prism) => match crate::boolean(prism, &slab, crate::BoolOp::Intersect)? {
+                    Some(_)
+                        if through
+                            && crate::boolean(prism, &slab, crate::BoolOp::Cut)?.map_or(0, |rest| rest.lumps().map_or(0, |l| l.len())) != 2 =>
+                    {
+                        None
+                    }
+                    piece => piece,
+                },
             };
-            return Err(refuse(&format!("{NOT_FITTING} ({which} off it)")));
+            pieces.push(piece);
         }
-        apply_pieces(body, pieces, depth)
+        Ok(pieces)
     })
+}
+
+/// Join (`depth > 0`) or cut emboss pieces ([`emboss_face_pieces`]) into `body` in one step.
+pub fn emboss_apply(body: &Body, pieces: Vec<Body>, depth: f64) -> Result<Body> {
+    guard("emboss", || apply_pieces(body, pieces, depth))
 }
 
 /// The heights of a box's corners above `o` along `dir`: lowest and highest.

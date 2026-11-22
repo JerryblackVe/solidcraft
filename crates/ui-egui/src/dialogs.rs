@@ -169,11 +169,19 @@ crate::dialog_descriptor::dialog_descriptors! {
             wall: String = String::new() => wall.as_deref().map(|e| shown_expr(e, ValueKind::Length)).unwrap_or_default(),
             operation: usize = 0 => op_index(operation),
         } => json!({"diameter": diameter, "operation": OPS.get(*operation).copied().unwrap_or("new")});
-        Emboss("solid.emboss", "EMBOSS", [("Profiles", PROFILES, true), ("Target Face (optional)", FACES, false)],
-            FeatureKind::Emboss { depth, deboss, .. }) {
+        Emboss("solid.emboss", "EMBOSS", [("Profiles", PROFILES, true), ("Target Faces (optional)", FACES, true)],
+            FeatureKind::Emboss { depth, deboss, dx, dy, angle, flip, .. }) {
             depth: String = "1 mm".into() => shown_expr(depth, ValueKind::Length),
             deboss: bool = false => *deboss,
-        } => json!({"depth": depth, "mode": if *deboss { "deboss" } else { "emboss" }});
+            dx: String = String::new() => dx.as_deref().map(|e| shown_expr(e, ValueKind::Length)).unwrap_or_default(),
+            dy: String = String::new() => dy.as_deref().map(|e| shown_expr(e, ValueKind::Length)).unwrap_or_default(),
+            angle: String = String::new() => angle.as_deref().map(|e| shown_expr(e, ValueKind::Angle)).unwrap_or_default(),
+            flip: bool = false => *flip,
+        } => {
+            // An empty shift is none; flipping is for profiles with no face picked.
+            let given = |e: &String| if e.trim().is_empty() { Value::Null } else { json!(e) };
+            json!({"depth": depth, "mode": if *deboss { "deboss" } else { "emboss" }, "dx": given(dx), "dy": given(dy), "angle": given(angle), "flip": *flip})
+        };
         ; custom {
             /// Pick a plane or planar face; the sketch starts on it at once.
             Sketch,
@@ -6702,13 +6710,41 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             put(&mut p, &[("depth", depth)]);
             (if *web { "solid.web" } else { "solid.rib" }, p)
         }
-        Kind::Emboss { .. } => {
+        Kind::Emboss { flip, .. } => {
             need(0, "profiles")?;
             let (sketch, idx) = profiles();
             let mut p = json!({"sketch": sketch, "profiles": idx});
-            if let Some(Sel::Face { body, point, .. }) = sels(d, 1).first() {
-                p["face"] = pt(*point);
-                p["targets"] = json!([body]);
+            // Profiles of other sketches go with the first sketch's, each sketch once.
+            let mut more: Vec<(u64, Vec<usize>)> = Vec::new();
+            for (other, index) in sels(d, 0).profiles().into_iter().filter(|(id, _)| json!(id) != sketch) {
+                match more.iter_mut().find(|(id, _)| *id == other) {
+                    Some((_, list)) => list.push(index),
+                    None => more.push((other, vec![index])),
+                }
+            }
+            if !more.is_empty() {
+                p["more_profiles"] = json!(more.iter().map(|(id, list)| json!({"sketch": id, "profiles": list})).collect::<Vec<_>>());
+            }
+            let faces: Vec<(&str, Value)> = sels(d, 1)
+                .iter()
+                .filter_map(|sel| match sel {
+                    Sel::Face { body, point, .. } => Some((body.as_str(), pt(*point))),
+                    _ => None,
+                })
+                .collect();
+            if !faces.is_empty() {
+                if *flip {
+                    return Err(solidcraft_ui_text::tr("ui.emboss_flip_on_face").into());
+                }
+                let mut bodies: Vec<&str> = faces.iter().map(|(b, _)| *b).collect();
+                bodies.sort_unstable();
+                bodies.dedup();
+                p["targets"] = json!(bodies);
+                let mut points: Vec<Value> = faces.into_iter().map(|(_, at)| at).collect();
+                match points.len() {
+                    1 => p["face"] = points.remove(0),
+                    _ => p["faces"] = json!(points),
+                }
             }
             ("solid.emboss", p)
         }
@@ -9097,12 +9133,14 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Emboss { sketch, profiles, targets, face, .. } => {
+        FeatureKind::Emboss { sketch, profiles, targets, face, more_profiles, more_faces, .. } => {
             let mut d = start("solid.emboss")?;
             d.kind = Kind::simple_restore(&f.kind)?;
-            let items = st.sketch(sketch.0).map(|ss| profile_indices(ss, profiles)).unwrap_or_default();
             if let Some(inp) = d.inputs.first_mut() {
-                inp.items = items.into_iter().map(|index| Sel::Profile { sketch: sketch.0, index }).collect();
+                for (sketch, profiles) in std::iter::once((sketch, profiles)).chain(more_profiles.iter().map(|m| (&m.sketch, &m.profiles))) {
+                    let items = st.sketch(sketch.0).map(|ss| profile_indices(ss, profiles)).unwrap_or_default();
+                    inp.items.extend(items.into_iter().map(|index| Sel::Profile { sketch: sketch.0, index }));
+                }
             }
             if !targets.is_empty() {
                 d.extra.insert("targets".into(), json!(targets));
@@ -9110,7 +9148,9 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             if let Some(face) = face
                 && let Some(input) = d.inputs.get_mut(1)
             {
-                input.items = vec![emboss_face_sel(s, f.component, face, f.face_names.first()?)?];
+                for (face, name) in std::iter::once(face).chain(more_faces).zip(&f.face_names) {
+                    input.items.push(emboss_face_sel(s, f.component, face, name)?);
+                }
             }
             d
         }

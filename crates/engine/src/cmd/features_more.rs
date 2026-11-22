@@ -60,7 +60,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("emboss")
         .contract(&EMBOSS_CONTRACT)
         .output(output_schema_for::<FeatureResult>)
-        .params("sketch, profiles?; depth; mode?: emboss|deboss; targets?; face?: world point [x,y,z] on the face to emboss: planar, a cylinder wall or another curved face (inferred when exactly one supported tangent cylinder matches the selected profiles)"),
+        .params("sketch, profiles?; depth; mode?: emboss|deboss; targets?; face?: world point [x,y,z] on the face to emboss: planar, a cylinder wall or another curved face (inferred when exactly one supported tangent cylinder matches the selected profiles); faces?: several such points, each profile going onto the face it lies over; text?: a text's group id (sketch.groups) in place of profiles, letters?: some of its letters by index; more_profiles?: [{sketch, profiles?|text, letters?}] more profiles from the same or other sketches; dx?, dy?: shift along the sketch's x and y; angle?: turn about the profiles' centre; flip?: raise or sink toward the sketch's back (no face)"),
     CommandSpec::new("solid.replace_face", "Replace Face", crate::checked!("solid.replace_face", replace_face))
         .contract(&REPLACE_FACE_CONTRACT)
         .output(output_schema_for::<FeatureResult>)
@@ -213,7 +213,7 @@ fn web(s: &mut Session, p: &Value) -> Result<Value> {
 fn emboss(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "solid.emboss";
     let sketch = feature_sketch(s, p, cmd)?;
-    let profiles = profiles(p, cmd)?;
+    let profiles = emboss_profiles(s, p, sketch)?;
     let depth = req_expr(cmd, p, "depth")?;
     check_expr(s, &depth, Kind::Length, cmd, "depth")?;
     let deboss = match str_(p, "mode").map(str::to_ascii_lowercase).as_deref() {
@@ -221,82 +221,207 @@ fn emboss(s: &mut Session, p: &Value) -> Result<Value> {
         Some("deboss") => true,
         Some(m) => return Err(bad(cmd, format!("unknown mode `{m}` (emboss or deboss)"))),
     };
+    let more_profiles = emboss_more_profiles(s, p)?;
+    let mut sketches = vec![sketch];
+    sketches.extend(more_profiles.iter().map(|m| m.sketch.0));
+    let mut shift = [None, None, None];
+    for (slot, (key, kind)) in shift.iter_mut().zip([("dx", Kind::Length), ("dy", Kind::Length), ("angle", Kind::Angle)]) {
+        *slot = expr(p, key);
+        if let Some(e) = slot.as_deref() {
+            check_expr(s, e, kind, cmd, key)?;
+        } else if p.get(key).is_some_and(|v| !v.is_null()) {
+            return Err(bad(cmd, format!("`{key}` must be a number or an expression")));
+        }
+    }
+    let [dx, dy, angle] = shift;
+    let flip = bool_(p, "flip").unwrap_or(false);
     let mut targets = string_list(cmd, p, "targets")?;
-    let face = if let Some(value) = p.get("face") {
-        let local = vec3(value).ok_or_else(|| bad(cmd, "`face` must be a finite point [x,y,z]"))?;
-        let at = solidcraft_doc::apply_point(&s.active_component_frame(), local);
-        let state = s.world_state()?;
-        let mut candidates = Vec::new();
-        // The nearest face off the point: (distance, body), for the error when none holds it.
-        let mut nearest: Option<(f64, &str)> = None;
-        for body in &state.bodies {
-            let definition = body.definition_name();
-            if !targets.is_empty() && !targets.iter().any(|n| n == definition || n == &body.name) {
-                continue;
-            }
-            let mesh = body.mesh();
-            let closest = mesh
-                .triangles
-                .iter()
-                .zip(&mesh.tri_face)
-                .filter_map(|(tri, face)| {
-                    let [a, b, c] = mesh.tri(tri)?;
-                    let n = (b - a).cross(c - a).normalized()?;
-                    let q = at - n * (at - a).dot(n);
-                    let inside = [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= -1e-9);
-                    inside.then_some(((at - a).dot(n).abs(), *face as usize))
-                })
-                .min_by(|a, b| a.0.total_cmp(&b.0));
-            match closest {
-                Some((distance, index)) if distance < (body.body.size() * 1e-3).max(1e-3) => candidates.push((body, index)),
-                Some((distance, _)) if nearest.is_none_or(|(d, _)| distance < d) => nearest = Some((distance, body.name.as_str())),
-                _ => {}
-            }
+    let (key, points): (&str, Vec<&Value>) = match (p.get("face"), p.get("faces")) {
+        (Some(_), Some(_)) => return Err(bad(cmd, "give `face` or `faces`, not both")),
+        (Some(one), None) => ("face", vec![one]),
+        (None, Some(Value::Array(many))) if (1..=64).contains(&many.len()) => ("faces", many.iter().collect()),
+        (None, Some(_)) => return Err(bad(cmd, "`faces` must list 1 to 64 points [x,y,z]")),
+        (None, None) => ("face", Vec::new()),
+    };
+    if flip && !points.is_empty() {
+        return Err(bad(cmd, "an emboss on a selected face can't be flipped: the face's outside sets its direction (Deboss sinks it)"));
+    }
+    if points.len() == 1 && targets.len() > 1 {
+        return Err(bad(cmd, "an emboss on a selected face needs one target body"));
+    }
+    let mut faces = Vec::with_capacity(points.len());
+    let mut bodies: Vec<String> = Vec::new();
+    for value in points {
+        let (face, body) = emboss_face_param(s, key, value, &targets, &sketches)?;
+        if faces.iter().any(|f: &solidcraft_doc::EmbossFace| f.body == face.body && f.path == face.path && f.at.dist(face.at.0) < 1e-9) {
+            return Err(bad(cmd, "a face is picked twice: pick each face once"));
         }
-        // #392: say what is wrong with the point, not only that it picks no single face.
-        let point = format!("[{}, {}, {}]", local.x, local.y, local.z);
-        match (candidates.as_slice(), nearest) {
-            ([], Some((d, body))) => {
-                return Err(bad(
-                    cmd,
-                    format!("`face` {point} lies on no face: the nearest, on `{body}`, is {d:.3} mm away; give a point on the face"),
-                ));
-            }
-            ([], None) => return Err(bad(cmd, format!("`face` {point} lies on no face of the target bodies"))),
-            ([_], _) => {}
-            (more, _) => {
-                let names: Vec<&str> = more.iter().map(|(b, _)| b.name.as_str()).collect();
-                return Err(bad(
-                    cmd,
-                    format!("`face` {point} lies on faces of {} bodies ({}): name one in `targets`", names.len(), names.join(", ")),
-                ));
-            }
+        if !bodies.contains(&body) {
+            bodies.push(body);
         }
-        let (selected, index) = candidates.first().copied().ok_or_else(|| bad(cmd, "no target face"))?;
-        let name = selected.definition_name();
-        let body = &selected.body;
-        if targets.len() > 1 {
-            return Err(bad(cmd, "an emboss on a selected face needs one target body"));
-        }
-        // Viewport picks lie on tessellated chords: certify their distance and store the point
-        // on the exact surface for later replay.
-        let at = solidcraft_kernel::emboss_anchor(body, index, at).map_err(|e| bad(cmd, e.to_string()))?;
-        let face = emboss_selection(s, selected, at)?;
-        check_emboss_positions(s, sketch, selected, &face)?;
-        targets = vec![name.to_owned()];
-        Some(face)
-    } else {
-        let inferred = infer_emboss_selection(s, sketch, &profiles, &depth, deboss, &targets)?;
+        faces.push(face);
+    }
+    let face = if faces.is_empty() {
+        // Only one sketch's profiles, unflipped, are wrapped onto a cylinder found for them.
+        let inferred = if more_profiles.is_empty() && !flip { infer_emboss_selection(s, sketch, &profiles, &depth, deboss, &targets)? } else { None };
         if let Some(face) = &inferred {
             targets = vec![face.body.0.clone()];
         }
         inferred
+    } else {
+        targets = bodies;
+        Some(faces.remove(0))
     };
     add_feature(
         s,
         p,
-        FeatureKind::Emboss { sketch: SketchId(sketch), profiles, depth, deboss, targets: targets.into_iter().map(BodyName).collect(), face },
+        FeatureKind::Emboss {
+            sketch: SketchId(sketch),
+            profiles,
+            depth,
+            deboss,
+            targets: targets.into_iter().map(BodyName).collect(),
+            face,
+            more_profiles,
+            more_faces: faces,
+            dx,
+            dy,
+            angle,
+            flip,
+        },
     )
+}
+
+/// An Emboss source's profiles: `profiles`, or a whole text of the sketch (`text`: its group id,
+/// as `sketch.groups` lists it) or some of its letters (`letters`: member indices). A text's
+/// profiles are kept by their outline curves, so they follow the text when it changes; a letter's
+/// counter (the inside of an O) is its hole, never a profile of its own.
+fn emboss_profiles(s: &Session, p: &Value, sketch: u64) -> Result<solidcraft_doc::ProfileSel> {
+    let cmd = "solid.emboss";
+    let Some(text) = p.get("text").filter(|v| !v.is_null()) else {
+        if p.get("letters").is_some_and(|v| !v.is_null()) {
+            return Err(bad(cmd, "`letters` needs the `text` they are in"));
+        }
+        return profiles(p, cmd);
+    };
+    if p.get("profiles").is_some_and(|v| !v.is_null()) {
+        return Err(bad(cmd, "give `profiles` or `text`, not both"));
+    }
+    let text = text.as_str().ok_or_else(|| bad(cmd, "`text` must be a text's group id (sketch.groups)"))?;
+    let state = s.model.state();
+    let ss = state.sketch(sketch).ok_or_else(|| bad(cmd, "the sketch is not evaluated"))?;
+    let groups = ss.sketch.curve_groups();
+    let group =
+        groups.iter().find(|g| g.id == text).ok_or_else(|| bad(cmd, format!("the sketch has no text `{text}` (sketch.groups lists them)")))?;
+    let curves: std::collections::BTreeSet<&str> = match p.get("letters").filter(|v| !v.is_null()) {
+        None => group.curves.iter().map(String::as_str).collect(),
+        Some(Value::Array(letters)) if !letters.is_empty() && letters.len() <= 10_000 => {
+            let mut picked = std::collections::BTreeSet::new();
+            for letter in letters {
+                let member = letter.as_u64().and_then(|k| group.members.get(usize::try_from(k).ok()?)).ok_or_else(|| {
+                    bad(cmd, format!("`letters` must be indices 0 to {} of the text's letters", group.members.len().saturating_sub(1)))
+                })?;
+                picked.extend(member.curves.iter().map(String::as_str));
+            }
+            picked
+        }
+        Some(_) => return Err(bad(cmd, "`letters` must list one or more letter indices")),
+    };
+    let candidates: Vec<&solidcraft_sketch::Profile> =
+        ss.profiles.iter().filter(|pr| !pr.outer_curves.is_empty() && pr.outer_curves.iter().all(|c| curves.contains(c.as_str()))).collect();
+    // A candidate bounded by another candidate's hole is that letter's counter.
+    let holes: Vec<std::collections::BTreeSet<&str>> =
+        candidates.iter().flat_map(|pr| pr.hole_curves.iter().map(|h| h.iter().map(String::as_str).collect())).collect();
+    let loops: Vec<Vec<String>> = candidates
+        .into_iter()
+        .filter(|pr| !holes.contains(&pr.outer_curves.iter().map(String::as_str).collect()))
+        .map(|pr| pr.outer_curves.clone())
+        .collect();
+    if loops.is_empty() {
+        return Err(bad(cmd, format!("the text `{text}` makes no closed profile to emboss")));
+    }
+    Ok(solidcraft_doc::ProfileSel::Curves { loops })
+}
+
+/// `more_profiles`: more sketches' (or the same sketch's) profiles, `[{sketch, profiles?}]`.
+fn emboss_more_profiles(s: &Session, p: &Value) -> Result<Vec<solidcraft_doc::EmbossProfiles>> {
+    let cmd = "solid.emboss";
+    let list = match p.get("more_profiles") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(list)) if list.len() <= 64 => list,
+        Some(_) => return Err(bad(cmd, "`more_profiles` must list at most 64 entries {sketch, profiles?}")),
+    };
+    list.iter()
+        .map(|entry| {
+            if !entry.is_object() || entry.get("sketch").is_none() {
+                return Err(bad(cmd, "each `more_profiles` entry must be {sketch, profiles?} or {sketch, text, letters?}"));
+            }
+            let sketch = feature_sketch(s, entry, cmd)?;
+            let profiles = emboss_profiles(s, entry, sketch)?;
+            let state = s.model.state();
+            let ss = state.sketch(sketch).ok_or_else(|| bad(cmd, "the sketch is not evaluated"))?;
+            solidcraft_doc::select_profiles(ss, &profiles).map_err(|e| bad(cmd, e.to_string()))?;
+            Ok(solidcraft_doc::EmbossProfiles { sketch: SketchId(sketch), profiles })
+        })
+        .collect()
+}
+
+/// A picked face of an Emboss (`face`, or an item of `faces`): a world point on one face of the
+/// target bodies, certified on the exact face. Returns the selection and its body's name.
+fn emboss_face_param(s: &Session, key: &str, value: &Value, targets: &[String], sketches: &[u64]) -> Result<(solidcraft_doc::EmbossFace, String)> {
+    let cmd = "solid.emboss";
+    let local = vec3(value).ok_or_else(|| bad(cmd, format!("`{key}` must be a finite point [x,y,z]")))?;
+    let at = solidcraft_doc::apply_point(&s.active_component_frame(), local);
+    let state = s.world_state()?;
+    let mut candidates = Vec::new();
+    // The nearest face off the point: (distance, body), for the error when none holds it.
+    let mut nearest: Option<(f64, &str)> = None;
+    for body in &state.bodies {
+        let definition = body.definition_name();
+        if !targets.is_empty() && !targets.iter().any(|n| n == definition || n == &body.name) {
+            continue;
+        }
+        let mesh = body.mesh();
+        let closest = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.tri_face)
+            .filter_map(|(tri, face)| {
+                let [a, b, c] = mesh.tri(tri)?;
+                let n = (b - a).cross(c - a).normalized()?;
+                let q = at - n * (at - a).dot(n);
+                let inside = [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= -1e-9);
+                inside.then_some(((at - a).dot(n).abs(), *face as usize))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        match closest {
+            Some((distance, index)) if distance < (body.body.size() * 1e-3).max(1e-3) => candidates.push((body, index)),
+            Some((distance, _)) if nearest.is_none_or(|(d, _)| distance < d) => nearest = Some((distance, body.name.as_str())),
+            _ => {}
+        }
+    }
+    // #392: say what is wrong with the point, not only that it picks no single face.
+    let point = format!("[{}, {}, {}]", local.x, local.y, local.z);
+    match (candidates.as_slice(), nearest) {
+        ([], Some((d, body))) => {
+            return Err(bad(cmd, format!("`{key}` {point} lies on no face: the nearest, on `{body}`, is {d:.3} mm away; give a point on the face")));
+        }
+        ([], None) => return Err(bad(cmd, format!("`{key}` {point} lies on no face of the target bodies"))),
+        ([_], _) => {}
+        (more, _) => {
+            let names: Vec<&str> = more.iter().map(|(b, _)| b.name.as_str()).collect();
+            return Err(bad(cmd, format!("`{key}` {point} lies on faces of {} bodies ({}): name one in `targets`", names.len(), names.join(", "))));
+        }
+    }
+    let (selected, index) = candidates.first().copied().ok_or_else(|| bad(cmd, "no target face"))?;
+    // Viewport picks lie on tessellated chords: certify their distance and store the point
+    // on the exact surface for later replay.
+    let at = solidcraft_kernel::emboss_anchor(&selected.body, index, at).map_err(|e| bad(cmd, e.to_string()))?;
+    let face = emboss_selection(s, selected, at)?;
+    for sketch in sketches {
+        check_emboss_positions(s, *sketch, selected, &face)?;
+    }
+    Ok((face, selected.definition_name().to_owned()))
 }
 
 fn emboss_selection(s: &Session, selected: &solidcraft_doc::ModelBody, at: Vec3) -> Result<solidcraft_doc::EmbossFace> {
