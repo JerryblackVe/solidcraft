@@ -2641,6 +2641,7 @@ mod tests {
             angle: 0.0,
             circles: false,
             exprs: Default::default(),
+            follows: None,
         };
         sk.add_link(crate::LinkKind::Star, crate::LinkSource::Star(spec.clone()), &crate::star_geometry(&spec).unwrap()).unwrap();
     }

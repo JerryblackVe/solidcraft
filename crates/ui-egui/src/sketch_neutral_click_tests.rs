@@ -63,3 +63,23 @@ fn a_squared_corner_keeps_its_snap_only_where_it_was_clicked() {
         assert_eq!(free, (Vec2::new(50.0, 25.0), snap), "{command}: without the chord");
     }
 }
+
+/// MEJ-12: with a star selected the pattern commands are greyed out and say why; a mirror stays on.
+#[test]
+fn a_pattern_is_greyed_out_for_a_selected_star_and_says_why() {
+    let mut h = Harness::new();
+    h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+    let made = h.app.run("sketch.star", json!({"center": [0, 0], "outer_radius": 10})).unwrap();
+    let curve = made["curves"][0].as_str().unwrap().to_owned();
+    let info = |h: &Harness, id: &str| crate::render_workspace::interactive_command_info(&h.app, solidcraft_engine::find_command(id).unwrap());
+    h.app.session.selection.clear();
+    h.frames(2);
+    assert!(info(&h, "sketch.pattern.circular").enabled, "nothing selected: a pattern can start");
+    h.app.session.selection = vec![solidcraft_engine::Sel::SketchCurve { id: curve, sketch: h.app.session.active_sketch }];
+    h.frames(2);
+    for id in ["sketch.pattern.circular", "sketch.pattern.rectangular"] {
+        let i = info(&h, id);
+        assert!(!i.enabled && i.disabled_reason.as_deref().is_some_and(|r| r.starts_with("Not available")), "{id}: {:?}", i.disabled_reason);
+    }
+    assert!(info(&h, "sketch.mirror").enabled, "a mirror of a star works");
+}

@@ -44,6 +44,79 @@ pub struct StarSpec {
     /// The expressions behind the numbers above that were typed over the design's parameters.
     #[serde(default, skip_serializing_if = "StarExprs::is_empty")]
     pub exprs: StarExprs,
+    /// Set on a mirror copy: it takes its shape from another star and keeps its own place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follows: Option<StarFollow>,
+}
+
+/// A star that follows another: the points, radius, depth, skip, roundings and circles are the
+/// source's, and its centre and turn are the source's moved the way this says. The place is kept as
+/// numbers, so the copy stays where it was made when the line it was mirrored in moves.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StarFollow {
+    /// The link id of the star it follows.
+    pub source: String,
+    /// Mirrored across the sketch's X axis before turning.
+    #[serde(default)]
+    pub flip: bool,
+    /// Turned about the origin by this many degrees (after the flip), then moved by `shift`.
+    #[serde(default)]
+    pub turn: f64,
+    #[serde(default)]
+    pub shift: Vec2,
+}
+
+impl StarFollow {
+    /// The mirror image in the line through `a` along the unit vector `u`.
+    pub fn mirror(source: &str, a: Vec2, u: Vec2) -> StarFollow {
+        let turn = 2.0 * u.y.atan2(u.x);
+        let flipped = Vec2::new(a.x, -a.y);
+        StarFollow { source: source.to_owned(), flip: true, turn: turn.to_degrees(), shift: a - turned(flipped, turn) }
+    }
+
+    /// Where the source's numbers put this star: `to` gets the shape and the place.
+    pub fn apply(&self, from: &StarSpec, to: &mut StarSpec) {
+        let c = if self.flip { Vec2::new(from.center.x, -from.center.y) } else { from.center };
+        to.center = turned(c, self.turn.to_radians()) + self.shift;
+        // The first tip points `90 + angle` degrees from +X: a flip negates that direction.
+        let tip = 90.0 + from.angle;
+        to.angle = self.turn + if self.flip { -tip } else { tip } - 90.0;
+        (to.points, to.outer, to.inner_percent, to.skip) = (from.points, from.outer, from.inner_percent, from.skip);
+        (to.tip_round, to.valley_round, to.circles) = (from.tip_round, from.valley_round, from.circles);
+        to.exprs = StarExprs::default();
+    }
+}
+
+fn turned(p: Vec2, radians: f64) -> Vec2 {
+    let (s, c) = radians.sin_cos();
+    Vec2::new(p.x * c - p.y * s, p.x * s + p.y * c)
+}
+
+impl crate::Sketch {
+    /// Give every star that follows another the numbers the source has now, in link order (a copy
+    /// of a copy follows through). A star whose source is gone stays as it is, on its own. Returns
+    /// the links whose numbers changed: their outlines are rebuilt from them.
+    pub fn resolve_star_follows(&mut self) -> Vec<String> {
+        let mut changed = Vec::new();
+        for i in 0..self.links.len() {
+            let crate::LinkSource::Star(spec) = &self.links[i].source else { continue };
+            let Some(follow) = spec.follows.clone() else { continue };
+            let from = match self.links.iter().find(|l| l.id == follow.source).map(|l| &l.source) {
+                Some(crate::LinkSource::Star(from)) => Some(from.clone()),
+                _ => None,
+            };
+            let mut next = spec.clone();
+            match from {
+                Some(from) => follow.apply(&from, &mut next),
+                None => next.follows = None,
+            }
+            if next != *spec {
+                changed.push(self.links[i].id.clone());
+                self.links[i].source = crate::LinkSource::Star(next);
+            }
+        }
+        changed
+    }
 }
 
 /// The expressions behind a star's numbers that were typed over the design's parameters (`"R / 2"`,
@@ -265,6 +338,7 @@ mod tests {
             angle: 0.0,
             circles: false,
             exprs: Default::default(),
+            follows: None,
         }
     }
 
@@ -342,6 +416,36 @@ mod tests {
                 assert!(ends.iter().any(|e| e.dist(*a) < 1e-9) && ends.iter().any(|e| e.dist(*b) < 1e-9));
                 assert!((ctr.dist(*a) - ctr.dist(*b)).abs() < 1e-9);
             }
+        }
+    }
+
+    /// A mirror copy is the mirror image: every corner of the followed star's outline is where the
+    /// source's corner reflects to, for stars turned any way and lines in any direction.
+    #[test]
+    fn a_star_that_follows_is_the_mirror_image_of_its_source() {
+        let corners = |s: &StarSpec| -> Vec<Vec2> {
+            star_geometry(s).unwrap().iter().filter_map(|c| if let LinkGeom::Line(a, _) = c { Some(*a) } else { None }).collect()
+        };
+        for (line_at, line_dir, angle, points) in
+            [((0.0, 0.0), (0.0, 1.0), 0.0, 5), ((3.0, -2.0), (1.0, 1.0), 20.0, 7), ((-4.0, 6.0), (2.0, -1.0), -75.0, 6)]
+        {
+            let mut source = spec(points);
+            source.center = Vec2::new(10.0, 5.0);
+            source.angle = angle;
+            let a = Vec2::new(line_at.0, line_at.1);
+            let u = Vec2::new(line_dir.0, line_dir.1).normalized().unwrap();
+            let mut copy = source.clone();
+            StarFollow::mirror("link1", a, u).apply(&source, &mut copy);
+            let reflect = |q: Vec2| (a + u * (q - a).dot(u)) * 2.0 - q;
+            let mirrored: Vec<Vec2> = corners(&source).into_iter().map(reflect).collect();
+            // The copy's outline is the same closed outline, started from another corner and run the other way.
+            for m in &mirrored {
+                assert!(
+                    corners(&copy).iter().any(|c| c.dist(*m) < 1e-9),
+                    "{m:?} not a corner of the copy (line {line_at:?} {line_dir:?}, angle {angle})"
+                );
+            }
+            assert_eq!(corners(&copy).len(), mirrored.len());
         }
     }
 }

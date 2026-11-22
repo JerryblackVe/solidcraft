@@ -4045,6 +4045,11 @@ pub(crate) fn interactive_command_info(app: &SolveApp, command: &solidcraft_engi
         info.enabled = true;
         info.disabled_reason = None;
     }
+    // A pattern of a star is not available yet (a mirror is): say why, as every unavailable function does.
+    if info.enabled && command.id.starts_with("sketch.pattern.") && crate::sketch_modify_ui::selection_has_star(app) {
+        info.enabled = false;
+        info.disabled_reason = Some(app.tr("sketch.pattern.star_unavailable").to_string());
+    }
     info
 }
 pub(crate) fn comparison_controls(app: &mut SolveApp, ui: &mut egui::Ui) {

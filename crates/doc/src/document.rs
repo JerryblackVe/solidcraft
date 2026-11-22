@@ -5622,6 +5622,8 @@ impl Document {
                 *text = words;
             }
         }
+        // A star that follows another takes the numbers its source has just been given.
+        sk.resolve_star_follows();
         Ok(())
     }
 

@@ -128,7 +128,7 @@ impl SketchClip {
         for (src, _) in &mut clip.texts {
             match src {
                 LinkSource::Text { exprs, .. } => *exprs = Default::default(),
-                LinkSource::Star(spec) => spec.exprs = Default::default(),
+                LinkSource::Star(spec) => (spec.exprs, spec.follows) = (Default::default(), None),
                 _ => {}
             }
         }
@@ -524,6 +524,7 @@ fn paste_clip(sk: &mut Sketch, doc: &mut Document, clip: &SketchClip, t: Vec2) -
             // As a text: the copy sits where it was pasted, its other numbers keep their expressions.
             spec.center += t;
             (spec.exprs.x, spec.exprs.y) = (None, None);
+            spec.follows = None;
             let geom = solidcraft_sketch::star_geometry(spec)?;
             let link = sk.add_link(LinkKind::Star, src, &geom)?;
             curve_ids.extend(sk.link_curves(&link).into_iter().filter_map(|i| sk.curves.get(i).map(|c| c.id.clone())));
