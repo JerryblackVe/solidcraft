@@ -5305,3 +5305,30 @@ fn emboss_dialog_keeps_and_sends_its_distribution() {
     assert!(matches!(&dialog.kind, crate::dialogs::Kind::Emboss { distribute, .. } if distribute.is_empty()), "{:?}", dialog.kind);
     assert!(apply_commands(&h.app, dialog).unwrap()[0].1["params"]["distribute"].is_null());
 }
+
+#[test]
+fn emboss_adds_a_sketch_clicked_in_the_browser_to_the_profiles() {
+    // Emboss takes profiles of several sketches: a sketch clicked in the Browser joins the
+    // profiles already picked instead of replacing them, and a second click adds nothing twice.
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("solid.box", json!({"length":40,"width":40,"height":10})).unwrap();
+    let mut sketch = |name: &str, x: f64| {
+        let id = h.app.run("sketch.create", json!({"plane":{"origin":[0,0,30],"x_dir":[1,0,0],"y_dir":[0,1,0]},"name":name})).unwrap()["sketch"]
+            .as_u64()
+            .unwrap();
+        h.app.run("sketch.rectangle.two_point", json!({"p0":[x,10],"p1":[x + 5.0,15]})).unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+        id
+    };
+    let (a, b) = (sketch("A", 5.0), sketch("B", 25.0));
+    let both = vec![Sel::Profile { sketch: a, index: 0 }, Sel::Profile { sketch: b, index: 0 }];
+    h.app.session.selection = vec![both[0].clone()];
+    h.app.start("solid.emboss");
+    h.frames(2);
+    let d = h.app.dialog.as_mut().unwrap();
+    d.active = 0;
+    assert!(d.pick_sketch(&h.app.session, b));
+    assert_eq!(d.inputs[0].items, both);
+    assert!(d.pick_sketch(&h.app.session, b));
+    assert_eq!(d.inputs[0].items, both);
+}
