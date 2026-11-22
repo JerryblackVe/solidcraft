@@ -130,7 +130,11 @@ pub enum Mod {
     /// and `angle` turns about it.
     /// `frame` is the box (middle and size in the sketch, kept up to date from the picks by
     /// `sketch_transform_ui`) the window's size rows and the handles work on.
-    Transform { x: String, y: String, factor: String, angle: String, frame: Option<([f64; 2], [f64; 2])> },
+    ///
+    /// `aspect` is the height's scale over the width's (1: the shape is kept; a side handle or the
+    /// Height row changes it), and `pivot` the point the scale and the turn hold when the pivot
+    /// handle has been moved (else a picked Center, else the box middle).
+    Transform { x: String, y: String, factor: String, angle: String, frame: Option<([f64; 2], [f64; 2])>, aspect: String, pivot: Option<[f64; 2]> },
     /// `sketch.pattern.rectangular`: how many instances along the picked direction and how far
     /// apart, then the same along a second picked direction (perpendicular by default).
     PatternRect {
@@ -272,6 +276,8 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
             factor: "1".into(),
             angle: "0 deg".into(),
             frame: None,
+            aspect: "1".into(),
+            pivot: None,
         },
         "sketch.move" => Mod::Move {
             x: crate::dialogs::length_default(&app.session, "0"),
@@ -653,19 +659,28 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Mod, doc: &Document) -> bool {
             enter |= number(ui, "Angle", angle);
             ui_kit::options(ui, "move_options", &mut [("Create Copy", copy)]);
         }
-        Mod::Transform { x, y, factor, angle, frame } => {
+        Mod::Transform { x, y, factor, angle, frame, aspect, .. } => {
             enter |= ui_kit::value_pair(ui, "Position", [x, y], ["X", "Y"], Some(["X Distance", "Y Distance"]));
-            // The size in millimetres follows the factor and the other way round; the aspect is kept.
+            // The size in millimetres follows the scale and the other way round: the width sets the
+            // scale, the height the aspect, so each can be typed on its own.
             if let Some((_, size)) = frame {
-                for (label, natural) in [("Width", size[0]), ("Height", size[1])] {
+                for (label, natural, high) in [("Width", size[0], false), ("Height", size[1], true)] {
                     let k = crate::ui_kit::parse_number(factor.trim()).filter(|k| *k > 0.0).unwrap_or(1.0);
-                    let mut shown = format!("{} mm", crate::sketch_transform_ui::plain(natural * k));
+                    let a = crate::ui_kit::parse_number(aspect.trim()).filter(|a| *a > 0.0).unwrap_or(1.0);
+                    let mut shown = format!("{} mm", crate::sketch_transform_ui::plain(natural * k * if high { a } else { 1.0 }));
                     if number(ui, label, &mut shown)
                         && let Some(mm) = crate::ui_kit::parse_number(shown.trim_end_matches("mm").trim())
                         && mm > 0.0
                         && natural > 1e-9
                     {
-                        *factor = format!("{}", ((mm / natural) * 1e6).round() / 1e6);
+                        if high {
+                            *aspect = format!("{}", ((mm / natural / k) * 1e6).round() / 1e6);
+                        } else {
+                            // The height keeps its own size while the width changes.
+                            let new = mm / natural;
+                            *aspect = format!("{}", ((k * a / new) * 1e6).round() / 1e6);
+                            *factor = format!("{}", (new * 1e6).round() / 1e6);
+                        }
                     }
                 }
             }
@@ -1018,7 +1033,7 @@ pub fn commands(app: &SolveApp, k: &Mod, inputs: &[SelInput], extra: &Map<String
             }
             ("sketch.scale", p)
         }
-        Mod::Transform { x, y, factor: text, angle, frame } => {
+        Mod::Transform { x, y, factor: text, angle, frame, aspect, pivot } => {
             let entities = entity_ids(&app.session, inputs, 0);
             if entities.is_empty() {
                 return Err("Select the sketch curves or points to transform first".into());
@@ -1027,8 +1042,21 @@ pub fn commands(app: &SolveApp, k: &Mod, inputs: &[SelInput], extra: &Map<String
             let f = factor(app, text)?;
             let turn = value(app, angle, ValueKind::Angle, "Angle")?.to_degrees();
             let (dx, dy) = (value(app, x, ValueKind::Length, "X")?, value(app, y, ValueKind::Length, "Y")?);
-            let center = items(inputs, 1).first().and_then(|sel| point_id(&app.session, sel)).map_or_else(|| json!(middle), |id| json!(id));
-            ("sketch.transform", json!({"entities": entities, "factor": f, "angle": turn, "center": center, "translate": [dx, dy]}))
+            let center = match pivot {
+                Some(q) => json!(q),
+                None => items(inputs, 1).first().and_then(|sel| point_id(&app.session, sel)).map_or_else(|| json!(middle), |id| json!(id)),
+            };
+            let a = crate::ui_kit::parse_number(aspect.trim()).filter(|a| a.is_finite() && *a > 0.0).unwrap_or(1.0);
+            if (a - 1.0).abs() > 1e-9 {
+                // Width and height apart: the engine stretches lines and splines this way and says so
+                // when the picks hold an arc, a circle, a text or a dimension.
+                (
+                    "sketch.transform",
+                    json!({"entities": entities, "scale_x": f, "scale_y": f * a, "angle": turn, "center": center, "translate": [dx, dy]}),
+                )
+            } else {
+                ("sketch.transform", json!({"entities": entities, "factor": f, "angle": turn, "center": center, "translate": [dx, dy]}))
+            }
         }
         Mod::Offset { distance, distance2, instances, mode, chain, flip } => {
             let curves = curve_ids(inputs, 0);

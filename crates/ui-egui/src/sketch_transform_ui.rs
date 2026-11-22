@@ -33,6 +33,11 @@ enum Part {
     Move,
     /// A corner, by its signs in the box's own frame.
     Corner(f64, f64),
+    /// The middle of a side, by its axis (0: a left or right side, so the width; 1: a top or bottom
+    /// side, so the height) and its sign: only that size changes, the opposite side stays put.
+    Side(u8, f64),
+    /// The pivot: where the scale and the turn keep fixed. Moving it moves nothing else.
+    Pivot,
     Turn,
 }
 
@@ -45,22 +50,29 @@ pub struct Drag {
 }
 
 /// The box as placed: where its pivot is (the point it scales and turns about), how much it is
-/// scaled, how far turned, its own size before scaling, and where the pivot and the box middle
-/// were before the move.
+/// scaled (`scale` wide, `scale * aspect` high), how far turned, its own size before scaling, and
+/// where the pivot and the box middle were before the move.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Frame {
     x: f64,
     y: f64,
     scale: f64,
+    /// The height's scale over the width's: 1 keeps the shape.
+    aspect: f64,
     angle: f64,
     natural: (f64, f64),
     pivot: Vec2,
     middle: Vec2,
 }
 
+/// `v` as the scale makes it: wide by `scale`, high by `scale * aspect`, before the turn.
+fn stretch(f: &Frame, v: Vec2) -> Vec2 {
+    Vec2::new(v.x * f.scale, v.y * f.scale * f.aspect)
+}
+
 /// Where the box's middle is placed.
 fn center(f: &Frame) -> Vec2 {
-    Vec2::new(f.x, f.y) + turn((f.middle - f.pivot) * f.scale, f.angle)
+    Vec2::new(f.x, f.y) + turn(stretch(f, f.middle - f.pivot), f.angle)
 }
 
 fn turn(v: Vec2, degrees: f64) -> Vec2 {
@@ -70,7 +82,7 @@ fn turn(v: Vec2, degrees: f64) -> Vec2 {
 
 /// A spot of the box in its own frame (`u`, `v` in half sizes) on the sketch.
 fn spot(f: &Frame, u: f64, v: f64) -> Vec2 {
-    center(f) + turn(Vec2::new(u * f.natural.0 * f.scale / 2.0, v * f.natural.1 * f.scale / 2.0), f.angle)
+    center(f) + turn(stretch(f, Vec2::new(u * f.natural.0 / 2.0, v * f.natural.1 / 2.0)), f.angle)
 }
 
 fn on_screen(plane: &Plane, proj: &Proj, q: Vec2) -> Option<Pos2> {
@@ -132,26 +144,32 @@ fn picked_pivot(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<Vec2> {
 
 /// The placement the window's fields describe, as a frame.
 fn frame_of(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<Frame> {
-    let Kind::SketchModify(Mod::Transform { x, y, factor, angle, frame }) = &d.kind else { return None };
+    let Kind::SketchModify(Mod::Transform { x, y, factor, angle, frame, aspect, pivot: moved_pivot }) = &d.kind else { return None };
     let (middle, size) = (*frame)?;
     let middle = Vec2::new(middle[0], middle[1]);
-    let pivot = picked_pivot(app, d).unwrap_or(middle);
+    // The pivot the box was given by hand wins over a picked Center, which wins over the middle.
+    let pivot = moved_pivot.map(|q| Vec2::new(q[0], q[1])).or_else(|| picked_pivot(app, d)).unwrap_or(middle);
+    let aspect = crate::ui_kit::parse_number(aspect.trim()).filter(|a| a.is_finite() && *a > 0.0).unwrap_or(1.0);
     let (dx, dy) =
         (crate::sketch_modify_ui::value(app, x, ValueKind::Length, "X").ok()?, crate::sketch_modify_ui::value(app, y, ValueKind::Length, "Y").ok()?);
     let scale = crate::sketch_modify_ui::factor(app, factor).ok()?;
     let turned = crate::sketch_modify_ui::value(app, angle, ValueKind::Angle, "Angle").ok()?.to_degrees();
-    Some(Frame { x: pivot.x + dx, y: pivot.y + dy, scale, angle: turned, natural: (size[0], size[1]), pivot, middle })
+    Some(Frame { x: pivot.x + dx, y: pivot.y + dy, scale, aspect, angle: turned, natural: (size[0], size[1]), pivot, middle })
 }
 
 use solidcraft_engine::doc::expr::Kind as ValueKind;
 
 /// Write a frame back into the window's fields.
-fn store(k: &mut Mod, f: &Frame) {
-    if let Mod::Transform { x, y, factor, angle, .. } = k {
+fn store(k: &mut Mod, f: &Frame, pivot_moved: bool) {
+    if let Mod::Transform { x, y, factor, angle, aspect, pivot, .. } = k {
         *x = format!("{} mm", plain(f.x - f.pivot.x));
         *y = format!("{} mm", plain(f.y - f.pivot.y));
         *factor = format!("{}", (f.scale * 1e6).round() / 1e6);
+        *aspect = format!("{}", (f.aspect * 1e6).round() / 1e6);
         *angle = format!("{} deg", plain(f.angle));
+        if pivot_moved {
+            *pivot = Some([f.pivot.x, f.pivot.y]);
+        }
     }
 }
 
@@ -175,16 +193,49 @@ fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
                 now.angle = (a + 180.0).rem_euclid(360.0) - 180.0;
             }
         }
+        Part::Side(axis, sign) => {
+            // One size changes, from the opposite side, which stays: the pointer in the box's own
+            // frame says how big that size is now.
+            let (u, v) = if axis == 0 { (sign, 0.0) } else { (0.0, sign) };
+            let fixed = spot(&start, -u, -v);
+            let local = turn(p - fixed, -start.angle);
+            let high = start.scale * start.aspect;
+            let reach = if axis == 0 {
+                let wide = (local.x.abs() / start.natural.0).clamp(MIN_FACTOR, MAX_FACTOR);
+                now.scale = wide;
+                now.aspect = (high / wide).clamp(MIN_FACTOR, MAX_FACTOR);
+                Vec2::new(sign * wide * start.natural.0 / 2.0, 0.0)
+            } else {
+                let tall = (local.y.abs() / start.natural.1).clamp(MIN_FACTOR, MAX_FACTOR);
+                now.aspect = (tall / start.scale).clamp(MIN_FACTOR, MAX_FACTOR);
+                Vec2::new(0.0, sign * tall * start.natural.1 / 2.0)
+            };
+            let middle = fixed + turn(reach, start.angle);
+            let pivot = middle - turn(stretch(&now, start.middle - start.pivot), start.angle);
+            if pivot.x.is_finite() && pivot.y.is_finite() {
+                now.x = pivot.x;
+                now.y = pivot.y;
+            }
+        }
+        Part::Pivot => {
+            // The pivot goes under the pointer; the entities do not move, so what the pivot is
+            // placed at is where the box has put that spot.
+            now.pivot = p;
+            let at = moved(&start, p);
+            now.x = at.x;
+            now.y = at.y;
+        }
         Part::Corner(u, v) => {
             let fixed = spot(&start, -u, -v);
             // The pointer in the box's own frame, measured from the corner that stays.
             let local = turn(p - fixed, -start.angle);
-            let k = (local.x.abs() / start.natural.0).max(local.y.abs() / start.natural.1).clamp(MIN_FACTOR, MAX_FACTOR);
+            let high = start.natural.1 * start.aspect;
+            let k = (local.x.abs() / start.natural.0).max(local.y.abs() / high).clamp(MIN_FACTOR, MAX_FACTOR);
             if k.is_finite() {
-                let reach = turn(Vec2::new(u * k * start.natural.0 / 2.0, v * k * start.natural.1 / 2.0), start.angle);
+                let reach = turn(Vec2::new(u * k * start.natural.0 / 2.0, v * k * high / 2.0), start.angle);
                 now.scale = k;
                 // The pivot goes where it keeps the box middle at `fixed + reach`.
-                let pivot = fixed + reach - turn((start.middle - start.pivot) * k, start.angle);
+                let pivot = fixed + reach - turn(stretch(&now, start.middle - start.pivot), start.angle);
                 now.x = pivot.x;
                 now.y = pivot.y;
             }
@@ -195,7 +246,7 @@ fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
 
 /// Where a point of the original box goes: scaled and turned about the pivot, then moved.
 fn moved(f: &Frame, q: Vec2) -> Vec2 {
-    Vec2::new(f.x, f.y) + turn((q - f.pivot) * f.scale, f.angle)
+    Vec2::new(f.x, f.y) + turn(stretch(f, q - f.pivot), f.angle)
 }
 
 /// The Transform window's picks with their handles; a drag on them edits the window's values.
@@ -225,6 +276,22 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
     painter.add(egui::Shape::closed_line(corners.clone(), stroke));
     painter.line_segment([top, knob], stroke);
     painter.circle(knob, HANDLE, t.overlay, stroke);
+    // The middle of each side takes only that size; the pivot is the dot where the scale and the turn hold.
+    let sides: Vec<(Pos2, Part)> = [(0u8, 1.0), (0, -1.0), (1, 1.0), (1, -1.0)]
+        .into_iter()
+        .filter_map(|(axis, sign)| {
+            let (u, v) = if axis == 0 { (sign, 0.0) } else { (0.0, sign) };
+            on_screen(&plane, proj, spot(&frame, u, v)).map(|at| (at, Part::Side(axis, sign)))
+        })
+        .collect();
+    for (at, _) in &sides {
+        painter.rect(egui::Rect::from_center_size(*at, Screen::splat(HANDLE * 1.4)), 1.0, t.overlay, stroke, egui::StrokeKind::Inside);
+    }
+    let pivot_at = on_screen(&plane, proj, Vec2::new(frame.x, frame.y));
+    if let Some(at) = pivot_at {
+        painter.circle(at, HANDLE * 0.8, t.overlay, stroke);
+        painter.circle_filled(at, 2.0, t.accent);
+    }
 
     // The whole box first, so the corners and the knob above it win where they overlap.
     let mut parts: Vec<(egui::Rect, Part, egui::CursorIcon)> = vec![(egui::Rect::from_points(&corners), Part::Move, egui::CursorIcon::Grab)];
@@ -233,6 +300,14 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
         parts.push((egui::Rect::from_center_size(*c, Screen::splat(HANDLE * 3.0)), Part::Corner(u, v), egui::CursorIcon::ResizeNwSe));
     }
     parts.push((egui::Rect::from_center_size(knob, Screen::splat(HANDLE * 3.0)), Part::Turn, egui::CursorIcon::Crosshair));
+    for (at, part) in sides {
+        let cursor = if matches!(part, Part::Side(0, _)) { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical };
+        parts.push((egui::Rect::from_center_size(at, Screen::splat(HANDLE * 2.4)), part, cursor));
+    }
+    // Last, so the pivot wins over the corner or side it may sit on.
+    if let Some(at) = pivot_at {
+        parts.push((egui::Rect::from_center_size(at, Screen::splat(HANDLE * 2.4)), Part::Pivot, egui::CursorIcon::Move));
+    }
     // While Center waits for its pick, a click goes to the sketch: a rectangle's corner, the
     // point most often picked there, is under a corner handle (#11718). Once it has one, the
     // handles work again; Clear (×) empties it to pick another point there.
@@ -256,7 +331,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
         {
             let now = apply(&drag, p, ui.input(|i| i.modifiers.shift));
             if let Some(Kind::SketchModify(k)) = app.dialog.as_mut().map(|d| &mut d.kind) {
-                store(k, &now);
+                store(k, &now, drag.part == Part::Pivot);
             }
         }
         if response.drag_stopped() {
@@ -271,7 +346,7 @@ mod tests {
 
     fn frame() -> Frame {
         let middle = Vec2::new(10.0, 5.0);
-        Frame { x: 10.0, y: 5.0, scale: 1.0, angle: 0.0, natural: (20.0, 10.0), pivot: middle, middle }
+        Frame { x: 10.0, y: 5.0, scale: 1.0, aspect: 1.0, angle: 0.0, natural: (20.0, 10.0), pivot: middle, middle }
     }
 
     /// The box of `frame()` with its lower left corner (0, 0) as the pivot.
@@ -314,6 +389,43 @@ mod tests {
             let now = apply(&drag(Part::Corner(1.0, 1.0), spot(&f, 1.0, 1.0), f), pulled, false);
             assert!((now.scale - 2.0).abs() < 1e-9, "{}", now.scale);
             assert!(spot(&now, -1.0, -1.0).dist(fixed) < 1e-9, "the opposite corner stays");
+        }
+    }
+
+    /// A side's handle changes that size alone and the opposite side stays, turned or not.
+    #[test]
+    fn a_side_changes_one_size_and_keeps_the_opposite_side() {
+        for angle in [0.0, 30.0] {
+            let f = Frame { angle, ..frame() };
+            let wide_fixed = spot(&f, -1.0, 0.0);
+            let pulled = spot(&f, 1.0, 0.0) + turn(Vec2::new(10.0, 0.0), angle);
+            let now = apply(&drag(Part::Side(0, 1.0), spot(&f, 1.0, 0.0), f), pulled, false);
+            assert!((now.scale - 1.5).abs() < 1e-9, "{}", now.scale);
+            assert!(spot(&now, -1.0, 0.0).dist(wide_fixed) < 1e-9, "the left side stays");
+            assert!((spot(&now, 0.0, 1.0).dist(spot(&now, 0.0, -1.0)) - 10.0).abs() < 1e-9, "the height is as it was");
+            assert!((spot(&now, 1.0, 0.0).dist(spot(&now, -1.0, 0.0)) - 30.0).abs() < 1e-9);
+            // The height: pulled down from the top side, the bottom stays.
+            let tall_fixed = spot(&now, 0.0, -1.0);
+            let up = spot(&now, 0.0, 1.0) + turn(Vec2::new(0.0, 5.0), angle);
+            let taller = apply(&drag(Part::Side(1, 1.0), spot(&now, 0.0, 1.0), now), up, false);
+            assert!(spot(&taller, 0.0, -1.0).dist(tall_fixed) < 1e-9, "the bottom stays");
+            assert!((spot(&taller, 0.0, 1.0).dist(spot(&taller, 0.0, -1.0)) - 15.0).abs() < 1e-9);
+            assert!((spot(&taller, 1.0, 0.0).dist(spot(&taller, -1.0, 0.0)) - 30.0).abs() < 1e-9, "the width is as it was");
+            for q in [Vec2::ZERO, Vec2::new(20.0, 10.0)] {
+                let (u, v) = (if q.x > 0.0 { 1.0 } else { -1.0 }, if q.y > 0.0 { 1.0 } else { -1.0 });
+                assert!(moved(&taller, q).dist(spot(&taller, u, v)) < 1e-9, "a corner of the entities is a corner of the box");
+            }
+        }
+    }
+
+    /// The pivot handle moves where the scale and the turn hold, and nothing else.
+    #[test]
+    fn moving_the_pivot_moves_no_entity() {
+        let f = Frame { angle: 25.0, scale: 2.0, aspect: 0.5, x: 3.0, y: -2.0, ..frame() };
+        let now = apply(&drag(Part::Pivot, center(&f), f), Vec2::new(-7.0, 4.0), false);
+        assert_eq!(now.pivot, Vec2::new(-7.0, 4.0));
+        for q in [Vec2::ZERO, Vec2::new(20.0, 10.0), Vec2::new(3.0, 8.0)] {
+            assert!(moved(&now, q).dist(moved(&f, q)) < 1e-9, "{q:?}");
         }
     }
 

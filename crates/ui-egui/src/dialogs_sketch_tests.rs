@@ -703,7 +703,7 @@ fn transform_handles_and_fields_scale_move_and_turn_the_picks() {
     h.app.dialog = Some(d);
     h.frames(4);
     let state = |h: &Harness| match h.app.dialog.as_ref().map(|d| d.kind.clone()) {
-        Some(Kind::SketchModify(Mod::Transform { x, y, factor, angle, frame })) => (x, y, factor, angle, frame),
+        Some(Kind::SketchModify(Mod::Transform { x, y, factor, angle, frame, .. })) => (x, y, factor, angle, frame),
         other => panic!("no transform window: {other:?}"),
     };
     // The box is the rectangle's: 30 x 20 around (25, 20).
@@ -1027,4 +1027,48 @@ fn project_box_beside_the_model_still_takes_curves_of_other_sketches_14927() {
     h.call("ui.camera", json!({"target":[65,35,0],"distance":180}));
     h.step(&json!({"drag": [{"world": [55, 35, 0]}, {"world": [85, 45, 0]}]})).unwrap();
     assert_eq!(external_curves(&h, first), vec![lone], "{:?}", h.app.dialog.as_ref().unwrap().inputs[0].items);
+}
+
+/// A drawing brought in from a file is one group: a click on it shows its transformation box at
+/// once, a side handle changes the width alone and OK applies it to every curve in one step.
+#[test]
+fn a_clicked_imported_drawing_shows_its_box_and_a_side_changes_its_width() {
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 20"><path d="M0,0 L30,0 L30,20 L0,20 Z"/></svg>"#;
+    h.app.run("sketch.insert_svg", json!({"text": svg, "width": 30})).unwrap();
+    h.step(&json!({"call": "ui.view", "params": {"view": "top"}})).unwrap();
+    h.settle();
+    let bounds = |h: &Harness| {
+        let state = h.app.session.world_state().unwrap();
+        let sk = &state.sketch(h.app.session.active_sketch.unwrap()).unwrap().sketch;
+        let (mut lo, mut hi) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
+        for p in (0..sk.curves.len()).flat_map(|i| sk.polyline(i)) {
+            lo = (lo.0.min(p.x), lo.1.min(p.y));
+            hi = (hi.0.max(p.x), hi.1.max(p.y));
+        }
+        (lo, hi)
+    };
+    let (lo, hi) = bounds(&h);
+    let (w, t) = (hi.0 - lo.0, hi.1 - lo.1);
+    // A click on the drawing's bottom side picks the whole group, and the box is there.
+    h.step(&json!({"click": {"sketch": [lo.0 + w * 0.3, lo.1]}})).unwrap();
+    h.frames(4);
+    let frame = match h.app.dialog.as_ref().map(|d| d.kind.clone()) {
+        Some(Kind::SketchModify(Mod::Transform { frame, .. })) => frame,
+        other => panic!("a click on the group should open its box: {other:?}"),
+    };
+    let frame = frame.expect("a box round the group");
+    assert!((frame.1[0] - w).abs() < 1e-6 && (frame.1[1] - t).abs() < 1e-6, "{frame:?}");
+    // The right side pulled out by half the width: the width alone grows, the left side stays.
+    h.step(&json!({"drag": [{"handle": "transform:handle:6"}, {"world": [hi.0 + w / 2.0, lo.1 + t / 2.0, 0]}]})).unwrap();
+    h.frames(3);
+    h.step(&json!({"key": "Enter"})).unwrap();
+    h.settle();
+    assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog.as_ref().and_then(|d| d.error.clone()));
+    let (lo2, hi2) = bounds(&h);
+    assert!((lo2.0 - lo.0).abs() < 0.3 && (hi2.0 - lo2.0 - 1.5 * w).abs() < 0.5, "width x1.5: {lo2:?} {hi2:?}");
+    assert!((hi2.1 - lo2.1 - t).abs() < 0.3, "height as it was: {lo2:?} {hi2:?}");
+    assert_eq!(h.app.session.doc.sketch(1).unwrap().object_groups.len(), 1);
 }
