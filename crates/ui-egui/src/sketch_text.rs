@@ -67,6 +67,13 @@ pub struct Tx {
     focus: bool,
     /// Filters the font list.
     font_filter: String,
+    /// The font the sketch shows while the pointer rests on it in the list (the picked font
+    /// stays `font`: OK applies that one).
+    hover_font: Option<String>,
+    /// The font row under the pointer and since when (seconds of input time).
+    hovering: Option<(String, f64)>,
+    /// The sketch shows a hovered font: the next preview sets the picked font back by name.
+    hover_shown: bool,
     /// The checkpoint from before the dialog changed the design (its first live change, or the
     /// Text tool placing the text): Cancel goes back to it.
     start: Option<u64>,
@@ -313,6 +320,9 @@ fn kind_for(app: &SolveApp, entity: &str) -> Option<Kind> {
         picking: false,
         focus: true,
         font_filter: String::new(),
+        hover_font: None,
+        hovering: None,
+        hover_shown: false,
         start: None,
         folded: false,
         tried: None,
@@ -384,7 +394,22 @@ fn folded<T>(app: &mut SolveApp, k: &mut Tx, run: impl FnOnce(&mut SolveApp) -> 
 /// no text (an empty one, a half-typed value) leave the last good preview.
 /// A changed preview returns its result for the dialog's error row; unchanged fields keep it.
 pub(crate) fn preview(app: &mut SolveApp, k: &mut Tx) -> Option<Result<(), String>> {
-    let Ok(params) = edit_params(app, k) else { return None };
+    // A font the pointer rests on in the list is shown in its place, until the pointer leaves.
+    let hovered = k.hover_font.clone();
+    let params = match &hovered {
+        Some(font) => {
+            let picked = std::mem::replace(&mut k.font, font.clone());
+            let params = edit_params(app, k);
+            k.font = picked;
+            params
+        }
+        None => edit_params(app, k),
+    };
+    let Ok(mut params) = params else { return None };
+    // An untouched font is left out of the edit, which would leave the hovered one in place.
+    if hovered.is_none() && k.hover_shown {
+        params["font"] = json!(k.font.trim());
+    }
     if k.tried.as_ref() == Some(&params) {
         return None;
     }
@@ -412,13 +437,21 @@ pub(crate) fn preview(app: &mut SolveApp, k: &mut Tx) -> Option<Result<(), Strin
             value_of_definition(v);
         }
     }
-    Some(
-        folded(app, k, |app| app.session.execute("sketch.edit_text", &live))
-            .map(|_| {
-                k.shown = source(app, k.sketch, &k.link);
-            })
-            .map_err(|error| error.to_string()),
-    )
+    let result = folded(app, k, |app| app.session.execute("sketch.edit_text", &live))
+        .map(|_| {
+            k.shown = source(app, k.sketch, &k.link);
+        })
+        .map_err(|error| error.to_string());
+    // A font that cannot set the text only fails to show while the pointer is on it: no message.
+    if hovered.is_some() {
+        k.hover_shown |= result.is_ok();
+        if result.is_err() {
+            return None;
+        }
+    } else if result.is_ok() {
+        k.hover_shown = false;
+    }
+    Some(result)
 }
 
 /// A field typed as `name = value`, as just its value.
@@ -745,6 +778,7 @@ fn font_row(ui: &mut egui::Ui, k: &mut Tx) {
     let shown_sample = picks.sample.trim().to_owned();
     let star_tip = solidcraft_ui_text::tr("sketch_text.favorite_font");
     let mut star_clicked: Option<String> = None;
+    let mut hovered_row: Option<String> = None;
     let mut header = |ui: &mut egui::Ui| {
         let hint = solidcraft_ui_text::tr("sketch_text.sample_hint");
         ui_kit::text_field(ui, &mut sample, hint);
@@ -794,6 +828,9 @@ fn font_row(ui: &mut egui::Ui, k: &mut Tx) {
             }
         }
         crate::scenario::publish_handle(&format!("dialog:Font:{}", option.label), response.rect.center());
+        if response.hovered() {
+            hovered_row = Some(option.value.to_owned());
+        }
         response
     };
     let chosen = ui_kit::searchable_dropdown_rows(
@@ -808,6 +845,7 @@ fn font_row(ui: &mut egui::Ui, k: &mut Tx) {
     );
     // A click on a star marks the font; it does not pick it.
     let chosen = if star_clicked.is_some() { None } else { chosen };
+    hover_preview(ui, k, hovered_row.filter(|_| chosen.is_none()));
     picks.sample = sample.chars().take(crate::font_preview::MAX_SAMPLE_CHARS).collect();
     if let Some(font) = &star_clicked {
         picks.toggle_favorite(font);
@@ -820,10 +858,43 @@ fn font_row(ui: &mut egui::Ui, k: &mut Tx) {
     crate::font_preview::change(ui.ctx(), |p| *p = picks);
 }
 
+/// How long the pointer rests on a font row before the sketch shows the text in it (seconds):
+/// passing over the list does not set the text in every font on the way.
+const HOVER_PREVIEW_DELAY: f64 = 0.25;
+
+/// Follow the font row under the pointer (`row`): once it has rested there a moment, the sketch
+/// shows the text in that font; off the list, the picked font again.
+fn hover_preview(ui: &egui::Ui, k: &mut Tx, row: Option<String>) {
+    let now = ui.input(|i| i.time);
+    match row {
+        None => {
+            k.hovering = None;
+            k.hover_font = None;
+        }
+        Some(font) => {
+            let since = match &k.hovering {
+                Some((same, since)) if *same == font => *since,
+                _ => now,
+            };
+            if now - since >= HOVER_PREVIEW_DELAY {
+                k.hover_font = (font != k.font).then_some(font.clone());
+            } else {
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(HOVER_PREVIEW_DELAY - (now - since)));
+            }
+            k.hovering = Some((font, since));
+        }
+    }
+}
+
 /// The command OK runs. Fields take expressions with units and parameters; a bare number is
 /// in the design's units (lengths) or degrees (angle).
 pub(crate) fn commands(app: &SolveApp, k: &Tx) -> Result<Vec<(String, Value)>, String> {
-    Ok(vec![("sketch.edit_text".into(), edit_params(app, k)?)])
+    let mut params = edit_params(app, k)?;
+    // The sketch may still show a font the pointer rested on: OK sets the picked one.
+    if k.hover_shown {
+        params["font"] = json!(k.font.trim());
+    }
+    Ok(vec![("sketch.edit_text".into(), params)])
 }
 
 /// `sketch.edit_text`'s parameters for the fields as they are. X, Y, Height and Angle go as
@@ -1115,6 +1186,46 @@ mod tests {
         assert!((size - 6.35).abs() < 1e-12);
         assert_eq!(rotation, angle);
         assert_eq!(h.app.session.undo.len(), undo + 1);
+    }
+
+    /// MEJ-6: resting the pointer on a font in the list shows the text in that font on the sketch at
+    /// once, before it is picked; off the list the sketch shows the picked font again, and OK keeps
+    /// the picked one.
+    #[test]
+    fn resting_on_a_font_in_the_list_shows_the_text_in_it_until_the_pointer_leaves() {
+        // BIZ UDPGothic's "I" is 17.6385 mm² at a capital height of 10 mm, the built-in font's 13.5557 mm².
+        let font = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/biz-udp-gothic/BIZUDPGothic-Regular.ttf");
+        let (mut h, _, _) = setup();
+        let area = |h: &Harness| -> f64 {
+            let sid = h.app.session.active_sketch.unwrap();
+            h.app.session.world_state().unwrap().sketch(sid).unwrap().profiles.iter().map(|p| p.area).sum()
+        };
+        h.app.ui.font_picks.recent = vec![font.to_string()];
+        h.app.start("sketch.edit_text");
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"dialog:Font"}})).unwrap();
+        h.frames(2);
+        // Passing over it is not enough; resting on it is.
+        h.step(&json!({"move":{"handle": format!("dialog:Font:{font}")}})).unwrap();
+        h.frames(2);
+        assert!((area(&h) - 13.5557).abs() < 2e-3, "{}", area(&h));
+        h.frames(30);
+        assert!((area(&h) - 17.6385).abs() < 2e-3, "the sketch shows the hovered font: {}", area(&h));
+        assert_eq!(tx(&h.app).font, "", "nothing is picked by resting on it");
+        assert!(h.app.dialog.as_ref().is_some_and(|d| d.error.is_none()));
+        // Off the list: the picked font again.
+        h.step(&json!({"move":[2.0, 2.0]})).unwrap();
+        h.frames(3);
+        assert!((area(&h) - 13.5557).abs() < 2e-3, "back to the picked font: {}", area(&h));
+        // OK straight from resting on a font keeps the picked font, in one undo step.
+        h.step(&json!({"move":{"handle": format!("dialog:Font:{font}")}})).unwrap();
+        h.frames(30);
+        assert!((area(&h) - 17.6385).abs() < 2e-3);
+        let undo = h.app.session.undo.len();
+        ok(&mut h);
+        assert!(h.app.dialog.is_none());
+        assert!((area(&h) - 13.5557).abs() < 2e-3, "OK applies the picked font: {}", area(&h));
+        assert!(h.app.session.undo.len() <= undo + 1);
     }
 
     /// A star marks a font as a favourite without picking it, and the next list shows it first;
