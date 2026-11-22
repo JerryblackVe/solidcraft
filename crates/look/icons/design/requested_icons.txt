@@ -325,6 +325,7 @@ sketch_mirror	false
 sketch_move	false
 sketch_rect_pattern	false
 sketch_scale	false
+sketch_star	false
 sketch_text	false
 slot	false
 slot_center	false
