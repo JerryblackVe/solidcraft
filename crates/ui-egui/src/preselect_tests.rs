@@ -5274,3 +5274,34 @@ fn emboss_keeps_profiles_of_two_sketches_preselected_or_picked() {
     d.pick(&h.app.session, both[1].clone());
     assert_eq!(d.inputs[0].items, both);
 }
+
+#[test]
+fn emboss_dialog_keeps_and_sends_its_distribution() {
+    // A 3 mm plate and three 6 x 2 bars off it, distributed to its top, front and right side.
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("solid.box", json!({"length":40,"width":40,"height":3,"body_name":"Plate"})).unwrap();
+    h.app.run("sketch.create", json!({"plane":{"origin":[0,0,30],"x_dir":[1,0,0],"y_dir":[0,1,0]},"name":"Bars"})).unwrap();
+    for x in [0.0, 10.0, 20.0] {
+        h.app.run("sketch.rectangle.two_point", json!({"p0":[x,60],"p1":[x + 6.0,62]})).unwrap();
+    }
+    h.app.run("sketch.finish", json!({})).unwrap();
+    let faces = json!([[20, 20, 3], [20, 0, 1.5], [40, 20, 1.5]]);
+    let feature =
+        h.app.run("solid.emboss", json!({"sketch":"Bars","depth":1,"faces":faces,"distribute":[2,1,0],"name":"Spread"})).unwrap()["feature"]
+            .as_u64()
+            .unwrap();
+    // Opened from the History, the map is shown as saved and sent back unchanged.
+    h.app.edit_feature(feature);
+    h.frames(2);
+    let dialog = h.app.dialog.as_ref().unwrap();
+    assert_eq!(dialog.inputs[1].items.len(), 3);
+    assert!(matches!(&dialog.kind, crate::dialogs::Kind::Emboss { distribute, .. } if *distribute == [2, 1, 0]), "{:?}", dialog.kind);
+    let commands = apply_commands(&h.app, dialog).unwrap();
+    assert_eq!(commands[0].1["params"]["distribute"], json!([2, 1, 0]));
+    // With no faces left there is nothing to distribute onto: the map goes and none is sent.
+    h.app.dialog.as_mut().unwrap().inputs[1].items.clear();
+    h.frames(1);
+    let dialog = h.app.dialog.as_ref().unwrap();
+    assert!(matches!(&dialog.kind, crate::dialogs::Kind::Emboss { distribute, .. } if distribute.is_empty()), "{:?}", dialog.kind);
+    assert!(apply_commands(&h.app, dialog).unwrap()[0].1["params"]["distribute"].is_null());
+}

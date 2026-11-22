@@ -761,6 +761,135 @@ fn an_emboss_refuses_a_profile_over_none_of_its_faces_and_leaves_the_design() {
     assert_eq!(s.doc.to_json(), saved);
 }
 
+/// A 40 x 40 x 3 plate and, in a sketch far off it (z = 30, y = 60), three 6 x 2 bars.
+fn plate_with_bars() -> Session {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 40, "width": 40, "height": 3, "body_name": "Plate"}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 30], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Bars"}));
+    for x in [0.0, 10.0, 20.0] {
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [x, 60], "p1": [x + 6.0, 62]}));
+    }
+    run(&mut s, "sketch.finish", json!({}));
+    s
+}
+
+#[test]
+fn an_emboss_distributes_its_profiles_one_face_each() {
+    // The bars lie over no face; distributed, each goes centred on its face's picked point: the
+    // top, the front (y = 0) and the right side (x = 40). On the 3 mm sides a bar fits only lying
+    // along the side (its 2 mm upright), so a bar turned the wrong way would refuse.
+    let mut s = plate_with_bars();
+    let faces = json!([[20, 20, 3], [20, 0, 1.5], [40, 20, 1.5]]);
+    let saved = s.doc.to_json();
+    let e = s.execute("solid.emboss", &json!({"sketch": "Bars", "depth": 1, "faces": faces})).unwrap_err().to_string();
+    assert!(e.contains("lies over none"), "not distributed unless asked: {e}");
+    run(&mut s, "solid.emboss", json!({"sketch": "Bars", "depth": 1, "faces": faces, "distribute": [0, 1, 2], "name": "Spread"}));
+    assert!(rel(volume(&mut s), 4800.0 + 36.0) < 1e-6, "{}", volume(&mut s));
+    let bounds = |s: &Session| s.model.state().bodies[0].body.exact_bounds().unwrap();
+    let b = bounds(&s);
+    assert!((b.max.x - 41.0).abs() < 1e-6 && (b.min.y + 1.0).abs() < 1e-6 && (b.max.z - 4.0).abs() < 1e-6, "{b:?}");
+    // Saved and opened again, it builds the same; undo takes it away, redo brings it back.
+    let json = s.doc.to_json();
+    let mut t = Session { doc: solidcraft_doc::Document::from_json(&json).unwrap().into(), ..Default::default() };
+    t.refresh();
+    assert!(t.model.results.iter().all(|f| f.error.is_none()), "{:?}", t.model.results);
+    assert!(rel(volume(&mut t), 4836.0) < 1e-6, "{}", volume(&mut t));
+    run(&mut s, "edit.undo", json!({}));
+    assert!(rel(volume(&mut s), 4800.0) < 1e-9);
+    run(&mut s, "edit.redo", json!({}));
+    assert!(rel(volume(&mut s), 4836.0) < 1e-6);
+    // The map is an input, edited from the History.
+    run(&mut s, "timeline.edit", json!({"feature": "Spread", "set": {"distribute": [2, 0, 1]}}));
+    assert!(rel(volume(&mut s), 4836.0) < 1e-6, "{}", volume(&mut s));
+    let kind = &s.doc.features.last().unwrap().kind;
+    assert!(matches!(kind, solidcraft_doc::FeatureKind::Emboss { distribute, .. } if *distribute == [2, 0, 1]), "{kind:?}");
+    // Two profiles on one face would sit on each other at its point: said, not built.
+    let mut t = plate_with_bars();
+    let e = t.execute("solid.emboss", &json!({"sketch": "Bars", "depth": 1, "faces": faces, "distribute": [0, 1, 0]})).unwrap_err().to_string();
+    assert!(e.contains("profiles 1 and 3 both go on face 1"), "{e}");
+    // Turned upright, a bar runs off the 3 mm front: said, and the design is left as it was.
+    let mut s = plate_with_bars();
+    let p = json!({"sketch": "Bars", "depth": 1, "faces": faces, "distribute": [0, 1, 2], "angle": "90 deg"});
+    let e = s.execute("solid.emboss", &p).unwrap_err().to_string();
+    assert!(e.contains("profile 2 runs off face 2"), "{e}");
+    assert_eq!(s.doc.to_json(), saved);
+}
+
+#[test]
+fn an_emboss_distributes_the_letters_of_linces_on_six_faces() {
+    // Six 20 x 20 x 5 blocks in a row, and LINCES written off to the side: each letter, in
+    // reading order, goes on the top of its own block.
+    let mut s = Session::default();
+    let names = ["B0", "B1", "B2", "B3", "B4", "B5"];
+    for (k, name) in names.iter().enumerate() {
+        run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 5, "corner": [30.0 * k as f64, 0, 0], "body_name": name}));
+    }
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 30], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Word"}));
+    let link = run(&mut s, "sketch.text", json!({"text": "LINCES", "at": [0, 60], "height": 10}))["link"].as_str().unwrap().to_string();
+    run(&mut s, "sketch.finish", json!({}));
+    let body = |s: &mut Session, name: &str| run(s, "inspect.measure", json!({"bodies": [name]}))["bodies"][0]["volume_mm3"].as_f64().unwrap();
+    let block = body(&mut s, "B0");
+    // Each letter alone, raised on the first block, for its own size.
+    let mut letter = Vec::new();
+    for k in 0..6 {
+        run(&mut s, "solid.emboss", json!({"sketch": "Word", "depth": 1, "text": link, "letters": [k], "faces": [[10, 10, 5]], "distribute": [0]}));
+        letter.push(body(&mut s, "B0") - block);
+        run(&mut s, "edit.undo", json!({}));
+    }
+    let faces: Vec<Value> = (0..6).map(|k| json!([30.0 * k as f64 + 10.0, 10, 5])).collect();
+    run(&mut s, "solid.emboss", json!({"sketch": "Word", "depth": 1, "text": link, "faces": faces, "distribute": [0, 1, 2, 3, 4, 5]}));
+    for (k, name) in names.iter().enumerate() {
+        let added = body(&mut s, name) - block;
+        assert!(letter[k] > 1.0 && rel(added, letter[k]) < 1e-6, "{name}: {added} vs {:?}", letter);
+    }
+    // L, I and N differ in size, so each block got its own letter in order.
+    assert!(rel(letter[0], letter[1]) > 1e-3 && rel(letter[1], letter[2]) > 1e-3, "{letter:?}");
+}
+
+#[test]
+fn an_emboss_distributes_onto_a_cylinder_wall() {
+    // A 4 mm tall ring of radius 10 and two 6 x 2 bars far above it, laid at two points of its
+    // wall: each stands upright on it (2 mm tall, 1 mm out), so turned the other way a bar would
+    // run off the 4 mm wall.
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"radius": 10, "height": 4, "body_name": "Ring"}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 50], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Bars"}));
+    for x in [0.0, 10.0] {
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [x, 0], "p1": [x + 6.0, 2]}));
+    }
+    run(&mut s, "sketch.finish", json!({}));
+    let v = volume(&mut s);
+    run(&mut s, "solid.emboss", json!({"sketch": "Bars", "depth": 1, "faces": [[10, 0, 2], [-10, 0, 2]], "distribute": [0, 1]}));
+    // The wall takes each bar as its tangent frame lays it, projected out along the radius: the
+    // ring between radius 10 and 11 within 3 mm either side of the bar's centre line, 2 mm tall.
+    // Across |y| <= 3 a disc of radius R has 3 sqrt(R^2 - 9) + R^2 asin(3 / R).
+    let strip = |r: f64| 3.0 * (r * r - 9.0).sqrt() + r * r * (3.0 / r).asin();
+    let added = volume(&mut s) - v;
+    assert!(rel(added, 2.0 * 2.0 * (strip(11.0) - strip(10.0))) < 1e-6, "{added}");
+    let b = s.model.state().bodies[0].body.exact_bounds().unwrap();
+    assert!((b.max.x - 11.0).abs() < 1e-6 && (b.min.x + 11.0).abs() < 1e-6, "{b:?}");
+}
+
+#[test]
+fn an_emboss_distribution_must_match_its_profiles_and_faces() {
+    let mut s = plate_with_bars();
+    let saved = s.doc.to_json();
+    let faces = json!([[20, 20, 3], [20, 0, 1.5]]);
+    for (distribute, says) in [
+        (json!([0, 1]), "names a face for 2 profiles but there are 3"),
+        (json!([0, 1, 2]), "names face 2, but `faces` gives 2 (0 to 1)"),
+        (json!([0, -1, 1]), "must list face indices"),
+        (json!([]), "1 to 4096 entries"),
+        (json!("all"), "1 to 4096 entries"),
+    ] {
+        let e = s.execute("solid.emboss", &json!({"sketch": "Bars", "depth": 1, "faces": faces, "distribute": distribute})).unwrap_err().to_string();
+        assert!(e.contains(says), "{distribute}: {e}");
+    }
+    let e = s.execute("solid.emboss", &json!({"sketch": "Bars", "depth": 1, "distribute": [0, 0, 0]})).unwrap_err().to_string();
+    assert!(e.contains("give the faces in `faces`"), "{e}");
+    assert_eq!(s.doc.to_json(), saved);
+}
+
 #[test]
 fn one_emboss_raises_profiles_of_two_sketches() {
     let mut s = Session::default();

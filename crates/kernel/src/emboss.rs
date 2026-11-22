@@ -143,6 +143,30 @@ pub fn emboss_anchor(body: &Body, face: usize, at: Vec3) -> Result<Vec3> {
     })
 }
 
+/// The outward unit normal of face `face` of `body` at `at`, a point on it (as [`emboss_anchor`]
+/// puts it): on a plane, a cylinder (either side) or a sphere; `None` on any other surface.
+pub fn emboss_face_normal(body: &Body, face: usize, at: Vec3) -> Result<Option<Vec3>> {
+    if !at.is_finite() || at.len() > 1e9 {
+        return Err(refuse("invalid selected face point"));
+    }
+    guard("emboss face normal", || {
+        let rec = record(body)?;
+        if face >= rec.faces.len() {
+            return Err(refuse("selected face"));
+        }
+        let side = |convex: bool| if convex { 1.0 } else { -1.0 };
+        Ok(match surf_of(&rec, face) {
+            Some(Surf::Plane { n, .. }) => Some(n),
+            Some(Surf::Cylinder { o, a, convex, .. }) => {
+                let w = at - o;
+                (w - a * w.dot(a)).normalized().map(|r| r * side(convex))
+            }
+            Some(Surf::Sphere { c, convex, .. }) => (at - c).normalized().map(|r| r * side(convex)),
+            _ => None,
+        })
+    })
+}
+
 /// Emboss (`depth > 0`) or deboss (`depth < 0`) `regions` onto face `face` of `body`, `at` a
 /// point on it. Each region is cut out of a slab between offsets of the face, so the raised or
 /// sunk cap follows the face at `depth`, then joined to or cut from the body. On a cylinder

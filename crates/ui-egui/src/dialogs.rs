@@ -170,17 +170,20 @@ crate::dialog_descriptor::dialog_descriptors! {
             operation: usize = 0 => op_index(operation),
         } => json!({"diameter": diameter, "operation": OPS.get(*operation).copied().unwrap_or("new")});
         Emboss("solid.emboss", "EMBOSS", [("Profiles", PROFILES, true), ("Target Faces (optional)", FACES, true)],
-            FeatureKind::Emboss { depth, deboss, dx, dy, angle, flip, .. }) {
+            FeatureKind::Emboss { depth, deboss, dx, dy, angle, flip, distribute, .. }) {
             depth: String = "1 mm".into() => shown_expr(depth, ValueKind::Length),
             deboss: bool = false => *deboss,
             dx: String = String::new() => dx.as_deref().map(|e| shown_expr(e, ValueKind::Length)).unwrap_or_default(),
             dy: String = String::new() => dy.as_deref().map(|e| shown_expr(e, ValueKind::Length)).unwrap_or_default(),
             angle: String = String::new() => angle.as_deref().map(|e| shown_expr(e, ValueKind::Angle)).unwrap_or_default(),
             flip: bool = false => *flip,
+            distribute: Vec<u32> = Vec::new() => distribute.clone(),
         } => {
-            // An empty shift is none; flipping is for profiles with no face picked.
+            // An empty shift is none; flipping is for profiles with no face picked; no
+            // distribution puts each profile on the face it lies over.
             let given = |e: &String| if e.trim().is_empty() { Value::Null } else { json!(e) };
-            json!({"depth": depth, "mode": if *deboss { "deboss" } else { "emboss" }, "dx": given(dx), "dy": given(dy), "angle": given(angle), "flip": *flip})
+            let distribute = if distribute.is_empty() { Value::Null } else { json!(distribute) };
+            json!({"depth": depth, "mode": if *deboss { "deboss" } else { "emboss" }, "dx": given(dx), "dy": given(dy), "angle": given(angle), "flip": *flip, "distribute": distribute})
         };
         ; custom {
             /// Pick a plane or planar face; the sketch starts on it at once.

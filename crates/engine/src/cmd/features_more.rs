@@ -60,7 +60,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("emboss")
         .contract(&EMBOSS_CONTRACT)
         .output(output_schema_for::<FeatureResult>)
-        .params("sketch, profiles?; depth; mode?: emboss|deboss; targets?; face?: world point [x,y,z] on the face to emboss: planar, a cylinder wall or another curved face (inferred when exactly one supported tangent cylinder matches the selected profiles); faces?: several such points, each profile going onto the face it lies over; text?: a text's group id (sketch.groups) in place of profiles, letters?: some of its letters by index; more_profiles?: [{sketch, profiles?|text, letters?}] more profiles from the same or other sketches; dx?, dy?: shift along the sketch's x and y; angle?: turn about the profiles' centre; flip?: raise or sink toward the sketch's back (no face)"),
+        .params("sketch, profiles?; depth; mode?: emboss|deboss; targets?; face?: world point [x,y,z] on the face to emboss: planar, a cylinder wall or another curved face (inferred when exactly one supported tangent cylinder matches the selected profiles); faces?: several such points, each profile going onto the face it lies over; text?: a text's group id (sketch.groups) in place of profiles, letters?: some of its letters by index; more_profiles?: [{sketch, profiles?|text, letters?}] more profiles from the same or other sketches; dx?, dy?: shift along the sketch's x and y; angle?: turn about the profiles' centre; flip?: raise or sink toward the sketch's back (no face); distribute?: for each profile in order (the first sketch's, then more_profiles'), the index in `faces` of the face it goes on, centred on that point (six letters on six faces); without it each profile goes onto the face it lies over"),
     CommandSpec::new("solid.replace_face", "Replace Face", crate::checked!("solid.replace_face", replace_face))
         .contract(&REPLACE_FACE_CONTRACT)
         .output(output_schema_for::<FeatureResult>)
@@ -249,6 +249,25 @@ fn emboss(s: &mut Session, p: &Value) -> Result<Value> {
     if points.len() == 1 && targets.len() > 1 {
         return Err(bad(cmd, "an emboss on a selected face needs one target body"));
     }
+    // Distribute: the face (index into the points) each profile goes on, in profile order.
+    let distribute: Vec<u32> = match p.get("distribute") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(list)) if (1..=4096).contains(&list.len()) => list
+            .iter()
+            .map(|v| v.as_u64().and_then(|n| u32::try_from(n).ok()))
+            .collect::<Option<Vec<u32>>>()
+            .ok_or_else(|| bad(cmd, "`distribute` must list face indices: 0 for the first face in `faces`"))?,
+        Some(_) => return Err(bad(cmd, "`distribute` must list, for each profile, the index of the face it goes on (1 to 4096 entries)")),
+    };
+    if let Some(far) = distribute.iter().find(|n| usize::try_from(**n).map_or(true, |n| n >= points.len())) {
+        return Err(bad(
+            cmd,
+            match points.len() {
+                0 => "`distribute` puts the profiles on selected faces: give the faces in `faces`".to_owned(),
+                n => format!("`distribute` names face {far}, but `{key}` gives {n} (0 to {})", n - 1),
+            },
+        ));
+    }
     let mut faces = Vec::with_capacity(points.len());
     let mut bodies: Vec<String> = Vec::new();
     for value in points {
@@ -288,6 +307,7 @@ fn emboss(s: &mut Session, p: &Value) -> Result<Value> {
             dy,
             angle,
             flip,
+            distribute,
         },
     )
 }
@@ -332,11 +352,13 @@ fn emboss_profiles(s: &Session, p: &Value, sketch: u64) -> Result<solidcraft_doc
     // A candidate bounded by another candidate's hole is that letter's counter.
     let holes: Vec<std::collections::BTreeSet<&str>> =
         candidates.iter().flat_map(|pr| pr.hole_curves.iter().map(|h| h.iter().map(String::as_str).collect())).collect();
-    let loops: Vec<Vec<String>> = candidates
+    let mut loops: Vec<Vec<String>> = candidates
         .into_iter()
         .filter(|pr| !holes.contains(&pr.outer_curves.iter().map(String::as_str).collect()))
         .map(|pr| pr.outer_curves.clone())
         .collect();
+    // In reading order, so the first letter goes on a distribution's first face.
+    loops.sort_by_key(|l| group.members.iter().position(|m| l.first().is_some_and(|c| m.curves.contains(c))).unwrap_or(usize::MAX));
     if loops.is_empty() {
         return Err(bad(cmd, format!("the text `{text}` makes no closed profile to emboss")));
     }

@@ -1042,7 +1042,7 @@ fn additional_rows(app: &mut SolveApp, d: &mut Dialog, ui: &mut egui::Ui) -> boo
                 ui_kit::options(ui, "feature_options", &mut [("Flip", flip), (extend_label, extend)]);
             }
         }
-        Kind::Emboss { depth, deboss, dx, dy, angle, flip } => {
+        Kind::Emboss { depth, deboss, dx, dy, angle, flip, distribute } => {
             // How many profiles and faces the one emboss takes.
             let profiles = d.inputs.first().map_or(0, |i| i.items.len()).to_string();
             let faces = d.inputs.get(1).map_or(0, |i| i.items.len());
@@ -1064,6 +1064,7 @@ fn additional_rows(app: &mut SolveApp, d: &mut Dialog, ui: &mut egui::Ui) -> boo
             if faces > 0 {
                 ui.add(egui::Label::new(solidcraft_ui_text::tr("ui.emboss_flip_on_face")).wrap());
             }
+            emboss_distribute_rows(ui, distribute, d.inputs.first().map_or(0, |i| i.items.len()), faces);
             ui.add(egui::Label::new(solidcraft_ui_text::tr("ui.emboss_wrap_note")).wrap());
         }
         Kind::Align { flip, components, axes: [ax, ay, az], angle } => {
@@ -2100,3 +2101,38 @@ mod all_tests;
 #[cfg(test)]
 #[path = "dialogs_sketch_tests.rs"]
 mod sketch_tests;
+
+/// Emboss's Distribute: off, each profile goes on the face it lies over; on, a row per profile
+/// (in the order the emboss takes them) chooses its face. Greyed, with why, until faces are picked.
+fn emboss_distribute_rows(ui: &mut egui::Ui, distribute: &mut Vec<u32>, profiles: usize, faces: usize) {
+    let mut on = !distribute.is_empty() && faces > 0;
+    ui.add_enabled_ui(faces > 0, |ui| {
+        if ui_kit::checkbox_row(ui, "emboss_distribute", solidcraft_ui_text::tr_label("Distribute"), on) {
+            on = !on;
+        }
+    });
+    if !on || profiles == 0 {
+        distribute.clear();
+        if faces == 0 {
+            ui.add(egui::Label::new(solidcraft_ui_text::tr("ui.emboss_distribute_needs_faces")).wrap());
+        }
+        return;
+    }
+    // A new profile goes on the next face round; a face taken out moves its profiles to the last.
+    let last = u32::try_from(faces - 1).unwrap_or(u32::MAX);
+    let next = distribute.len();
+    distribute.extend((next..profiles).map(|n| u32::try_from(n % faces).unwrap_or(0)));
+    distribute.truncate(profiles);
+    for slot in distribute.iter_mut() {
+        *slot = (*slot).min(last);
+    }
+    ui.add(egui::Label::new(solidcraft_ui_text::tr("ui.emboss_distribute_note")).wrap());
+    let names: Vec<String> = (1..=faces).map(|n| solidcraft_ui_text::format("ui.emboss_face_n", &[("n", &n.to_string())])).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    for (n, slot) in distribute.iter_mut().enumerate() {
+        let label = solidcraft_ui_text::format("ui.emboss_profile_n", &[("n", &(n + 1).to_string())]);
+        let mut chosen = usize::try_from(*slot).unwrap_or(0);
+        form_row(ui, &label, |ui| ui_kit::dropdown(ui, &format!("emboss_face_{n}"), &mut chosen, &names));
+        *slot = u32::try_from(chosen).unwrap_or(0);
+    }
+}

@@ -93,7 +93,27 @@ fn schemas_and_the_key_check_agree() {
     assert_keys(input_schema_for::<RemoveParams>(), &["bodies", "body_name", "body_names", "name", "participants"]);
     assert_keys(
         input_schema_for::<EmbossParams>(),
-        &["body_name", "body_names", "depth", "face", "mode", "name", "participants", "profiles", "sketch", "targets"],
+        &[
+            "angle",
+            "body_name",
+            "body_names",
+            "depth",
+            "distribute",
+            "dx",
+            "dy",
+            "face",
+            "faces",
+            "flip",
+            "letters",
+            "mode",
+            "more_profiles",
+            "name",
+            "participants",
+            "profiles",
+            "sketch",
+            "targets",
+            "text",
+        ],
     );
     assert_keys(
         input_schema_for::<BoundaryFillParams>(),
