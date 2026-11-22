@@ -1591,6 +1591,9 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
         v.extend(explode_text(app));
     }
     v.extend(break_link(app, &ss.sketch, &ents));
+    if let Some(curve) = crate::sketch_modify_ui::selected_star(app) {
+        v.push(act("ui.editStar", "Edit Star", "polygon").with(json!({ "curve": curve })));
+    }
     if let Some(curve) = crate::sketch_modify_ui::selected_equation(app) {
         v.push(act("ui.editEquationCurve", "Edit Equation Curve", "equation_curve").with(json!({ "curve": curve })));
     }
@@ -1895,6 +1898,11 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
                     let _ = crate::edit_clipboard::paste_into_group(app, Some(at), into, Some(group), folder);
                 }
                 None => drop(crate::edit_clipboard::paste_into(app, Some(at), item.id == "ui.pasteNew", into)),
+            }
+        }
+        "ui.editStar" => {
+            if let Some(id) = p.get("curve").and_then(Value::as_str) {
+                crate::sketch_modify_ui::edit_star(app, id);
             }
         }
         "ui.editEquationCurve" => {

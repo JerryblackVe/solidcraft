@@ -820,7 +820,7 @@ fn curvature(s: &Seg2) -> f64 {
 /// Profiles of the drawn geometry only: linked reference curves (projections, intersections)
 /// are left out; text outlines count as drawn.
 pub fn find_drawn_profiles(sk: &Sketch) -> Vec<Profile> {
-    if sk.links.iter().all(|l| l.kind == crate::LinkKind::Text) {
+    if sk.links.iter().all(|l| matches!(l.kind, crate::LinkKind::Text | crate::LinkKind::Star)) {
         return find_profiles(sk);
     }
     let intersect_links: std::collections::HashSet<&str> =
@@ -842,7 +842,7 @@ pub fn without_text_counters(sk: &Sketch, profiles: Vec<Profile>) -> Vec<Profile
     let index: std::collections::HashMap<&str, usize> = sk.curves.iter().enumerate().map(|(i, c)| (c.id.as_str(), i)).collect();
     let text_only: Vec<bool> = profiles
         .iter()
-        .map(|p| !p.outer_curves.is_empty() && p.outer_curves.iter().all(|id| index.get(id.as_str()).is_some_and(|ci| sk.is_text_curve(*ci))))
+        .map(|p| !p.outer_curves.is_empty() && p.outer_curves.iter().all(|id| index.get(id.as_str()).is_some_and(|ci| sk.is_letter_curve(*ci))))
         .collect();
     if !text_only.iter().any(|t| *t) {
         return profiles;
@@ -2632,6 +2632,32 @@ mod tests {
         let source =
             crate::LinkSource::Text { text: text.into(), at, height, angle: 0.0, font: None, style: Default::default(), exprs: Default::default() };
         sk.add_link(crate::LinkKind::Text, source, &crate::text_geometry(text, at, height, 0.0).unwrap()).unwrap();
+    }
+
+    fn star_into(sk: &mut Sketch, outer: f64) {
+        let spec = crate::StarSpec {
+            center: Vec2::ZERO,
+            points: 5,
+            outer,
+            inner_percent: 40.0,
+            skip: 0,
+            tip_round: 0.0,
+            valley_round: 0.0,
+            angle: 0.0,
+            circles: false,
+        };
+        sk.add_link(crate::LinkKind::Star, crate::LinkSource::Star(spec.clone()), &crate::star_geometry(&spec).unwrap()).unwrap();
+    }
+
+    /// A star inside a star is a profile of its own: only a letter's counter is dropped from
+    /// "all profiles".
+    #[test]
+    fn a_star_inside_a_star_is_not_taken_for_a_counter() {
+        let mut sk = Sketch::default();
+        star_into(&mut sk, 20.0);
+        star_into(&mut sk, 5.0);
+        let all = without_text_counters(&sk, find_drawn_profiles(&sk));
+        assert!(all.len() >= 2, "{}", all.len());
     }
 
     fn rectangle(sk: &mut Sketch, x0: f64, y0: f64, x1: f64, y1: f64) {

@@ -33,7 +33,7 @@ use solidcraft_engine::Sel;
 use solidcraft_engine::doc::Document;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
 use solidcraft_engine::geom::prelude::*;
-use solidcraft_engine::sketch::{PatternAlignment, VariableUnit};
+use solidcraft_engine::sketch::{LinkSource, PatternAlignment, VariableUnit};
 
 use crate::SolveApp;
 use crate::dialogs::{CHAMFER_TYPES, Dialog, Kind};
@@ -157,6 +157,22 @@ pub enum Mod {
     /// `sketch.point.divide` (#8969): the curves picked are each divided into `count` pieces of equal
     /// length by points held at their shares of it.
     Divide { count: String },
+    /// `sketch.star` (or `sketch.edit_star` on the star the window's `link` extra names): the
+    /// centre, the number of points, the tip radius, how deep the valleys go (a percentage of it),
+    /// a skip for a regular star, the rounding of tips and valleys, the turn and whether the
+    /// construction circles are drawn.
+    Star {
+        x: String,
+        y: String,
+        points: String,
+        outer: String,
+        inner: String,
+        skip: String,
+        tip_round: String,
+        valley_round: String,
+        angle: String,
+        circles: bool,
+    },
 }
 
 impl Mod {
@@ -180,6 +196,7 @@ impl Mod {
             Mod::Corner { .. } => "CHAMFER",
             Mod::Equation { .. } => "EQUATION CURVE",
             Mod::Divide { .. } => "DIVIDE CURVE",
+            Mod::Star { .. } => "STAR",
         }
     }
 
@@ -196,7 +213,7 @@ impl Mod {
             Mod::PatternCirc { angle, .. } => Some(("Angle", ValueKind::Angle, angle)),
             Mod::Corner { chamfer: false, size, .. } => Some(("Radius", ValueKind::Length, size)),
             Mod::Corner { size, .. } => Some(("Distance", ValueKind::Length, size)),
-            Mod::Equation { .. } | Mod::Divide { .. } => None,
+            Mod::Equation { .. } | Mod::Divide { .. } | Mod::Star { .. } => None,
         }
     }
 }
@@ -229,7 +246,7 @@ fn inputs(k: &Mod) -> Vec<SelInput> {
         // alike (`points`). Two lines name the corner between them where more lines meet at its
         // point (#1824), for both.
         Mod::Corner { .. } => vec![SelInput::new("Corners", SKETCH_POINTS | CURVES, true)],
-        Mod::Equation { .. } => Vec::new(),
+        Mod::Equation { .. } | Mod::Star { .. } => Vec::new(),
         Mod::Divide { .. } => vec![SelInput::new("Curves", CURVES, true)],
     }
 }
@@ -296,6 +313,18 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
             range_unit: false,
         },
         "sketch.point.divide" => Mod::Divide { count: "4".into() },
+        "sketch.star" => Mod::Star {
+            x: crate::dialogs::length_default(&app.session, "0"),
+            y: crate::dialogs::length_default(&app.session, "0"),
+            points: "5".into(),
+            outer: crate::dialogs::length_default(&app.session, "20"),
+            inner: "40".into(),
+            skip: "0".into(),
+            tip_round: crate::dialogs::length_default(&app.session, "0"),
+            valley_round: crate::dialogs::length_default(&app.session, "0"),
+            angle: "0 deg".into(),
+            circles: false,
+        },
         _ => return None,
     };
     let i = inputs(&k);
@@ -322,6 +351,44 @@ pub fn edit_equation(app: &mut SolveApp, id: &str) -> bool {
     app.tool = None;
     app.dialog = Some(dialog);
     true
+}
+
+/// Reopen the star window on the star that curve `id` belongs to, with the star's numbers.
+/// OK runs `sketch.edit_star` on it: the star is changed, not drawn again.
+pub fn edit_star(app: &mut SolveApp, id: &str) -> bool {
+    let Some(sid) = app.session.active_sketch else { return false };
+    let state = crate::open_meshing::session_world(&app.session);
+    let Some(sk) = state.sketch(sid).map(|s| &s.sketch) else { return false };
+    let Some(link) = sk.curve_index(id).and_then(|i| sk.curves.get(i)).and_then(|c| c.link.clone()) else { return false };
+    let Some(LinkSource::Star(star)) = sk.link(&link).map(|l| l.source.clone()) else { return false };
+    let mm = |v: f64| format!("{v} mm");
+    let kind = Mod::Star {
+        x: mm(star.center.x),
+        y: mm(star.center.y),
+        points: star.points.to_string(),
+        outer: mm(star.outer),
+        inner: star.inner_percent.to_string(),
+        skip: star.skip.to_string(),
+        tip_round: mm(star.tip_round),
+        valley_round: mm(star.valley_round),
+        angle: format!("{} deg", star.angle),
+        circles: star.circles,
+    };
+    let mut dialog = Dialog::new(Kind::SketchModify(kind), Vec::new());
+    dialog.extra.insert("link".into(), json!(link));
+    app.tool = None;
+    app.dialog = Some(dialog);
+    true
+}
+
+/// The star the selection is part of: the id of one of its curves, when one star outline is picked.
+pub(crate) fn selected_star(app: &SolveApp) -> Option<String> {
+    let [Sel::SketchCurve { id, .. }] = app.session.selection.as_slice() else { return None };
+    let sid = app.session.active_sketch?;
+    let state = crate::open_meshing::session_world(&app.session);
+    let sk = &state.sketch(sid)?.sketch;
+    let link = sk.curve_index(id).and_then(|i| sk.curves.get(i))?.link.as_deref()?;
+    matches!(sk.link(link)?.source, LinkSource::Star(_)).then(|| id.clone())
 }
 
 /// The equation curve the selection is, when it is one curve that has formulas.
@@ -554,6 +621,7 @@ pub(crate) fn command(k: &Mod) -> &'static str {
         Mod::Corner { .. } => "sketch.chamfer.equal_distance",
         Mod::Equation { .. } => "sketch.equation_curve",
         Mod::Divide { .. } => "sketch.point.divide",
+        Mod::Star { .. } => "sketch.star",
     }
 }
 
@@ -695,6 +763,18 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Mod, doc: &Document) -> bool {
             ui_kit::checkbox_grid(ui, &mut [(solidcraft_ui_text::tr("ui.equation_variable_unit"), range_unit)], 1);
             let note = if *range_unit { "ui.equation_note_range" } else { "ui.equation_note" };
             ui_kit::text(ui, solidcraft_ui_text::tr(note), ui_kit::Text::Note("equation"));
+        }
+        Mod::Star { x, y, points, outer, inner, skip, tip_round, valley_round, angle, circles } => {
+            enter |= number(ui, "X", x);
+            enter |= number(ui, "Y", y);
+            enter |= number(ui, "Points", points);
+            enter |= number(ui, "Outer Radius", outer);
+            enter |= number(ui, "Valley Depth %", inner);
+            enter |= number(ui, "Skip", skip);
+            enter |= number(ui, "Tip Rounding", tip_round);
+            enter |= number(ui, "Valley Rounding", valley_round);
+            enter |= number(ui, "Angle", angle);
+            ui_kit::options(ui, "star_options", &mut [("Construction Circles", circles)]);
         }
         Mod::Corner { chamfer, ctype, size, distance2, angle, flip } => {
             if *chamfer {
@@ -1193,6 +1273,33 @@ pub fn commands(app: &SolveApp, k: &Mod, inputs: &[SelInput], extra: &Map<String
                 }
                 _ => ("sketch.chamfer.equal_distance", p),
             }
+        }
+        Mod::Star { x, y, points, outer, inner, skip, tip_round, valley_round, angle, circles } => {
+            let number = |label: &str, text: &str, kind: ValueKind| -> Result<f64, String> {
+                crate::length_input::no_definition(text, label)?;
+                let v = crate::length_input::eval(&app.session.doc, text.trim(), kind).map_err(|e| format!("{label}: {e}"))?;
+                if v.is_finite() { Ok(v) } else { Err(format!("{label} must be a number")) }
+            };
+            let count = |label: &str, text: &str| -> Result<u32, String> {
+                let v = number(label, text, ValueKind::Unitless)?;
+                if v < 0.0 || (v - v.round()).abs() > 1e-9 {
+                    return Err(format!("{label} must be a whole number"));
+                }
+                Ok(v.round() as u32)
+            };
+            let p = json!({
+                "center": [number("X", x, ValueKind::Length)?, number("Y", y, ValueKind::Length)?],
+                "points": count("Points", points)?,
+                "outer_radius": number("Outer Radius", outer, ValueKind::Length)?,
+                "inner_percent": number("Valley Depth %", inner, ValueKind::Unitless)?,
+                "skip": count("Skip", skip)?,
+                "tip_round": number("Tip Rounding", tip_round, ValueKind::Length)?,
+                "valley_round": number("Valley Rounding", valley_round, ValueKind::Length)?,
+                // The command takes degrees; an evaluated angle is in radians.
+                "angle": number("Angle", angle, ValueKind::Angle)?.to_degrees(),
+                "circles": *circles,
+            });
+            (if extra.contains_key("link") { "sketch.edit_star" } else { "sketch.star" }, p)
         }
         Mod::Equation { form, x, y, start, end, tolerance, range_unit } => {
             let filled = |label: &str, text: &str| -> Result<String, String> {

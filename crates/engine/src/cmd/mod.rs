@@ -196,6 +196,7 @@ mod sketch_project;
 pub(crate) use sketch_project::{MAX_PROJECTED_ENTITIES, RefForm, model_ref, ref_form};
 mod sketch_rational;
 pub mod sketch_selection;
+mod sketch_star;
 mod sketch_store;
 mod surface;
 mod surface_analysis;
@@ -485,6 +486,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(sketch_equation::COMMANDS.iter());
     v.extend(sketch_constraints::COMMANDS.iter());
     v.extend(sketch_import::COMMANDS.iter());
+    v.extend(sketch_star::COMMANDS.iter());
     v.extend(sketch_inspect::COMMANDS.iter());
     v.extend(sketch_ends::COMMANDS.iter());
     v.extend(sketch_groups::COMMANDS.iter());
