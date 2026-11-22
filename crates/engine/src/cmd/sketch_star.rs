@@ -22,7 +22,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sketch.star", "Star", crate::checked!("sketch.star", star))
         .in_sketch_part()
         .at("SKETCH", "CREATE")
-        .icon("polygon")
+        .icon("sketch_star")
         .enabled(in_sketch)
         .contract(&STAR_CONTRACT)
         .output(output_schema_for::<StarResult>)
