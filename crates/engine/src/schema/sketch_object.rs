@@ -57,3 +57,24 @@ pub struct GroupLockParams {
     /// `free`, `protect` or `total`.
     pub lock: String,
 }
+
+/// Switch between object mode (a group is picked and edited as one object, its points are neither
+/// drawn nor picked) and nodes mode (the points of grouped curves show and can be picked). A view
+/// setting of the window: not saved with the design, not an undo step.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct NodesModeParams {
+    /// True for nodes mode, false for object mode; left out, the mode switches.
+    #[serde(default)]
+    pub nodes: Option<bool>,
+}
+
+/// What `sketch.nodes_mode` returns.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct NodesModeResult {
+    /// True when nodes mode is on now, false in object mode.
+    pub nodes: bool,
+    /// In the warn parameter-check mode: what the call's parameters got wrong.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
+}

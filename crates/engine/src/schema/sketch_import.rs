@@ -85,7 +85,7 @@ pub struct InsertDrawingKeys {
     pub tolerance: Option<f64>,
     /// `true` puts a Fix constraint on every point the drawing adds (as `sketch.constraint.fix`
     /// does), so it stays where it is put; a circle's or ellipse's radius stays free, and text and
-    /// the points the sketch already had are not touched. Default: false.
+    /// the points the sketch already had are not touched. Fixed points cannot be moved at all; `lock: "protect"` keeps the drawing's shape and still lets the whole object move, turn and scale. Default: false.
     #[serde(default)]
     pub fixed: Option<bool>,
     /// `true` makes the curves the drawing adds one group named after the file, so picking one
@@ -93,6 +93,11 @@ pub struct InsertDrawingKeys {
     /// apart). Default: true.
     #[serde(default)]
     pub group: Option<bool>,
+    /// `free`, `protect` or `total`: the lock of the group the drawing becomes (`sketch.group_lock`),
+    /// so it keeps its shape without a Fix constraint on every point. Needs `group` (the default).
+    /// Default: `free`.
+    #[serde(default)]
+    pub lock: Option<String>,
     /// Read only when no sketch is being edited: the plane of the new sketch, as `sketch.create`
     /// takes it. Default: XY. Ignored (and not checked) while a sketch is being edited.
     #[serde(default, skip_serializing_if = "Option::is_none")]

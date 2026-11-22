@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use serde_json::{Value, json};
 use solidcore_record::Vec2;
 use solidcraft_io::{AirfoilFormat, DxfEntity, DxfLayer, Geom2, MAX_AIRFOIL_BYTES, MAX_DRAWING_BYTES};
-use solidcraft_sketch::{Analysis, ConstraintKind, CurveKind, LinkKind, LinkSource, Sketch};
+use solidcraft_sketch::{Analysis, ConstraintKind, CurveKind, GroupLock, LinkKind, LinkSource, Sketch};
 
 use super::CommandSpec;
 use super::sketch::{Left, edit_solved, ids_of};
@@ -37,13 +37,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("sketch_dxf")
         .contract(&INSERT_DXF_CONTRACT)
         .output(output_schema_for::<DrawingInserted>)
-        .params(concat!("path | text: ASCII DXF (blocks expanded); at?: [x,y] offset, scale? | width? | height?: mm, the size of the drawn geometry's bounds before rotation, aspect kept (win over scale); angle?: degrees, about the drawing's origin (or its centre); align?: \"origin\" (default: `at` is where the file's origin goes) | \"center\" (`at` is where the drawing's middle goes and it turns and scales about it); tolerance?: mm within which ends join (default 0.0001); fixed?: bool (a Fix constraint on every point the drawing adds, as sketch.constraint.fix puts one; a circle's or ellipse's radius stays free; default false); group?: bool (default true: the curves become one group named after the file; see sketch.group); plane?: (when no sketch is active, a new sketch on it; default XY)", created_doc!())),
+        .params(concat!("path | text: ASCII DXF (blocks expanded); at?: [x,y] offset, scale? | width? | height?: mm, the size of the drawn geometry's bounds before rotation, aspect kept (win over scale); angle?: degrees, about the drawing's origin (or its centre); align?: \"origin\" (default: `at` is where the file's origin goes) | \"center\" (`at` is where the drawing's middle goes and it turns and scales about it); tolerance?: mm within which ends join (default 0.0001); fixed?: bool (a Fix constraint on every point the drawing adds, as sketch.constraint.fix puts one; a circle's or ellipse's radius stays free; default false); group?: bool (default true: the curves become one group named after the file; see sketch.group); lock?: \"free\" (default) | \"protect\" | \"total\" (the group's lock, see sketch.group_lock: a drawing that keeps its shape without a Fix on every point); plane?: (when no sketch is active, a new sketch on it; default XY)", created_doc!())),
     CommandSpec::new("sketch.insert_svg", "Insert SVG", crate::checked!("sketch.insert_svg", insert_svg))
         .at("SKETCH", "INSERT")
         .icon("svg")
         .contract(&INSERT_SVG_CONTRACT)
         .output(output_schema_for::<DrawingInserted>)
-        .params(concat!("path | text: SVG; at?: [x,y] offset, scale? | width? | height?: mm, the drawing's size before rotation, aspect kept (win over scale); size_from?: \"geometry\" (default: width and height are the bounds of the drawn geometry) | \"viewbox\" (the SVG sheet: its viewBox, else its width and height; a drawing smaller than its sheet then comes out smaller than width or height say); angle?: degrees, about the drawing's origin (or its centre); align?: \"origin\" (default: `at` is where the file's origin goes) | \"center\" (`at` is where the drawing's (or sheet's) middle goes and it turns and scales about it); tolerance?: mm within which ends join (default 0.0001); fixed?: bool (every point it adds gets a Fix constraint, so the drawing stays where it is put); group?: bool (default true: the curves become one group named after the file; see sketch.group); plane?: (when no sketch is active, a new sketch on it; default XY)", created_doc!())),
+        .params(concat!("path | text: SVG; at?: [x,y] offset, scale? | width? | height?: mm, the drawing's size before rotation, aspect kept (win over scale); size_from?: \"geometry\" (default: width and height are the bounds of the drawn geometry) | \"viewbox\" (the SVG sheet: its viewBox, else its width and height; a drawing smaller than its sheet then comes out smaller than width or height say); angle?: degrees, about the drawing's origin (or its centre); align?: \"origin\" (default: `at` is where the file's origin goes) | \"center\" (`at` is where the drawing's (or sheet's) middle goes and it turns and scales about it); tolerance?: mm within which ends join (default 0.0001); fixed?: bool (every point it adds gets a Fix constraint, so the drawing stays where it is put); group?: bool (default true: the curves become one group named after the file; see sketch.group); lock?: \"free\" (default) | \"protect\" | \"total\" (the group's lock, see sketch.group_lock: a drawing that keeps its shape without a Fix on every point); plane?: (when no sketch is active, a new sketch on it; default XY)", created_doc!())),
     CommandSpec::new("sketch.insert_airfoil", "Insert Airfoil", crate::checked!("sketch.insert_airfoil", insert_airfoil))
         .at("SKETCH", "INSERT")
         .icon("airfoil")
@@ -366,6 +366,15 @@ fn insert(s: &mut Session, p: &Value, cmd: &str, svg: bool) -> Result<Value> {
     // `sketch::edit`, but keeping the solve as a typed value for the reply.
     let target = sketch_store::target(s, p, cmd)?;
     let want_group = bool_(p, "group").unwrap_or(true);
+    let lock = match str_(p, "lock").map(str::to_ascii_lowercase).as_deref() {
+        None | Some("free") => GroupLock::Free,
+        Some("protect") => GroupLock::Protect,
+        Some("total") => GroupLock::Total,
+        _ => return Err(bad(cmd, "`lock` must be \"free\", \"protect\" or \"total\"")),
+    };
+    if lock != GroupLock::Free && !want_group {
+        return Err(bad(cmd, "`lock` locks the drawing's group: it needs `group` (the default)"));
+    }
     let group_name = str_(p, "path").and_then(|f| std::path::Path::new(f).file_name()).and_then(|n| n.to_str()).unwrap_or("drawing").to_string();
     let ((curves, texts, n_fixed, group), report) = edit_solved(s, target, false, Analysis::Freedom, |sk, _| {
         let first = sk.points.len();
@@ -385,6 +394,9 @@ fn insert(s: &mut Session, p: &Value, cmd: &str, svg: bool) -> Result<Value> {
         }
         let ids = ids_of(sk, &cs);
         let group = if want_group && !ids.is_empty() { Some(sk.add_object_group(&group_name, &ids)?) } else { None };
+        if let Some(g) = &group {
+            sk.set_group_lock(g, lock)?;
+        }
         Ok(((ids, texts, n_fixed, group), Left::Unsolved))
     })?;
     let info = report.map(|rep| SketchSolve { solved: rep.keeps_orientation(), dof: rep.dof });

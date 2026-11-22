@@ -612,3 +612,77 @@ fn an_imported_drawing_picks_and_drags_as_one_group() {
         assert!((*x - *y - delta).len() < 1e-6, "every point moved alike");
     }
 }
+
+#[test]
+fn object_mode_hides_the_points_of_a_group_and_nodes_mode_picks_them() {
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    run(&mut h, "sketch.create", json!({"plane":"XY"}));
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 20"><path d="M0,0 L30,0 L30,20 L0,20 Z"/></svg>"#;
+    run(&mut h, "sketch.insert_svg", json!({"text": svg, "width": 30, "at": [10, 10], "lock": "protect"}));
+    h.call("ui.view", json!({"view":"top"}));
+    h.app.cam.distance = 80.0;
+    h.frames(3);
+    let corner = h.app.session.doc.sketch(1).unwrap().points.iter().find(|p| p.id != "origin").unwrap().pos;
+    // What the pointer is over at the corner: the drawing's curve, or its point in nodes mode.
+    let over_a_point = |h: &mut Harness| {
+        let at = screen(h, corner.x, corner.y);
+        h.app.synthetic.push(egui::Event::PointerMoved(at));
+        play(h);
+        matches!(h.app.viewport.hover, Some(crate::viewport::Hit::SketchPoint { .. }))
+    };
+    assert!(!over_a_point(&mut h), "object mode: the corner is the drawing, not a point");
+    run(&mut h, "sketch.nodes_mode", json!({"nodes": true}));
+    h.frames(2);
+    assert!(over_a_point(&mut h), "nodes mode: the corner point is under the pointer: {:?}", h.app.viewport.hover);
+}
+
+#[test]
+fn a_protected_crown_moves_with_the_mouse_as_one_and_refuses_one_point_dragged_alone() {
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    run(&mut h, "sketch.create", json!({"plane":"XY"}));
+    // A crown of 24 straight sides on a circle: sides long enough that a node and the midpoints
+    // beside it are told apart under the pointer.
+    let d: String = (0..24)
+        .map(|i| {
+            let a = i as f64 * std::f64::consts::TAU / 24.0;
+            format!("{}{:.3},{:.3} ", if i == 0 { "M" } else { "L" }, 20.0 + 15.0 * a.cos(), 20.0 + 15.0 * a.sin())
+        })
+        .collect();
+    let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="{d}Z"/></svg>"#);
+    run(&mut h, "sketch.insert_svg", json!({"text": svg, "width": 30, "at": [10, 10], "lock": "protect"}));
+    h.call("ui.view", json!({"view":"top"}));
+    h.app.cam.distance = 80.0;
+    h.frames(3);
+    let positions =
+        |h: &Harness| -> Vec<Vec2> { h.app.session.doc.sketch(1).unwrap().points.iter().filter(|p| p.id != "origin").map(|p| p.pos).collect() };
+    let before = positions(&h);
+    assert!(before.len() >= 24, "{}", before.len());
+    // Dragging the drawing by one side moves every point alike: its shape is kept.
+    let polyline = h.app.session.doc.sketch(1).unwrap().polyline(0);
+    let at = (polyline[0] + polyline[1]) * 0.5;
+    let (a, b) = (screen(&mut h, at.x, at.y), screen(&mut h, at.x + 4.0, at.y + 3.0));
+    let mut path = vec![a];
+    path.extend(steps(a, b, 6));
+    press_and_move(&mut h, &path);
+    release(&mut h, b);
+    let moved = positions(&h);
+    let delta = moved[0] - before[0];
+    assert!(delta.len() > 0.5, "the drawing moved: {delta:?}");
+    assert!(moved.iter().zip(&before).all(|(x, y)| (*x - *y - delta).len() < 1e-6), "the crown kept its shape");
+    // In nodes mode one point cannot be pulled out of it: the lock refuses and nothing changes.
+    run(&mut h, "sketch.nodes_mode", json!({"nodes": true}));
+    // Nothing selected: a selected drawing would carry the dragged point along (the whole object).
+    h.app.session.selection.clear();
+    h.frames(2);
+    let node = moved[10];
+    let (a, b) = (screen(&mut h, node.x, node.y), screen(&mut h, node.x + 4.0, node.y + 4.0));
+    let mut path = vec![a];
+    path.extend(steps(a, b, 6));
+    press_and_move(&mut h, &path);
+    release(&mut h, b);
+    let now = positions(&h);
+    let changed = now.iter().zip(&moved).filter(|(x, y)| (**x - **y).len() > 1e-9).count();
+    assert_eq!(changed, 0, "a protected point stays where it is; hover {:?} sel {:?}", h.app.viewport.hover, h.app.session.selection);
+}

@@ -6,13 +6,14 @@ use solidcraft_sketch::{GroupLock, Sketch};
 use super::sketch_store;
 use super::{CommandSpec, in_sketch};
 use crate::params::{bad, str_, string_list};
-use crate::schema::sketch_object::{GroupLockParams, GroupParams, GroupResult, UngroupParams};
+use crate::schema::sketch_object::{GroupLockParams, GroupParams, GroupResult, NodesModeParams, NodesModeResult, UngroupParams};
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};
 
 const GROUP_CONTRACT: TypedContract<GroupParams> = TypedContract::new();
 const UNGROUP_CONTRACT: TypedContract<UngroupParams> = TypedContract::new();
 const GROUP_LOCK_CONTRACT: TypedContract<GroupLockParams> = TypedContract::new();
+const NODES_MODE_CONTRACT: TypedContract<NodesModeParams> = TypedContract::new();
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sketch.group", "Group", crate::checked!("sketch.group", group))
@@ -36,6 +37,14 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&GROUP_LOCK_CONTRACT)
         .output(output_schema_for::<GroupResult>)
         .params("group: the group's id, or entity: one of its curves; lock: \"free\" | \"protect\" (the whole object may move, turn and scale, its points may not be edited one by one) | \"total\" (nothing changes). An edit that would break the lock is refused and nothing changes; this is not a Fix constraint on every point"),
+    CommandSpec::new("sketch.nodes_mode", "Nodes Mode", crate::checked!("sketch.nodes_mode", nodes_mode))
+        .in_sketch_part()
+        .icon("point")
+        .noundo()
+        .enabled(in_sketch)
+        .contract(&NODES_MODE_CONTRACT)
+        .output(output_schema_for::<NodesModeResult>)
+        .params("nodes?: bool (omitted: switch). Object mode (default): the points of grouped curves are not drawn or picked, so an imported drawing is moved, turned and scaled as one object. Nodes mode: they show and can be picked. A view setting, never saved with the design"),
 ];
 
 fn reply(group: &str, curves: Vec<String>) -> Result<Value> {
@@ -114,4 +123,12 @@ fn group_lock(s: &mut Session, p: &Value) -> Result<Value> {
         let curves = sk.object_groups.iter().find(|x| x.id == g).map(|x| x.curves.clone()).unwrap_or_default();
         reply(&g, curves)
     })
+}
+
+fn nodes_mode(s: &mut Session, p: &Value) -> Result<Value> {
+    if p.get("nodes").is_some_and(|v| !v.is_boolean()) {
+        return Err(bad("sketch.nodes_mode", "nodes must be a boolean"));
+    }
+    s.sketch_nodes = crate::params::bool_(p, "nodes").unwrap_or(!s.sketch_nodes);
+    serde_json::to_value(NodesModeResult { nodes: s.sketch_nodes, param_warnings: Vec::new() }).map_err(|e| bad("sketch.nodes_mode", e.to_string()))
 }
