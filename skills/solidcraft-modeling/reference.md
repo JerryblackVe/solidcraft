@@ -40,6 +40,7 @@ These are the shapes of the commands a part build needs, so an agent rarely has 
 - **Circles:** `sketch.circle.center` creates `c1` and `c1.center`, and no `p` point.
 - **Dimensions** share the `k` counter with constraints.
 - **Constraints can add curves:** a constraint about an axis, such as `sketch.constraint.symmetry` with `line:"y"`, adds a construction line and so takes the next `l` id. Read `created` before you count further.
+- **Stars:** `sketch.star {"center":[0,0],"outer_radius":"R","points":"n"}` draws a star that stays one editable object; `sketch.edit_star {"link":…,"points":8}` changes it in place, and features built on it follow. Every number takes an expression. `sketch.move` (with `copy: true` for a copy) and `sketch.copy` + `sketch.paste` keep each copy an editable star; a pasted copy keeps its expressions except its place. `sketch.mirror` and `sketch.pattern.*` refuse a star: copy it as above instead.
 - **Over-constraining** is refused with `that conflicts with the sketch: neither entity can move to satisfy it`. For example, symmetry already makes two circles equal.
 
 ## Dimensions
