@@ -870,6 +870,38 @@ fn an_emboss_distributes_onto_a_cylinder_wall() {
     assert!((b.max.x - 11.0).abs() < 1e-6 && (b.min.x + 11.0).abs() < 1e-6, "{b:?}");
 }
 
+/// MEJ-7: an emboss says how it laid its profiles. Round a whole tube, from a sketch tangent to
+/// it, they wrap; on flat faces they are projected; on a curved face they don't wrap round (a
+/// ring's wall, distributed) they are projected flat, and the reply warns of it.
+#[test]
+fn an_emboss_says_whether_it_wraps_or_projects() {
+    use solidcraft_doc::EmbossLay;
+    let lay = |s: &Session, reply: &Value| s.model.state().emboss_lay(reply["feature"].as_u64().unwrap());
+    let mut tube = Session::default();
+    run(&mut tube, "solid.cylinder", json!({"radius": 20, "height": 30, "body_name": "Tube"}));
+    run(&mut tube, "solid.cylinder", json!({"radius": 16, "height": 30, "operation": "cut", "targets": ["Tube"]}));
+    run(&mut tube, "sketch.create", json!({"plane": {"origin": [0, 20, 0], "x_dir": [-1, 0, 0], "y_dir": [0, 0, 1]}, "name": "Mark"}));
+    run(&mut tube, "sketch.rectangle.two_point", json!({"p0": [-4, 10], "p1": [4, 16]}));
+    run(&mut tube, "sketch.finish", json!({}));
+    let reply = run(&mut tube, "solid.emboss", json!({"sketch": "Mark", "face": [0, 20, 13], "depth": 1}));
+    assert_eq!(lay(&tube, &reply), Some(EmbossLay::Wrapped), "{reply}");
+    assert!(reply["warning"].is_null(), "{reply}");
+
+    let mut step = step_with_marks();
+    let reply = run(&mut step, "solid.emboss", json!({"sketch": "Marks", "depth": 1, "faces": [[2, 2, 10], [38, 38, 20]]}));
+    assert_eq!(lay(&step, &reply), Some(EmbossLay::Projected), "{reply}");
+    assert!(reply["warning"].is_null(), "{reply}");
+
+    let mut ring = Session::default();
+    run(&mut ring, "solid.cylinder", json!({"radius": 10, "height": 4, "body_name": "Ring"}));
+    run(&mut ring, "sketch.create", json!({"plane": {"origin": [0, 0, 50], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Bar"}));
+    run(&mut ring, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [6, 2]}));
+    run(&mut ring, "sketch.finish", json!({}));
+    let reply = run(&mut ring, "solid.emboss", json!({"sketch": "Bar", "depth": 1, "faces": [[10, 0, 2]], "distribute": [0]}));
+    assert_eq!(lay(&ring, &reply), Some(EmbossLay::ProjectedOnCurve), "{reply}");
+    assert!(reply["warning"].as_str().is_some_and(|w| w.contains("not wrapped")), "{reply}");
+}
+
 #[test]
 fn an_emboss_distribution_must_match_its_profiles_and_faces() {
     let mut s = plate_with_bars();

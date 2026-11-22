@@ -984,6 +984,11 @@ impl ModelState {
         self.kept_separate.get(&feature).copied()
     }
 
+    /// How Emboss `feature` laid its profiles: wrapped round a cylinder wall or projected.
+    pub fn emboss_lay(&self, feature: u64) -> Option<EmbossLay> {
+        self.emboss_lay.get(&feature).copied()
+    }
+
     /// The sources (indices into its `bodies`) body Pattern `feature` could not copy and left out.
     pub fn pattern_left_out(&self, feature: u64) -> &[usize] {
         self.pattern_left_out.get(&feature).map_or(&[], Vec::as_slice)
@@ -1095,6 +1100,8 @@ pub struct ModelState {
     /// How the pieces a join split off into bodies of their own touched the others (by feature
     /// id), for its notice.
     kept_separate: BTreeMap<u64, KeptSeparate>,
+    /// How each Emboss laid its profiles (by feature id), for its dialog.
+    emboss_lay: BTreeMap<u64, EmbossLay>,
     /// The sources (indices into its `bodies`) each body Pattern could not copy and left out (by
     /// feature id), so the session keeps the names stored for their copies in their places
     /// ([`crate::Feature::pattern_pins`]).
@@ -1107,6 +1114,17 @@ pub struct ModelState {
     /// its sketch plane and the interval along the plane's normal it ran over. A pocket it leaves
     /// is as deep as the extrude ran from the panel's face (see `sheet_surface_cuts`).
     cut_extents: BTreeMap<u64, (Plane, (f64, f64))>,
+}
+
+/// How an Emboss laid its profiles on the body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmbossLay {
+    /// Bent round a complete cylinder wall, keeping their length along it.
+    Wrapped,
+    /// Projected straight onto flat faces (or along the sketch's normal, with no face picked).
+    Projected,
+    /// Projected straight onto a curved face, without bending to it.
+    ProjectedOnCurve,
 }
 
 /// How a piece a join split off into a body of its own (`Touching::Separate`) touched the
@@ -1164,6 +1182,7 @@ impl ModelState {
             fitted,
             tapered,
             kept_separate,
+            emboss_lay,
             pattern_left_out,
             legacy_picks,
             cut_extents,
@@ -1184,6 +1203,7 @@ impl ModelState {
             fitted: fitted.clone(),
             tapered: tapered.clone(),
             kept_separate: kept_separate.clone(),
+            emboss_lay: emboss_lay.clone(),
             pattern_left_out: pattern_left_out.clone(),
             legacy_picks: legacy_picks.clone(),
             cut_extents: cut_extents.clone(),
@@ -3009,6 +3029,8 @@ struct Change {
     tapered: Option<Vec<(Vec3, kernel::Taper)>>,
     /// A join's touching pieces it kept as bodies of their own.
     kept_separate: Option<KeptSeparate>,
+    /// How an Emboss laid its profiles.
+    emboss_lay: Option<EmbossLay>,
     /// A body Pattern's sources it left out.
     pattern_left_out: Option<Vec<usize>>,
     /// Where the feature found its named faces.
@@ -3058,6 +3080,7 @@ impl ModelState {
             && others_same(&self.fitted, &before.fitted, feature)
             && self.tapered.keys().filter(|k| **k != feature).eq(before.tapered.keys().filter(|k| **k != feature))
             && others_same(&self.kept_separate, &before.kept_separate, feature)
+            && others_same(&self.emboss_lay, &before.emboss_lay, feature)
             && others_same(&self.pattern_left_out, &before.pattern_left_out, feature)
             && others_same(&self.named_faces, &before.named_faces, feature)
             && serde_json::to_string(&self.threads).ok() == serde_json::to_string(&before.threads).ok();
@@ -3090,6 +3113,7 @@ impl ModelState {
             fitted: self.fitted.get(&feature).cloned(),
             tapered: self.tapered.get(&feature).cloned(),
             kept_separate: self.kept_separate.get(&feature).copied(),
+            emboss_lay: self.emboss_lay.get(&feature).copied(),
             pattern_left_out: self.pattern_left_out.get(&feature).cloned(),
             named_faces: self.named_faces.get(&feature).cloned(),
         })
@@ -3127,6 +3151,10 @@ impl ModelState {
         next.kept_separate.remove(&feature);
         if let Some(k) = change.kept_separate {
             next.kept_separate.insert(feature, k);
+        }
+        next.emboss_lay.remove(&feature);
+        if let Some(l) = change.emboss_lay {
+            next.emboss_lay.insert(feature, l);
         }
         next.pattern_left_out.remove(&feature);
         if let Some(l) = &change.pattern_left_out {

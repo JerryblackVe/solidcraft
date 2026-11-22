@@ -126,6 +126,8 @@ pub struct Built {
     /// The smallest and largest radius a fillet used when it reduced one too large for its edges
     /// (`fit: reduce`).
     pub applied: Option<(f64, f64)>,
+    /// How a previewed Emboss laid its profiles (wrapped or projected), for its dialog to say.
+    pub emboss_lay: Option<solidcraft_engine::doc::EmbossLay>,
     /// The radius spline of each edge a fillet tapered (`fit: taper`), with a point on the edge.
     pub tapered: Vec<(Vec3, solidcraft_engine::kernel::Taper)>,
     /// The reply of a previewed drive that stopped short of the asked values (the dialog says
@@ -232,6 +234,8 @@ pub struct PreviewState {
     started: f64,
     /// The smallest and largest radius the previewed fillet used when it reduced the one asked for.
     pub applied: Option<(f64, f64)>,
+    /// How the previewed Emboss laid its profiles (see [`Built::emboss_lay`]).
+    pub emboss_lay: Option<solidcraft_engine::doc::EmbossLay>,
     /// The reply of a previewed drive that stopped short (see [`Built::stopped`]).
     pub stopped: Option<serde_json::Value>,
     /// The reply of a previewed assembly constraint (see [`Built::placed`]).
@@ -362,6 +366,7 @@ impl PreviewState {
         self.error = None;
         self.plugin_view = None;
         self.applied = None;
+        self.emboss_lay = None;
         self.stopped = None;
         self.placed = None;
         self.tapered.clear();
@@ -444,6 +449,7 @@ impl PreviewState {
                 self.active = true;
                 self.error = b.error;
                 self.applied = b.applied;
+                self.emboss_lay = b.emboss_lay;
                 self.stopped = b.stopped;
                 self.placed = b.placed;
                 self.tapered = b.tapered;
@@ -483,6 +489,7 @@ impl PreviewState {
                 self.sketches.clear();
                 self.error = Some(e);
                 self.applied = None;
+                self.emboss_lay = None;
                 self.stopped = None;
                 self.placed = None;
                 self.tapered.clear();
@@ -857,6 +864,7 @@ pub fn compute(s: &Session, cmds: &[(String, Value)], colors: Colors) -> Job {
             // fillet or an edited one: the feature the replies name).
             let features = || p.replies.iter().filter_map(|r| r.get("feature").and_then(Value::as_u64));
             b.applied = features().find_map(|id| p.after.fitted_range(id));
+            b.emboss_lay = features().find_map(|id| p.after.emboss_lay(id));
             b.tapered = features().find_map(|id| p.after.tapered(id)).map(<[_]>::to_vec).unwrap_or_default();
             b.centrelines = crate::dialogs_frame::centrelines(&p);
             Ok(b)
@@ -1043,6 +1051,7 @@ fn build_copies(before: &ModelState, after: &ModelState, sources: &[String], c: 
         error: None,
         bounds: Aabb3::EMPTY,
         applied: None,
+        emboss_lay: None,
         tapered: Vec::new(),
         stopped: None,
         mirror_meets: None,
@@ -1098,6 +1107,7 @@ fn build_tool(before: &ModelState, after: &ModelState, c: Colors, op: &str) -> B
         error: None,
         bounds: Aabb3::EMPTY,
         applied: None,
+        emboss_lay: None,
         tapered: Vec::new(),
         stopped: None,
         mirror_meets: None,
@@ -1377,6 +1387,7 @@ fn build_as(before: &ModelState, after: &ModelState, c: Colors, combine: Option<
         error: None,
         bounds: Aabb3::EMPTY,
         applied: None,
+        emboss_lay: None,
         tapered: Vec::new(),
         stopped: None,
         mirror_meets: None,
@@ -1815,6 +1826,7 @@ mod tests {
             error: None,
             bounds: Aabb3::EMPTY,
             applied: None,
+            emboss_lay: None,
             tapered: Vec::new(),
             stopped: None,
             mirror_meets: None,
@@ -2290,6 +2302,26 @@ mod tests {
                 scene.palette.get(crate::gpu::PaletteIndex(i)) == Some(col)
             })
             .count()
+    }
+
+    /// MEJ-7: an Emboss's preview says how it lays its profiles, for its dialog: round a whole
+    /// tube from a sketch tangent to it they wrap; on its top cap they are projected.
+    #[test]
+    fn an_emboss_preview_says_whether_it_wraps_or_projects() {
+        use solidcraft_engine::doc::EmbossLay;
+        let mut s = Session::default();
+        s.execute("solid.cylinder", &json!({"radius": 20, "height": 30, "body_name": "Tube"})).unwrap();
+        s.execute("solid.cylinder", &json!({"radius": 16, "height": 30, "operation": "cut", "targets": ["Tube"]})).unwrap();
+        s.execute("sketch.create", &json!({"plane": {"origin": [0, 20, 0], "x_dir": [-1, 0, 0], "y_dir": [0, 0, 1]}, "name": "Mark"})).unwrap();
+        s.execute("sketch.rectangle.two_point", &json!({"p0": [-4, 10], "p1": [4, 16]})).unwrap();
+        s.execute("sketch.finish", &json!({})).unwrap();
+        let emboss = |face: [f64; 3]| ("solid.emboss".to_string(), json!({"sketch": "Mark", "face": face, "depth": 1}));
+        assert_eq!(compute(&s, &[emboss([0.0, 20.0, 13.0])], colors()).unwrap().emboss_lay, Some(EmbossLay::Wrapped));
+        s.execute("sketch.create", &json!({"plane": {"origin": [0, 0, 30], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Top"})).unwrap();
+        s.execute("sketch.rectangle.two_point", &json!({"p0": [-2, 17], "p1": [2, 19]})).unwrap();
+        s.execute("sketch.finish", &json!({})).unwrap();
+        let top = ("solid.emboss".to_string(), json!({"sketch": "Top", "face": [0, 18, 30], "depth": 1}));
+        assert_eq!(compute(&s, &[top], colors()).unwrap().emboss_lay, Some(EmbossLay::Projected));
     }
 
     /// A Mirror of bodies previews its copy as a green see-through ghost, joined or not, never a

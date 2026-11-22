@@ -44,25 +44,29 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                 }
                 let signed = if *deboss { -d } else { d };
                 if !distribute.is_empty() {
-                    return emboss_distribute(doc, f, st, &faces, &sources, distribute, shift, signed);
+                    let curved = emboss_distribute(doc, f, st, &faces, &sources, distribute, shift, signed)?;
+                    emboss_laid(f, st, warning, if curved { EmbossLay::ProjectedOnCurve } else { EmbossLay::Projected });
+                    return Ok(());
                 }
                 // One face, one sketch: a sketch tangent to a complete cylinder wall, outside or a
                 // bore, takes the wrap (whose refusals stand); a partial wall, a sketch off the wall
                 // and every other face are projected.
                 if let ([face], [(feature, plane, regions, _)]) = (faces.as_slice(), sources.as_slice()) {
                     let (i, mb, hit, plane) = emboss_face_hit(doc, f, st, face, 0, *feature, plane)?;
-                    let result = match kernel::cylinder_emboss_anchor(&mb.body, hit.face, hit.point) {
+                    let (result, lay) = match kernel::cylinder_emboss_anchor(&mb.body, hit.face, hit.point) {
                         Ok(at) if kernel::infer_cylinder_emboss(&mb.body, &plane, regions, signed)?.is_some() => {
-                            kernel::emboss_cylinder_at(&mb.body, at, &plane, regions, signed)?
+                            (kernel::emboss_cylinder_at(&mb.body, at, &plane, regions, signed)?, EmbossLay::Wrapped)
                         }
                         _ => {
                             let at = kernel::emboss_anchor(&mb.body, hit.face, hit.point)?;
-                            kernel::emboss_project_face(&mb.body, hit.face, at, &plane, regions, signed)?
+                            let lay = if mb.body.planar_face(hit.face).is_some() { EmbossLay::Projected } else { EmbossLay::ProjectedOnCurve };
+                            (kernel::emboss_project_face(&mb.body, hit.face, at, &plane, regions, signed)?, lay)
                         }
                     };
                     if let Some(slot) = st.bodies.get_mut(i) {
                         *slot = ModelBody::new(mb.name, result, mb.feature);
                     }
+                    emboss_laid(f, st, warning, lay);
                     return Ok(());
                 }
                 // Several faces or sketches: each profile is projected onto the selected face it
@@ -70,6 +74,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                 // over no selected face refuses the whole emboss, so no letter goes missing.
                 let mut placed: Vec<Vec<bool>> = sources.iter().map(|(_, _, r, _)| vec![false; r.len()]).collect();
                 let mut per_body: BTreeMap<usize, (ModelBody, Vec<Body>)> = BTreeMap::new();
+                let mut curved = false;
                 for (slot, face) in faces.iter().enumerate() {
                     for (k, (feature, plane, regions, _)) in sources.iter().enumerate() {
                         let (i, mb, hit, plane) = emboss_face_hit(doc, f, st, face, slot, *feature, plane)?;
@@ -81,6 +86,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                             if let Some(piece) = piece.filter(|_| !*done) {
                                 entry.1.push(piece);
                                 *done = true;
+                                curved |= mb.body.planar_face(hit.face).is_none();
                             }
                         }
                     }
@@ -107,6 +113,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                         *slot = ModelBody::new(mb.name, result, mb.feature);
                     }
                 }
+                emboss_laid(f, st, warning, if curved { EmbossLay::ProjectedOnCurve } else { EmbossLay::Projected });
                 return Ok(());
             }
             let (a, b) = if *deboss != *flip { (-d, 0.0) } else { (0.0, d) };
@@ -130,6 +137,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                     format!("the {what} changed nothing; check where its profile lies, which side of the face the sketch is on, and the depth"),
                 );
             }
+            emboss_laid(f, st, warning, EmbossLay::Projected);
             Ok(())
         }
         FeatureKind::Rib { .. } => {
@@ -3085,6 +3093,20 @@ fn tag_panels(sk: &mut crate::SurfaceSheet, before: Option<&crate::SurfaceSheet>
     }
 }
 
+/// Record how Emboss `f` laid its profiles, for its dialog. Projected onto a curved face, they
+/// keep their flat shape instead of bending to it: the feature says so.
+fn emboss_laid(f: &Feature, st: &mut ModelState, warning: &mut Option<String>, lay: EmbossLay) {
+    st.emboss_lay.insert(f.id, lay);
+    if lay == EmbossLay::ProjectedOnCurve {
+        append_warning(
+            warning,
+            "the profiles are projected onto the curved face, not wrapped round it: only the profiles of one sketch tangent to a \
+             complete cylinder wall wrap"
+                .into(),
+        );
+    }
+}
+
 /// `plane` moved by an Emboss's shift `(dx, dy, angle)`: the profiles turn by `angle` (radians,
 /// about the centre of their box) and then move `dx` along the sketch's x and `dy` along its y.
 /// No shift leaves the plane as it is.
@@ -3130,7 +3152,7 @@ fn emboss_distribute(
     distribute: &[u32],
     shift: (f64, f64, f64),
     signed: f64,
-) -> Result<()> {
+) -> Result<bool> {
     let total: usize = sources.iter().map(|(_, _, r, _)| r.len()).sum();
     if distribute.len() != total {
         return Err(DocError::Invalid(format!(
@@ -3150,6 +3172,7 @@ fn emboss_distribute(
         }
     }
     let mut per_body: BTreeMap<usize, (ModelBody, Vec<Body>)> = BTreeMap::new();
+    let mut curved = false;
     let profiles = sources.iter().flat_map(|(feature, _, regions, plane)| regions.iter().map(move |r| (*feature, plane, r)));
     for (n, ((feature, plane, region), slot)) in profiles.zip(distribute).enumerate() {
         let slot = usize::try_from(*slot).unwrap_or(usize::MAX);
@@ -3177,6 +3200,7 @@ fn emboss_distribute(
                 slot + 1
             ))
         })?;
+        curved |= mb.body.planar_face(hit.face).is_none();
         per_body.entry(i).or_insert_with(|| (mb, Vec::new())).1.push(piece);
     }
     for (i, (mb, pieces)) in per_body {
@@ -3185,7 +3209,7 @@ fn emboss_distribute(
             *slot = ModelBody::new(mb.name, result, mb.feature);
         }
     }
-    Ok(())
+    Ok(curved)
 }
 
 /// Selected face `slot` of Emboss `f` (`face_names[slot]` names it), found on its body as built so
