@@ -1,17 +1,18 @@
 //! `sketch.group` and `sketch.ungroup`: curves made one object, and taken apart again.
 
 use serde_json::{Value, json};
-use solidcraft_sketch::Sketch;
+use solidcraft_sketch::{GroupLock, Sketch};
 
 use super::sketch_store;
 use super::{CommandSpec, in_sketch};
 use crate::params::{bad, str_, string_list};
-use crate::schema::sketch_object::{GroupParams, GroupResult, UngroupParams};
+use crate::schema::sketch_object::{GroupLockParams, GroupParams, GroupResult, UngroupParams};
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};
 
 const GROUP_CONTRACT: TypedContract<GroupParams> = TypedContract::new();
 const UNGROUP_CONTRACT: TypedContract<UngroupParams> = TypedContract::new();
+const GROUP_LOCK_CONTRACT: TypedContract<GroupLockParams> = TypedContract::new();
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sketch.group", "Group", crate::checked!("sketch.group", group))
@@ -28,6 +29,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&UNGROUP_CONTRACT)
         .output(output_schema_for::<GroupResult>)
         .params("group: the group's id, or entity: one of its curves. The curves stay and are separate again"),
+    CommandSpec::new("sketch.group_lock", "Lock Group", crate::checked!("sketch.group_lock", group_lock))
+        .in_sketch_part()
+        .icon("c_fix")
+        .enabled(in_sketch)
+        .contract(&GROUP_LOCK_CONTRACT)
+        .output(output_schema_for::<GroupResult>)
+        .params("group: the group's id, or entity: one of its curves; lock: \"free\" | \"protect\" (the whole object may move, turn and scale, its points may not be edited one by one) | \"total\" (nothing changes). An edit that would break the lock is refused and nothing changes; this is not a Fix constraint on every point"),
 ];
 
 fn reply(group: &str, curves: Vec<String>) -> Result<Value> {
@@ -85,4 +93,25 @@ pub(super) fn with_group_members(sk: &Sketch, p: &Value, cmd: &str) -> Result<Va
     let mut out = if p.is_null() { json!({}) } else { p.clone() };
     out["entities"] = json!(group_ids(sk, &string_list(cmd, p, "entities")?));
     Ok(out)
+}
+
+fn group_lock(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "sketch.group_lock";
+    let lock = match str_(p, "lock").map(str::to_ascii_lowercase).as_deref() {
+        Some("free") => GroupLock::Free,
+        Some("protect") => GroupLock::Protect,
+        Some("total") => GroupLock::Total,
+        _ => return Err(bad(cmd, "`lock` must be \"free\", \"protect\" or \"total\"")),
+    };
+    let id = sketch_store::active(s).ok_or_else(|| bad(cmd, "no sketch is being edited"))?;
+    sketch_store::update(s, id, |_, _, sk| {
+        let g = match (str_(p, "group"), str_(p, "entity")) {
+            (Some(g), _) => g.to_string(),
+            (None, Some(e)) => sk.object_group_of(e).map(|g| g.id.clone()).ok_or_else(|| bad(cmd, format!("`{e}` is not in a group")))?,
+            _ => return Err(bad(cmd, "give `group` or `entity`")),
+        };
+        sk.set_group_lock(&g, lock).map_err(|e| bad(cmd, e.to_string()))?;
+        let curves = sk.object_groups.iter().find(|x| x.id == g).map(|x| x.curves.clone()).unwrap_or_default();
+        reply(&g, curves)
+    })
 }

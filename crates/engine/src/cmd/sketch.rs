@@ -559,6 +559,8 @@ pub(super) fn edit_solved<T>(
             big,
         )
     });
+    // The locked groups as they are before the edit: it may not leave them otherwise than the lock allows.
+    let locked = sk.lock_snapshot();
     let (out, left) = f(&mut sk, &mut doc)?;
     let strictness = match before {
         Some((points, curves, constraints, wires, wire_constraints, held, was_big)) => Strict {
@@ -609,6 +611,7 @@ pub(super) fn edit_solved<T>(
         doc.discount_traces(id, &sk, r);
     }
     sketch_store::checked(&sk)?;
+    sk.check_locks(&locked).map_err(crate::EngineError::from)?;
     sketch_store::write(&mut doc, id, sk)?;
     s.set_doc(doc);
     Ok((out, rep))

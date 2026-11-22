@@ -2626,6 +2626,47 @@ fn a_group_refuses_a_stretch_it_cannot_keep_exact_and_changes_nothing() {
     assert!(t.execute("sketch.ungroup", &json!({"entity": ids[0].clone()})).is_err(), "not in a group any more");
 }
 
+#[test]
+fn a_locked_group_moves_but_its_points_are_not_edited_and_a_total_lock_changes_nothing() {
+    let mut s = new_sketch();
+    let r = run(&mut s, "sketch.insert_svg", json!({"text": crown_svg(300), "width": 120}));
+    let group = r["group"].as_str().unwrap().to_string();
+    let members = sketch(&s).object_groups[0].curves.clone();
+    let node = sketch(&s).points.iter().find(|p| p.id != "origin").unwrap().id.clone();
+    let (lo, hi) = points_box(&s);
+    // Protect geometry: the whole object moves, turns and stretches...
+    run(&mut s, "sketch.group_lock", json!({"group": group, "lock": "protect"}));
+    run(&mut s, "sketch.move", json!({"entities": [members[0].clone()], "translate": [10, 5]}));
+    run(&mut s, "sketch.transform", json!({"entities": [members[1].clone()], "scale_x": 2.0, "scale_y": 0.5, "angle": 30}));
+    let area = |s: &Session| profiles(s).iter().sum::<f64>();
+    assert!(area(&s) > 0.0);
+    // ...but a point cannot be moved on its own, a curve deleted or the object trimmed.
+    let before = s.doc.to_json();
+    let at = sketch(&s).points.iter().find(|p| p.id == node).unwrap().pos;
+    for (cmd, p) in
+        [("sketch.move_point", json!({"point": node, "to": [at.x + 3.0, at.y + 3.0]})), ("sketch.delete", json!({"entities": [members[2].clone()]}))]
+    {
+        let err = s.execute(cmd, &p).unwrap_err().to_string();
+        assert!(err.contains("is locked"), "{cmd}: {err}");
+        assert_eq!(s.doc.to_json(), before, "{cmd} changed nothing");
+    }
+    // Total lock: nothing moves at all.
+    run(&mut s, "sketch.group_lock", json!({"entity": members[0].clone(), "lock": "total"}));
+    let before = s.doc.to_json();
+    let err = s.execute("sketch.move", &json!({"entities": [members[0].clone()], "translate": [1, 1]})).unwrap_err().to_string();
+    assert!(err.contains("total lock"), "{err}");
+    assert_eq!(s.doc.to_json(), before);
+    // Free again: the point moves.
+    run(&mut s, "sketch.group_lock", json!({"group": group, "lock": "free"}));
+    run(&mut s, "sketch.move_point", json!({"point": node, "to": [at.x + 3.0, at.y + 3.0]}));
+    let _ = (lo, hi);
+    // Saved and opened, the lock stays; a bad name is refused.
+    run(&mut s, "sketch.group_lock", json!({"group": group, "lock": "protect"}));
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert_eq!(reopened.doc.sketch(1).unwrap().object_groups[0].lock, solidcraft_sketch::GroupLock::Protect);
+    assert!(s.execute("sketch.group_lock", &json!({"group": group, "lock": "frozen"})).is_err());
+}
+
 /// Volumes (mm³) of the bodies in the design, smallest first.
 fn body_volumes(s: &mut Session) -> Vec<f64> {
     let m = run(s, "inspect.measure", json!({}));
