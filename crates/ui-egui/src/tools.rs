@@ -779,7 +779,7 @@ fn run_shape(app: &mut SolveApp, t: &Tool) -> Result<Vec<String>, String> {
         // The click is the centre, the drag the tip radius, and the first tip points at the cursor
         // (0 degrees is a tip straight up). Points and depth are the defaults: Edit Star changes them.
         "sketch.star" => {
-            json!({"center": xy(&p[0]), "outer_radius": d(0, 1), "points": crate::sketch_dims::locked_value(app, t, "Points").unwrap_or(5.0), "angle": (p[1].0 - p[0].0).angle().to_degrees() - 90.0})
+            json!({"center": xy(&p[0]), "outer_radius": d(0, 1), "points": crate::sketch_dims::locked_value(app, t, "Points").unwrap_or(crate::sketch_dims::DEFAULT_STAR_POINTS), "angle": (p[1].0 - p[0].0).angle().to_degrees() - 90.0})
         }
         "sketch.slot.center_to_center" | "sketch.slot.overall" => {
             let dir = (p[1].0 - p[0].0).normalized().unwrap_or(Vec2::X);
@@ -1390,7 +1390,7 @@ pub fn preview(app: &SolveApp, t: &Tool, painter: &egui::Painter, proj: &Proj) {
         }
     }
 
-    if let Some(corners) = star_outline(t, h, crate::sketch_dims::locked_value(app, t, "Points").unwrap_or(5.0)) {
+    if let Some(corners) = star_outline(t, h, crate::sketch_dims::locked_value(app, t, "Points").unwrap_or(crate::sketch_dims::DEFAULT_STAR_POINTS)) {
         let outline: Vec<_> = corners.iter().map(|c| ss.plane.to_world(*c)).collect();
         paint_sketch_path(&outline, crate::sketch_palette::mode(app), painter, proj, stroke);
         return;

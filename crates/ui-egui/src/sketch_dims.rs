@@ -23,6 +23,9 @@ use solidcraft_theme::Tokens;
 /// type one (#17052).
 const INFINITE: &str = "\u{221e}";
 
+/// The points of a star until the Points box holds a count.
+pub(crate) const DEFAULT_STAR_POINTS: f64 = 5.0;
+
 /// One value box.
 #[derive(Clone, Debug)]
 pub struct DimBox {
@@ -308,7 +311,7 @@ fn line_boxes(a: Vec2, e: Vec2, px: f64, off: f64) -> Vec<(f64, Vec2)> {
 /// The value each box shows while it follows the cursor, and where it sits (sketch coordinates).
 /// `px` is the size of a screen pixel in sketch units: boxes sit a little off the segment they
 /// measure so they don't cover it.
-fn live(app: &SolveApp, t: &Tool, e: Vec2, px: f64) -> Vec<(f64, Vec2)> {
+pub(crate) fn live(app: &SolveApp, t: &Tool, e: Vec2, px: f64) -> Vec<(f64, Vec2)> {
     let off = 20.0 * px;
     // A one-click construction line's Offset box waits above and right of the pointer before any
     // click, clear of the grey coordinates below it (#15618). A bare digit goes there.
@@ -411,7 +414,8 @@ fn live(app: &SolveApp, t: &Tool, e: Vec2, px: f64) -> Vec<(f64, Vec2)> {
         // so the arc waited for Enter (#12208).
         ("sketch.arc.center_point" | "sketch.slot.arc_center", 1) => vec![((e - a).len(), e + dir_or_x(e - a) * (2.5 * off))],
         ("sketch.polygon.inscribed" | "sketch.polygon.circumscribed" | "sketch.polygon.edge" | "sketch.star", 1) => {
-            vec![((e - a).len(), (a + e) * 0.5), (6.0, a + (e - a) * 0.5 + (e - a).perp() * 0.3)]
+            let count = if t.cmd == "sketch.star" { DEFAULT_STAR_POINTS } else { 6.0 };
+            vec![((e - a).len(), (a + e) * 0.5), (count, a + (e - a) * 0.5 + (e - a).perp() * 0.3)]
         }
         ("sketch.arc.center_point" | "sketch.slot.arc_center", 2) => {
             let a0 = (a - first).angle();
@@ -825,7 +829,7 @@ fn boxes(app: &SolveApp, ui: &mut egui::Ui, proj: &Proj, t: &mut Tool) -> Option
     // their separation must not shrink with the shape or a tilted sketch plane.
     let polygon_positions = if matches!(t.cmd, "sketch.polygon.inscribed" | "sketch.polygon.circumscribed" | "sketch.polygon.edge" | "sketch.star") {
         let corners = crate::tools::polygon_outline(t, e, locked(app, t, "Sides").unwrap_or(6.0))
-            .or_else(|| crate::tools::star_outline(t, e, locked(app, t, "Points").unwrap_or(5.0)))
+            .or_else(|| crate::tools::star_outline(t, e, locked(app, t, "Points").unwrap_or(DEFAULT_STAR_POINTS)))
             .unwrap_or_else(|| t.pts.iter().map(|p| p.0).chain(std::iter::once(e)).collect());
         let points: Vec<_> = corners.iter().filter_map(|p| proj.to_screen(plane.to_world(*p))).collect();
         let bounds = egui::Rect::from_points(&points);
