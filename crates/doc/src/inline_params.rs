@@ -151,13 +151,35 @@ impl Document {
                     }
                 }
                 for link in &mut sketch.links {
-                    if let solidcraft_sketch::LinkSource::Text { exprs, .. } = &mut link.source {
-                        for e in [&mut exprs.x, &mut exprs.y, &mut exprs.height].into_iter().flatten() {
-                            found.take(e, Reads::Typed(Kind::Length));
+                    match &mut link.source {
+                        solidcraft_sketch::LinkSource::Text { exprs, .. } => {
+                            for e in [&mut exprs.x, &mut exprs.y, &mut exprs.height].into_iter().flatten() {
+                                found.take(e, Reads::Typed(Kind::Length));
+                            }
+                            if let Some(e) = exprs.angle.as_mut() {
+                                found.take(e, Reads::Typed(Kind::Angle));
+                            }
                         }
-                        if let Some(e) = exprs.angle.as_mut() {
-                            found.take(e, Reads::Typed(Kind::Angle));
+                        solidcraft_sketch::LinkSource::Star(spec) => {
+                            let e = &mut spec.exprs;
+                            let fields = [
+                                (&mut e.x, Kind::Length),
+                                (&mut e.y, Kind::Length),
+                                (&mut e.points, Kind::Unitless),
+                                (&mut e.outer, Kind::Length),
+                                (&mut e.inner_percent, Kind::Unitless),
+                                (&mut e.skip, Kind::Unitless),
+                                (&mut e.tip_round, Kind::Length),
+                                (&mut e.valley_round, Kind::Length),
+                                (&mut e.angle, Kind::Angle),
+                            ];
+                            for (e, kind) in fields {
+                                if let Some(e) = e.as_mut() {
+                                    found.take(e, Reads::Typed(kind));
+                                }
+                            }
                         }
+                        _ => {}
                     }
                 }
             }

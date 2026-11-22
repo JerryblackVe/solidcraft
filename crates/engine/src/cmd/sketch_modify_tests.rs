@@ -2486,6 +2486,21 @@ fn a_stars_numbers_typed_as_expressions_follow_the_parameters() {
 }
 
 #[test]
+fn a_parameter_typed_in_a_stars_field_is_made_and_the_star_follows_it() {
+    let area = |n: f64, r: f64, inner: f64| n * r * inner * (std::f64::consts::PI / n).sin();
+    let mut s = new_sketch();
+    let r = run(&mut s, "sketch.star", json!({"center": [0, 0], "outer_radius": "R = 20 mm", "points": "n = 5"}));
+    // The star keeps the names where the definitions were typed (the reply shows what was sent).
+    let link = r["link"].as_str().unwrap();
+    let Some(LinkSource::Star(spec)) = sketch(&s).link(link).map(|l| l.source.clone()) else { panic!("{r}") };
+    assert_eq!((spec.exprs.outer.as_deref(), spec.exprs.points.as_deref()), (Some("R"), Some("n")), "{r}");
+    assert_eq!((s.doc.param("R").map(|p| p.unit.as_str()), s.doc.param("n").map(|p| p.unit.as_str())), (Some("mm"), Some("")));
+    assert!(close(profiles(&s)[0], area(5.0, 20.0, 8.0)));
+    run(&mut s, "parameters.change", json!({"name": "R", "expression": "30 mm"}));
+    assert!(close(profiles(&s)[0], area(5.0, 30.0, 12.0)), "{}", profiles(&s)[0]);
+}
+
+#[test]
 fn a_star_moves_turns_and_scales_as_one() {
     let mut s = new_sketch();
     let r = run(&mut s, "sketch.star", json!({"center": [0, 0], "outer_radius": 20}));
