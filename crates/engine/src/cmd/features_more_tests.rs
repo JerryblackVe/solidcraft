@@ -1027,6 +1027,75 @@ fn half_cylinder_interior_emboss_text() {
     assert!(v_deboss < v_wrap);
 }
 
+/// A sketch tangent to the wall of a partial cylinder (a half tube, a shaft with a flat, a tube
+/// revolved 270°) embosses and debosses it, with the face picked or inferred: it used to be
+/// refused with "requires a complete cylinder or coaxial sleeve". The profile is projected onto
+/// the wall, not wrapped: the 4 × 5 rectangle cuts the ring between r and rr as a straight strip,
+/// 5 × (A(rr) − A(r)) with A(R) = ∫₋₂² √(R² − t²) dt = 2√(R² − 4) + R² asin(2/R).
+#[test]
+fn a_sketch_tangent_to_a_partial_cylinder_wall_embosses_it() {
+    type Part = fn(&mut Session) -> ([f64; 3], [f64; 3], f64);
+    let half_tube: Part = |s| {
+        run(s, "solid.cylinder", json!({"radius": 20, "height": 30, "body_name": "Part"}));
+        run(s, "solid.cylinder", json!({"radius": 16, "height": 30, "operation": "cut", "targets": ["Part"]}));
+        run(s, "solid.box", json!({"corner": [-25, -50, -5], "length": 50, "width": 50, "height": 40, "operation": "cut", "targets": ["Part"]}));
+        ([0., 20., 0.], [-1., 0., 0.], 20.)
+    };
+    let flat_shaft: Part = |s| {
+        run(s, "solid.cylinder", json!({"radius": 10, "height": 20, "body_name": "Part"}));
+        run(s, "solid.box", json!({"corner": [6, -20, -5], "length": 20, "width": 40, "height": 30, "operation": "cut", "targets": ["Part"]}));
+        ([0., 10., 0.], [-1., 0., 0.], 10.)
+    };
+    // Revolved 270° from +X either way round, the wall always spans -X.
+    let revolved: Part = |s| {
+        run(s, "sketch.create", json!({"plane": {"origin": [0, 0, 0], "x_dir": [1, 0, 0], "y_dir": [0, 0, 1]}, "name": "Section"}));
+        run(s, "sketch.rectangle.two_point", json!({"p0": [16, 0], "p1": [20, 30]}));
+        run(s, "sketch.finish", json!({}));
+        run(
+            s,
+            "solid.revolve",
+            json!({"sketch": "Section", "axis": {"origin": [0, 0, 0], "dir": [0, 0, 1]}, "angle": "270 deg", "body_name": "Part"}),
+        );
+        ([-20., 0., 0.], [0., -1., 0.], 20.)
+    };
+    for (what, part) in [("half tube", half_tube), ("flat shaft", flat_shaft), ("revolved", revolved)] {
+        for (mode, picked) in [("emboss", true), ("deboss", true), ("emboss", false)] {
+            let mut s = Session::default();
+            let (origin, x_dir, r) = part(&mut s);
+            run(&mut s, "sketch.create", json!({"plane": {"origin": origin, "x_dir": x_dir, "y_dir": [0, 0, 1]}, "name": "Badge"}));
+            run(&mut s, "sketch.rectangle.two_point", json!({"p0": [-2, 5], "p1": [2, 10]}));
+            run(&mut s, "sketch.finish", json!({}));
+            let before = volume(&mut s);
+            let mut p = json!({"sketch": "Badge", "depth": 1, "mode": mode});
+            if picked {
+                p["face"] = json!([origin[0], origin[1], 7.5]);
+            }
+            run(&mut s, "solid.emboss", p);
+            assert_eq!(s.model.state().body("Part").unwrap().body.shell_count(), 1, "{what} {mode}");
+            let change = volume(&mut s) - before;
+            let rr: f64 = if mode == "emboss" { r + 1. } else { r - 1. };
+            let strip = |big: f64| 2. * (big * big - 4.).sqrt() + big * big * (2. / big).asin();
+            let want = 5. * (strip(rr) - strip(r));
+            assert!((change - want).abs() < 1e-4 * want.abs(), "{what} {mode} picked {picked}: {change} vs {want}");
+            // The saved design rebuilds it alike.
+            let mut loaded = Session { doc: solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap().into(), ..Default::default() };
+            loaded.refresh();
+            assert!(loaded.model.results.iter().all(|f| f.error.is_none()), "{what} {mode}: {:?}", loaded.model.results);
+            assert!((volume(&mut loaded) - before - change).abs() < 1e-6, "{what} {mode}");
+        }
+    }
+    // A pick on the half tube's bore does not stand for the outside wall the sketch touches.
+    let mut s = Session::default();
+    half_tube(&mut s);
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 20, 0], "x_dir": [-1, 0, 0], "y_dir": [0, 0, 1]}, "name": "Badge"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [-2, 5], "p1": [2, 10]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let saved = s.doc.to_json();
+    let e = s.execute("solid.emboss", &json!({"sketch": "Badge", "depth": 1, "face": [0, 16, 7.5]})).unwrap_err().to_string();
+    assert!(e.contains("saved selection"), "{e}");
+    assert_eq!(s.doc.to_json(), saved);
+}
+
 #[test]
 fn target_planar_face_with_adjacent_fillets_is_not_hijacked() {
     let mut s = Session::default();

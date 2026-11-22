@@ -315,7 +315,8 @@ fn apply_pieces(body: &Body, pieces: Vec<Body>, depth: f64) -> Result<Body> {
 }
 
 /// Wrap sketch arc length around a cylindrical wall (outside, or a bore), retaining exact radial depth.
-/// Profiles of any segments must lie inside one uninterrupted wall face.
+/// Profiles of any segments must lie inside one uninterrupted wall face. On a wall of a body that
+/// is not a complete cylinder or sleeve they are projected onto it ([`emboss_project_face`]).
 pub fn emboss_cylinder(body: &Body, plane: &Plane, regions: &[Region2], depth: f64) -> Result<Body> {
     emboss_impl(body, None, plane, regions, depth, false).and_then(EmbossOutcome::body)
 }
@@ -432,16 +433,14 @@ fn emboss_impl(body: &Body, anchor: Option<Vec3>, plane: &Plane, regions: &[Regi
     }
     guard("cylinder emboss", || {
         let rec = record(body)?;
-        if rec.shells.len() != 1 || rec.faces.len() > 16 || rec.edges.len() > 256 {
+        if rec.shells.len() != 1 {
             return Err(fail("requires a complete cylinder or coaxial sleeve"));
         }
         let tol = (body.size() * 1e-8).max(1e-8);
-        let surfaces: Vec<Surf> = (0..rec.faces.len())
-            .map(|f| surf_of(&rec, f).ok_or_else(|| fail("requires only cylindrical walls and planar endcaps")))
-            .collect::<Result<_>>()?;
+        let surfaces: Vec<Option<Surf>> = (0..rec.faces.len()).map(|f| surf_of(&rec, f)).collect();
         let mut chosen = None;
         for (fi, s) in surfaces.iter().enumerate() {
-            let Surf::Cylinder { o, a, r, convex } = *s else { continue };
+            let Some(Surf::Cylinder { o, a, r, convex }) = *s else { continue };
             let Some((radial, tangent)) = wall_frame(plane.normal(), plane.origin - o, a, r, convex, tol) else {
                 continue;
             };
@@ -461,6 +460,45 @@ fn emboss_impl(body: &Body, anchor: Option<Vec3>, plane: &Plane, regions: &[Regi
         if qualify && !profile_interval_overlaps(plane, regions, o, tangent, alo * r, ahi * r)? {
             return Ok(EmbossOutcome::NoMatch);
         }
+        let endcap = |n: Vec3| n.dot(axis).abs() > 1.0 - 1e-8;
+        let coaxial = |co: Vec3, ca: Vec3| ca.dot(axis).abs() > 1.0 - 1e-8 && (co - o - axis * (co - o).dot(axis)).len() < tol * 10.0;
+        let whole = rec.faces.len() <= 16
+            && rec.edges.len() <= 256
+            && surfaces.iter().filter(|s| matches!(s, Some(Surf::Plane { n, .. }) if endcap(*n))).count() == 2
+            && surfaces.iter().all(|s| match *s {
+                Some(Surf::Plane { n, .. }) => endcap(n),
+                Some(Surf::Cylinder { o: co, a: ca, .. }) => coaxial(co, ca),
+                _ => false,
+            });
+        if !whole {
+            // A wall of any other body (a half tube, a shaft with a flat, a tube revolved less
+            // than a turn) is not wrapped: the profiles are projected onto the tangent face.
+            let (z0, s0) = ((plane.origin - o).dot(axis), (plane.origin - o).dot(tangent));
+            if qualify
+                && let Some((lo, hi)) = face_axial_bounds(&rec, fi, o, axis)?
+                && !profile_interval_overlaps(plane, regions, o, axis, lo, hi)?
+            {
+                return Ok(EmbossOutcome::NoMatch);
+            }
+            let p = regions
+                .first()
+                .and_then(|reg| reg.outer.segs.first())
+                .and_then(|seg| on_wall(seg, plane, s0, z0, tangent, axis))
+                .ok_or_else(|| fail("sketch must lie flat on the cylindrical wall"))?
+                .point_at(0.5);
+            let at = o + axis * p.y + (radial * (p.x / r).cos() + tangent * (p.x / r).sin()) * r;
+            if qualify {
+                return Ok(EmbossOutcome::Anchor(fi, at));
+            }
+            // A saved pick on another face (the bore of a half tube) does not stand for this wall.
+            if let Some(pick) = anchor {
+                let w = pick - o;
+                if ((w - axis * w.dot(axis)).len() - r).abs() > tol * 10.0 {
+                    return Err(fail("saved selection no longer identifies the sketch's cylindrical face"));
+                }
+            }
+            return emboss_project_face(body, fi, anchor.unwrap_or(at), plane, regions, depth).map(EmbossOutcome::Body);
+        }
         let mut caps = Vec::new();
         // Across the material: the largest bore radius for an exterior wall, the smallest outside
         // radius for a bore.
@@ -468,10 +506,8 @@ fn emboss_impl(body: &Body, anchor: Option<Vec3>, plane: &Plane, regions: &[Regi
         let mut outer = f64::INFINITY;
         for s in &surfaces {
             match *s {
-                Surf::Plane { n, d } if n.dot(axis).abs() > 1.0 - 1e-8 => caps.push((d - n.dot(o)) / n.dot(axis)),
-                Surf::Cylinder { o: co, a: ca, r: cr, convex }
-                    if ca.dot(axis).abs() > 1.0 - 1e-8 && (co - o - axis * (co - o).dot(axis)).len() < tol * 10.0 =>
-                {
+                Some(Surf::Plane { n, d }) if endcap(n) => caps.push((d - n.dot(o)) / n.dot(axis)),
+                Some(Surf::Cylinder { o: co, a: ca, r: cr, convex }) if coaxial(co, ca) => {
                     if convex == outside {
                         if (cr - r).abs() > tol * 10.0 {
                             return Err(fail("interrupted or stepped cylinder"));
@@ -484,9 +520,6 @@ fn emboss_impl(body: &Body, anchor: Option<Vec3>, plane: &Plane, regions: &[Regi
                 }
                 _ => return Err(fail("requires a complete cylinder or coaxial sleeve")),
             }
-        }
-        if caps.len() != 2 {
-            return Err(fail("requires two planar endcaps"));
         }
         let lo = caps.iter().copied().fold(f64::INFINITY, f64::min);
         let hi = caps.iter().copied().fold(f64::NEG_INFINITY, f64::max);
