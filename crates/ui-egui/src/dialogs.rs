@@ -1964,7 +1964,13 @@ impl Dialog {
         if profiles.is_empty() {
             return false;
         }
-        input.items = profiles;
+        if matches!(self.kind, Kind::Emboss { .. }) {
+            // Emboss takes profiles of several sketches: the clicked sketch's profiles join the others.
+            input.items.retain(|x| !matches!(x, Sel::Profile { sketch, .. } if *sketch == id));
+            input.items.extend(profiles);
+        } else {
+            input.items = profiles;
+        }
         self.profile_selection_changed = true;
         self.focus = true;
         self.error = None;
