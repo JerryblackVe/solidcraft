@@ -75,7 +75,7 @@ pub use model::{
     MAX_POINTS, PointExprs, SPoint, Sketch, SketchBatch, SketchError, SketchView, TwoCircles,
 };
 pub use nurbs::Nurbs;
-pub use object_group::{MAX_GROUP_CURVES, ObjectGroup};
+pub use object_group::{GroupLock, LockSnapshot, MAX_GROUP_CURVES, ObjectGroup};
 pub use offset::OffsetChain;
 pub use offset_topology::{OffsetCreated, OffsetRole, OffsetRoleFlags, OffsetRoleKind, OffsetTopology};
 pub use paper_text::{

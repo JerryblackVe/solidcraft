@@ -40,3 +40,20 @@ pub struct GroupResult {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub param_warnings: Vec<String>,
 }
+
+/// Set what may change in a group: `free`, `protect` (the whole object moves, turns and scales but
+/// its points are not edited one by one) or `total` (nothing changes). A locked group refuses the
+/// edit that would break its lock, and nothing changes. Not an object lock on the design: the
+/// other curves of the sketch are free. One undo step.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct GroupLockParams {
+    /// The group's id, as `sketch.group` or an import returned it.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// One of the group's curves, by id.
+    #[serde(default)]
+    pub entity: Option<String>,
+    /// `free`, `protect` or `total`.
+    pub lock: String,
+}
