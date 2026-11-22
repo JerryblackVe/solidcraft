@@ -50,8 +50,9 @@ pub struct StarSpec {
 }
 
 /// A star that follows another: the points, radius, depth, skip, roundings and circles are the
-/// source's, and its centre and turn are the source's moved the way this says. The place is kept as
-/// numbers, so the copy stays where it was made when the line it was mirrored in moves.
+/// source's, and its centre and turn are the source's moved the way this says. The way is worked
+/// out again from the mirror line (`line`) each time the sketch is solved, so the copy follows the
+/// line when it moves; the numbers are the way as last worked out, and all there is once the line is gone.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StarFollow {
     /// The link id of the star it follows.
@@ -64,14 +65,17 @@ pub struct StarFollow {
     pub turn: f64,
     #[serde(default)]
     pub shift: Vec2,
+    /// The id of the straight curve it was mirrored in, when it was made by a mirror.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
 }
 
 impl StarFollow {
     /// The mirror image in the line through `a` along the unit vector `u`.
-    pub fn mirror(source: &str, a: Vec2, u: Vec2) -> StarFollow {
+    pub fn mirror(source: &str, line: Option<&str>, a: Vec2, u: Vec2) -> StarFollow {
         let turn = 2.0 * u.y.atan2(u.x);
         let flipped = Vec2::new(a.x, -a.y);
-        StarFollow { source: source.to_owned(), flip: true, turn: turn.to_degrees(), shift: a - turned(flipped, turn) }
+        StarFollow { source: source.to_owned(), flip: true, turn: turn.to_degrees(), shift: a - turned(flipped, turn), line: line.map(str::to_owned) }
     }
 
     /// Where the source's numbers put this star: `to` gets the shape and the place.
@@ -107,7 +111,16 @@ impl crate::Sketch {
             };
             let mut next = spec.clone();
             match from {
-                Some(from) => follow.apply(&from, &mut next),
+                Some(from) => {
+                    // The mirror line is where it is now; one that is gone or no longer a line leaves the way as it was.
+                    let moved = follow.line.as_deref().and_then(|id| {
+                        let Some(crate::Shape::Line { a, b }) = self.curve_index(id).and_then(|c| self.shape(c)) else { return None };
+                        (b - a).normalized().map(|u| StarFollow::mirror(&follow.source, Some(id), a, u))
+                    });
+                    let follow = moved.unwrap_or(follow);
+                    follow.apply(&from, &mut next);
+                    next.follows = Some(follow);
+                }
                 None => next.follows = None,
             }
             if next != *spec {
@@ -116,6 +129,15 @@ impl crate::Sketch {
             }
         }
         changed
+    }
+
+    /// [`Self::resolve_star_follows`], then the outlines of the stars it changed rebuilt from their numbers.
+    pub fn refresh_star_followers(&mut self) -> Result<()> {
+        for link in self.resolve_star_follows() {
+            let Some(crate::LinkSource::Star(spec)) = self.link(&link).map(|l| l.source.clone()) else { continue };
+            self.update_link(&link, &star_geometry(&spec)?)?;
+        }
+        Ok(())
     }
 }
 
@@ -435,7 +457,7 @@ mod tests {
             let a = Vec2::new(line_at.0, line_at.1);
             let u = Vec2::new(line_dir.0, line_dir.1).normalized().unwrap();
             let mut copy = source.clone();
-            StarFollow::mirror("link1", a, u).apply(&source, &mut copy);
+            StarFollow::mirror("link1", None, a, u).apply(&source, &mut copy);
             let reflect = |q: Vec2| (a + u * (q - a).dot(u)) * 2.0 - q;
             let mirrored: Vec<Vec2> = corners(&source).into_iter().map(reflect).collect();
             // The copy's outline is the same closed outline, started from another corner and run the other way.

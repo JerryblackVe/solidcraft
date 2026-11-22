@@ -178,12 +178,7 @@ fn star_link(sk: &Sketch, p: &Value, cmd: &str) -> Result<String> {
 
 /// Rebuild the outlines of the stars that follow another, from the numbers their sources have now.
 pub(in crate::cmd) fn refresh_followers(sk: &mut Sketch, cmd: &str) -> Result<()> {
-    for link in sk.resolve_star_follows() {
-        let Some(LinkSource::Star(spec)) = sk.link(&link).map(|l| l.source.clone()) else { continue };
-        let geom = star_geometry(&spec).map_err(|e| bad(cmd, e.to_string()))?;
-        sk.update_link(&link, &geom)?;
-    }
-    Ok(())
+    sk.refresh_star_followers().map_err(|e| bad(cmd, e.to_string()))
 }
 
 fn edit_star(s: &mut Session, p: &Value) -> Result<Value> {

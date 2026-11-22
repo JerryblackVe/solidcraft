@@ -4260,7 +4260,7 @@ fn mirror(s: &mut Session, p: &Value) -> Result<Value> {
         // stay the source's when the source is edited.
         for link in stars {
             let Some(solidcraft_sketch::LinkSource::Star(spec)) = sk.link(&link).map(|l| l.source.clone()) else { continue };
-            let follow = solidcraft_sketch::StarFollow::mirror(&link, a, u);
+            let follow = solidcraft_sketch::StarFollow::mirror(&link, sk.curves.get(l).map(|c| c.id.as_str()), a, u);
             let mut copy = spec.clone();
             follow.apply(&spec, &mut copy);
             copy.follows = Some(follow);
