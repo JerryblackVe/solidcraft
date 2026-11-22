@@ -2040,7 +2040,7 @@ impl Dialog {
         // Tangent chain: an edge brings the edges that continue it smoothly.
         let picked = if chain { fillet_edges(s, &sel, true) } else { single.clone() };
         // Extrude and revolve take profiles of one sketch; both lofts take sections
-        // from several sketches and must keep their pick order.
+        // from several sketches and must keep their pick order, emboss takes several too.
         if let Some(inp) = self.inputs.get_mut(self.active) {
             retain_profile_sketch(&self.kind, inp, &sel);
         }
@@ -2427,22 +2427,23 @@ pub(crate) fn fillet_least_setback(ctx: &egui::Context, s: &Session, items: &[Se
     least
 }
 
-/// Profiles are indices within one sketch. Only lofts consume sections from several sketches.
+/// Profiles are indices within one sketch. Only lofts and emboss take profiles of several sketches.
 /// Keep batch and preselection inputs consistent with successive clicks: the latest sketch wins.
 fn retain_profile_list_sketch(kind: &Kind, input: &mut SelInput, sel: &Sel) {
-    if matches!(
-        kind,
-        Kind::Extrude { .. } | Kind::Revolve { .. } | Kind::Emboss { .. } | Kind::Sweep { .. } | Kind::Surface(_) | Kind::Frame(_) | Kind::Sheet(_)
-    ) {
+    if matches!(kind, Kind::Extrude { .. } | Kind::Revolve { .. } | Kind::Sweep { .. } | Kind::Surface(_) | Kind::Frame(_) | Kind::Sheet(_)) {
         retain_profile_sketch(kind, input, sel);
     }
 }
 
-/// Keep the profile picks of the sketch just picked; lofts retain their separate sections.
+/// Keep the profile picks of the sketch just picked; lofts retain their separate sections and
+/// emboss sends the other sketches' profiles as `more_profiles`.
 fn retain_profile_sketch(kind: &Kind, input: &mut SelInput, sel: &Sel) {
     if let Sel::Profile { sketch, .. } = sel
         // A plugin's profile field takes what is picked; the plugin decides what it accepts.
-        && !matches!(kind, Kind::Loft { .. } | Kind::Surface(crate::dialogs_surface::Surf::Loft { .. }) | Kind::PluginPick { .. })
+        && !matches!(
+            kind,
+            Kind::Loft { .. } | Kind::Emboss { .. } | Kind::Surface(crate::dialogs_surface::Surf::Loft { .. }) | Kind::PluginPick { .. }
+        )
     {
         input.items.retain(|x| !matches!(x, Sel::Profile { sketch: other, .. } if other != sketch));
     }

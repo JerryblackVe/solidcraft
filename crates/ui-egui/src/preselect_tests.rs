@@ -5243,3 +5243,34 @@ fn emboss_dialog_sends_two_sketches_and_one_or_two_faces() {
         "{kind:?}"
     );
 }
+
+#[test]
+fn emboss_keeps_profiles_of_two_sketches_preselected_or_picked() {
+    // Two sketches on one plane, a square each: Emboss takes profiles of several sketches, so
+    // neither the preselection nor a later click drops the other sketch's profile.
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("solid.box", json!({"length":40,"width":40,"height":10})).unwrap();
+    let mut sketch = |name: &str, x: f64| {
+        let id = h.app.run("sketch.create", json!({"plane":{"origin":[0,0,30],"x_dir":[1,0,0],"y_dir":[0,1,0]},"name":name})).unwrap()["sketch"]
+            .as_u64()
+            .unwrap();
+        h.app.run("sketch.rectangle.two_point", json!({"p0":[x,10],"p1":[x + 5.0,15]})).unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+        id
+    };
+    let (a, b) = (sketch("A", 5.0), sketch("B", 25.0));
+    let both = vec![Sel::Profile { sketch: a, index: 0 }, Sel::Profile { sketch: b, index: 0 }];
+    h.app.session.selection = both.clone();
+    h.app.start("solid.emboss");
+    h.frames(2);
+    assert_eq!(h.app.dialog.as_ref().unwrap().inputs[0].items, both);
+    h.app.dialog = None;
+    h.app.session.selection = vec![both[0].clone()];
+    h.app.start("solid.emboss");
+    h.frames(2);
+    let d = h.app.dialog.as_mut().unwrap();
+    // A filled Profiles field hands over to Target Faces; a click on Profiles makes it active again.
+    d.active = 0;
+    d.pick(&h.app.session, both[1].clone());
+    assert_eq!(d.inputs[0].items, both);
+}
