@@ -2704,6 +2704,41 @@ fn trimming_or_breaking_a_curve_of_a_group_keeps_the_pieces_in_the_group() {
 }
 
 #[test]
+fn a_group_saves_its_pivot_and_the_pivot_follows_the_group() {
+    let mut s = new_sketch();
+    let r = run(&mut s, "sketch.insert_svg", json!({"text": crown_svg(40), "width": 80}));
+    let group = r["group"].as_str().unwrap().to_string();
+    let member = sketch(&s).object_groups[0].curves[0].clone();
+    let pivot = |s: &Session| sketch(s).object_groups[0].pivot;
+    assert_eq!(pivot(&s), None);
+    run(&mut s, "sketch.group_pivot", json!({"entity": member, "pivot": [3, 4]}));
+    assert_eq!(pivot(&s), Some(solidcore_record::Vec2::new(3.0, 4.0)));
+    // Moved, the pivot goes with the group; turned about the pivot it stays; scaled about a point it follows.
+    run(&mut s, "sketch.move", json!({"entities": [member.clone()], "translate": [10, 5]}));
+    assert_eq!(pivot(&s), Some(solidcore_record::Vec2::new(13.0, 9.0)));
+    run(&mut s, "sketch.transform", json!({"entities": [member.clone()], "angle": 90, "center": [13, 9]}));
+    let p = pivot(&s).unwrap();
+    assert!(p.dist(solidcore_record::Vec2::new(13.0, 9.0)) < 1e-9, "{p:?}");
+    run(&mut s, "sketch.transform", json!({"entities": [member.clone()], "factor": 2.0, "center": [0, 0]}));
+    let p = pivot(&s).unwrap();
+    assert!(p.dist(solidcore_record::Vec2::new(26.0, 18.0)) < 1e-9, "{p:?}");
+    // Saved and opened, it stays; a part of the group moved on its own leaves it alone.
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert_eq!(reopened.doc.sketch(1).unwrap().object_groups[0].pivot, pivot(&s));
+    // Left out, it is the middle of the box again; bad values and a curve outside a group are refused.
+    run(&mut s, "sketch.group_pivot", json!({"group": group}));
+    assert_eq!(pivot(&s), None);
+    for bad in [
+        json!({"group": group, "pivot": [1]}),
+        json!({"group": group, "pivot": "a"}),
+        json!({"group": group, "pivot": [1, null]}),
+        json!({"pivot": [1, 2]}),
+    ] {
+        assert!(s.execute("sketch.group_pivot", &bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn an_import_can_come_locked_and_nodes_mode_shows_the_points_of_grouped_curves() {
     let mut s = new_sketch();
     let r = run(&mut s, "sketch.insert_svg", json!({"text": crown_svg(40), "width": 80, "lock": "Protect"}));

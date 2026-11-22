@@ -1,0 +1,47 @@
+{
+  "en": {
+    "ui.transform_center_pivot": "Center Pivot",
+    "cmd.sketch.group_pivot": "Group Pivot",
+    "help.sketch.group_pivot": "Sets the point the Transform box scales and turns a group about. It is saved with the group and moves, turns and scales with it. Leave it out to use the middle of the group's box again."
+  },
+  "es": {
+    "ui.transform_center_pivot": "Centrar pivote",
+    "cmd.sketch.group_pivot": "Pivote del grupo",
+    "help.sketch.group_pivot": "Fija el punto sobre el que la caja de Transformar escala y gira un grupo. Se guarda con el grupo y se mueve, gira y escala con él. Sin pivote se usa otra vez el centro de la caja del grupo."
+  },
+  "de": {
+    "ui.transform_center_pivot": "Drehpunkt zentrieren",
+    "cmd.sketch.group_pivot": "Drehpunkt der Gruppe",
+    "help.sketch.group_pivot": "Legt den Punkt fest, um den das Transformieren-Feld eine Gruppe skaliert und dreht. Er wird mit der Gruppe gespeichert und bewegt, dreht und skaliert sich mit ihr. Ohne Angabe gilt wieder die Mitte des Gruppenrahmens."
+  },
+  "ko": {
+    "ui.transform_center_pivot": "기준점 가운데로",
+    "cmd.sketch.group_pivot": "그룹 기준점",
+    "help.sketch.group_pivot": "변형 상자가 그룹을 크기 조절하고 회전하는 기준점을 정합니다. 그룹과 함께 저장되고 함께 이동·회전·크기 조절됩니다. 지정하지 않으면 그룹 상자의 중앙을 다시 씁니다."
+  },
+  "ja": {
+    "ui.transform_center_pivot": "ピボットを中央へ",
+    "cmd.sketch.group_pivot": "グループのピボット",
+    "help.sketch.group_pivot": "変形ボックスがグループを拡大縮小・回転する基準点を設定します。グループと一緒に保存され、一緒に移動・回転・拡大縮小します。省略するとグループのボックスの中央に戻ります。"
+  },
+  "zh": {
+    "ui.transform_center_pivot": "枢轴居中",
+    "cmd.sketch.group_pivot": "组枢轴",
+    "help.sketch.group_pivot": "设置变换框缩放和旋转组时所围绕的点。它随组一起保存，并随组移动、旋转和缩放。省略则重新使用组边框的中心。"
+  },
+  "ar": {
+    "ui.transform_center_pivot": "توسيط نقطة الارتكاز",
+    "cmd.sketch.group_pivot": "نقطة ارتكاز المجموعة",
+    "help.sketch.group_pivot": "يحدد النقطة التي يقيس مربع التحويل المجموعة ويدورها حولها. تُحفظ مع المجموعة وتتحرك وتدور وتتغير بحجمها معها. عند عدم تحديدها يُستخدم منتصف مربع المجموعة مجددًا."
+  },
+  "he": {
+    "ui.transform_center_pivot": "מרכז את נקודת הציר",
+    "cmd.sketch.group_pivot": "נקודת ציר הקבוצה",
+    "help.sketch.group_pivot": "קובע את הנקודה שסביבה תיבת ההמרה משנה גודל ומסובבת קבוצה. היא נשמרת עם הקבוצה וזזה, מסתובבת ומשתנה בגודלה יחד איתה. בלי נקודה משתמשים שוב באמצע תיבת הקבוצה."
+  },
+  "vi": {
+    "ui.transform_center_pivot": "Đưa tâm xoay về giữa",
+    "cmd.sketch.group_pivot": "Tâm xoay của nhóm",
+    "help.sketch.group_pivot": "Đặt điểm mà hộp Biến đổi dùng để co giãn và xoay một nhóm. Điểm này được lưu cùng nhóm và di chuyển, xoay, co giãn theo nhóm. Bỏ trống để dùng lại tâm hộp của nhóm."
+  }
+}

@@ -4311,6 +4311,7 @@ fn transform_in_place(sk: &mut Sketch, cs: &[usize], ps: &[usize], f: &dyn Fn(Ve
         }
     }
     sk.follow_pattern_seeds();
+    sk.follow_group_pivots(cs, f);
     Ok(())
 }
 

@@ -63,6 +63,10 @@ pub struct ObjectGroup {
     /// What an edit may change in it. A design saved before locks has none: free.
     #[serde(default, skip_serializing_if = "is_free")]
     pub lock: GroupLock,
+    /// The point the Transform box scales and turns the group about, when it is not the middle of
+    /// the group's box. It moves, turns and scales with the group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pivot: Option<Vec2>,
 }
 
 impl Sketch {
@@ -87,7 +91,13 @@ impl Sketch {
             }
         }
         let id = self.fresh("g")?;
-        self.object_groups.push(ObjectGroup { id: id.clone(), name: name.trim().to_string(), curves: curves.to_vec(), lock: GroupLock::Free });
+        self.object_groups.push(ObjectGroup {
+            id: id.clone(),
+            name: name.trim().to_string(),
+            curves: curves.to_vec(),
+            lock: GroupLock::Free,
+            pivot: None,
+        });
         Ok(id)
     }
 
@@ -111,6 +121,32 @@ impl Sketch {
         let g = self.object_groups.iter_mut().find(|g| g.id == id).ok_or_else(|| SketchError::Unknown(id.to_string()))?;
         g.lock = lock;
         Ok(())
+    }
+
+    /// Set group `id`'s pivot (None: the middle of its box again).
+    pub fn set_group_pivot(&mut self, id: &str, pivot: Option<Vec2>) -> Result<()> {
+        if pivot.is_some_and(|p| !p.is_finite()) {
+            return Err(SketchError::Invalid("a pivot must be a finite point".into()));
+        }
+        let g = self.object_groups.iter_mut().find(|g| g.id == id).ok_or_else(|| SketchError::Unknown(id.to_string()))?;
+        g.pivot = pivot;
+        Ok(())
+    }
+
+    /// The pivot of every group that moved as a whole (all its `curves` indices are in `moved`)
+    /// goes where `f` took the group.
+    pub fn follow_group_pivots(&mut self, moved: &[usize], f: &dyn Fn(Vec2) -> Vec2) {
+        if self.object_groups.iter().all(|g| g.pivot.is_none()) {
+            return;
+        }
+        let ids: std::collections::HashSet<&str> = moved.iter().filter_map(|i| self.curves.get(*i).map(|c| c.id.as_str())).collect();
+        for g in &mut self.object_groups {
+            if let Some(p) = g.pivot
+                && g.curves.iter().all(|c| ids.contains(c.as_str()))
+            {
+                g.pivot = Some(f(p));
+            }
+        }
     }
 
     /// The locked groups as they are now, for [`Sketch::check_locks`] after an edit.

@@ -1073,6 +1073,51 @@ fn a_clicked_imported_drawing_shows_its_box_and_a_side_changes_its_width() {
     assert_eq!(h.app.session.doc.sketch(1).unwrap().object_groups.len(), 1);
 }
 
+/// The pivot moved on a drawing's box is saved with the group: the box opens with it again, and
+/// Center Pivot puts it back at the middle, in the window and in the design.
+#[test]
+fn a_moved_pivot_is_saved_with_the_group_and_center_pivot_puts_it_back() {
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 20"><path d="M0,0 L30,0 L30,20 L0,20 Z"/></svg>"#;
+    h.app.run("sketch.insert_svg", json!({"text": svg, "width": 30})).unwrap();
+    h.step(&json!({"call": "ui.view", "params": {"view": "top"}})).unwrap();
+    h.settle();
+    let pivot_in_design = |h: &Harness| h.app.session.doc.sketch(1).unwrap().object_groups[0].pivot;
+    let pivot_in_window = |h: &Harness| match h.app.dialog.as_ref().map(|d| &d.kind) {
+        Some(Kind::SketchModify(Mod::Transform { pivot, .. })) => *pivot,
+        other => panic!("the box should be open: {other:?}"),
+    };
+    let sk = h.app.session.doc.sketch(1).unwrap();
+    let edge = {
+        let line = sk.polyline(0);
+        line[0] * 0.7 + line[1] * 0.3
+    };
+    h.step(&json!({"click": {"sketch": [edge.x, edge.y]}})).unwrap();
+    h.frames(4);
+    assert_eq!(pivot_in_window(&h), None);
+    // The pivot handle is the last one: drag it off the middle.
+    let handles = (0..12).filter(|i| crate::scenario::handle_at(&format!("transform:handle:{i}")).is_some()).count();
+    h.step(&json!({"drag": [{"handle": format!("transform:handle:{}", handles - 1)}, {"sketch": [5.0, 5.0]}]})).unwrap();
+    h.frames(3);
+    let moved = pivot_in_window(&h).expect("the pivot moved in the window");
+    assert!((moved[0] - 5.0).abs() < 0.3 && (moved[1] - 5.0).abs() < 0.3, "{moved:?}");
+    let saved = pivot_in_design(&h).expect("and was saved with the group");
+    assert!((saved.x - moved[0]).abs() < 1e-9 && (saved.y - moved[1]).abs() < 1e-9, "{saved:?}");
+    // Closed and opened again, the box has the pivot where it was left.
+    h.step(&json!({"key": "Escape"})).unwrap();
+    h.settle();
+    h.step(&json!({"click": {"sketch": [edge.x, edge.y]}})).unwrap();
+    h.frames(4);
+    assert_eq!(pivot_in_window(&h), Some(moved));
+    // Center Pivot: back to the middle of the box, in the window and in the design.
+    h.step(&json!({"widget": "Center Pivot"})).unwrap();
+    h.frames(3);
+    assert_eq!(pivot_in_window(&h), None);
+    assert_eq!(pivot_in_design(&h), None);
+}
+
 /// With a drawing's box open, a click on another drawing takes the box to that one, and Shift on
 /// a curve of the first adds only that curve.
 #[test]
