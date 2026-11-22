@@ -610,6 +610,8 @@ pub(super) fn edit_solved<T>(
     if let Some(r) = rep.as_mut() {
         doc.discount_traces(id, &sk, r);
     }
+    // A mirror copy of a star follows its mirror line to where the solve left it.
+    sk.refresh_star_followers()?;
     sketch_store::checked(&sk)?;
     sk.check_locks(&locked).map_err(crate::EngineError::from)?;
     sketch_store::write(&mut doc, id, sk)?;

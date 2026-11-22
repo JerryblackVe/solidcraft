@@ -3012,6 +3012,88 @@ fn a_mirrored_star_follows_the_original_until_it_is_moved() {
     assert_eq!(spec(&s, &copy).points, 8);
 }
 
+/// MEJ-23: the copy follows the mirror line too: when the line is moved or turned the copy stays its
+/// mirror image in it, and it still follows the original; a line that is deleted leaves it where it was.
+#[test]
+fn a_mirrored_star_follows_its_mirror_line_when_the_line_moves() {
+    let mut s = new_sketch();
+    let line = ids(&run(&mut s, "sketch.line", json!({"points": [[0, -50], [0, 50]], "connect": false, "infer": false}))["curves"])[0].clone();
+    let r = run(&mut s, "sketch.star", json!({"center": [40, 10], "outer_radius": 10, "points": 5, "angle": 10}));
+    let (star, curves) = (r["link"].as_str().unwrap().to_string(), r["curves"].clone());
+    run(&mut s, "sketch.mirror", json!({"entities": curves, "line": line}));
+    let spec = |s: &Session, link: &str| match sketch(s).link(link).unwrap().source.clone() {
+        solidcraft_sketch::LinkSource::Star(spec) => spec,
+        other => panic!("a star, not {other:?}"),
+    };
+    let copy = sketch(&s)
+        .links
+        .iter()
+        .filter(|l| matches!(l.source, solidcraft_sketch::LinkSource::Star(_)))
+        .map(|l| l.id.clone())
+        .find(|l| *l != star)
+        .expect("a second star");
+    // The copy is the original reflected in the line as the sketch has it now.
+    let check = |s: &Session, why: &str| {
+        let sk = sketch(s);
+        let Some(solidcraft_sketch::Shape::Line { a, b }) = sk.curve_index(&line).and_then(|c| sk.shape(c)) else { panic!("a line") };
+        let u = (b - a).normalized().unwrap();
+        let (o, c) = (spec(s, &star), spec(s, &copy));
+        let reflect = |q: Vec2| (a + u * (q - a).dot(u)) * 2.0 - q;
+        assert!(c.center.dist(reflect(o.center)) < 1e-6, "{why}: centre {:?} against {:?}", c.center, reflect(o.center));
+        // The star's own tip is at the same distance from the line on the other side: compare a tip.
+        let tip = |st: &solidcraft_sketch::StarSpec| {
+            let t = (90.0 + st.angle).to_radians();
+            st.center + Vec2::new(t.cos(), t.sin()) * st.outer
+        };
+        assert!(tip(&c).dist(reflect(tip(&o))) < 1e-6, "{why}: tip {:?} against {:?}", tip(&c), reflect(tip(&o)));
+        let outline = sk.link_curves(&copy).len();
+        assert_eq!(outline, sk.link_curves(&star).len(), "{why}: same outline");
+    };
+    check(&s, "made");
+    run(&mut s, "sketch.move", json!({"entities": [line], "translate": [10, 0]}));
+    assert!((spec(&s, &copy).center.x + 20.0).abs() < 1e-6, "{:?}", spec(&s, &copy).center);
+    check(&s, "line moved");
+    run(&mut s, "sketch.move", json!({"entities": [line], "angle": 30, "center": [0, 0]}));
+    check(&s, "line turned");
+    // Edit the original after the line moved: the copy takes the shape and keeps following the line.
+    run(&mut s, "sketch.edit_star", json!({"link": star, "points": 7}));
+    check(&s, "original edited");
+    assert_eq!(spec(&s, &copy).points, 7);
+    // Saved and opened, the copy still knows its line.
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    let follow = match &reopened.doc.sketch(1).unwrap().link(&copy).unwrap().source {
+        solidcraft_sketch::LinkSource::Star(spec) => spec.follows.clone().unwrap(),
+        other => panic!("a star, not {other:?}"),
+    };
+    assert_eq!(follow.line.as_deref(), Some(line.as_str()));
+}
+
+/// MEJ-23: a mirror line that a parameter moves (a dimension's value changes on a rebuild) takes the copy with it.
+#[test]
+fn a_mirrored_star_follows_a_mirror_line_that_a_parameter_moves() {
+    let mut s = new_sketch();
+    run(&mut s, "parameters.add", json!({"name": "D", "expression": "0 mm"}));
+    let line = ids(&run(&mut s, "sketch.line", json!({"points": [[5, -50], [5, 50]], "connect": false, "infer": false}))["curves"])[0].clone();
+    run(&mut s, "sketch.constraint.horizontal_vertical", json!({"points": [format!("{line}.start"), format!("{line}.end")], "mode": "vertical"}));
+    run(&mut s, "sketch.dimension", json!({"entities": ["origin", format!("{line}.start")], "type": "horizontal", "value": "D + 5"}));
+    let r = run(&mut s, "sketch.star", json!({"center": [40, 10], "outer_radius": 10, "points": 5}));
+    run(&mut s, "sketch.mirror", json!({"entities": r["curves"], "line": line}));
+    let copy_x = |s: &Session| {
+        sketch(s)
+            .links
+            .iter()
+            .find_map(|l| match &l.source {
+                LinkSource::Star(spec) if spec.follows.is_some() => Some(spec.center.x),
+                _ => None,
+            })
+            .expect("the copy")
+    };
+    assert!((copy_x(&s) + 30.0).abs() < 1e-6, "{}", copy_x(&s));
+    run(&mut s, "parameters.change", json!({"name": "D", "expression": "10 mm"}));
+    // The line is at x = 15 now: the copy of a star at 40 is at -10.
+    assert!((copy_x(&s) + 10.0).abs() < 1e-6, "{}", copy_x(&s));
+}
+
 /// Volumes (mm³) of the bodies in the design, smallest first.
 fn body_volumes(s: &mut Session) -> Vec<f64> {
     let m = run(s, "inspect.measure", json!({}));
