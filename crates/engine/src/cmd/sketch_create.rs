@@ -584,6 +584,8 @@ fn transform_star(
     if (factor - 1.0).abs() > 1e-12 {
         (spec.exprs.outer, spec.exprs.tip_round, spec.exprs.valley_round) = (None, None, None);
     }
+    // Placed by hand it no longer follows another star; the stars that follow it go with it.
+    spec.follows = None;
     spec.center = moved;
     spec.angle += rotation.to_degrees();
     spec.outer *= factor;
@@ -598,6 +600,7 @@ fn transform_star(
         if sk.update_link(link, &geom)? {
             return Err(bad(cmd, "moving a star must keep its outline: edit the star first"));
         }
+        super::sketch_star::refresh_followers(sk, cmd)?;
         link.to_owned()
     };
     Ok(sk.link_curves(&link))

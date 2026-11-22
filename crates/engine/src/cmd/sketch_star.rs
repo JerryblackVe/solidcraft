@@ -100,6 +100,7 @@ fn spec_from(doc: &Document, p: &Value, cmd: &str, base: Option<&StarSpec>) -> R
         angle: 0.0,
         circles: false,
         exprs: StarExprs::default(),
+        follows: None,
     };
     let mut spec = base.cloned().unwrap_or(def);
     if let Some(((x, ex), (y, ey))) = center {
@@ -175,6 +176,16 @@ fn star_link(sk: &Sketch, p: &Value, cmd: &str) -> Result<String> {
     }
 }
 
+/// Rebuild the outlines of the stars that follow another, from the numbers their sources have now.
+pub(in crate::cmd) fn refresh_followers(sk: &mut Sketch, cmd: &str) -> Result<()> {
+    for link in sk.resolve_star_follows() {
+        let Some(LinkSource::Star(spec)) = sk.link(&link).map(|l| l.source.clone()) else { continue };
+        let geom = star_geometry(&spec).map_err(|e| bad(cmd, e.to_string()))?;
+        sk.update_link(&link, &geom)?;
+    }
+    Ok(())
+}
+
 fn edit_star(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.edit_star";
     let id = sketch_store::active(s).ok_or_else(|| bad(cmd, "no sketch is being edited"))?;
@@ -184,10 +195,20 @@ fn edit_star(s: &mut Session, p: &Value) -> Result<Value> {
         // stored); one that cannot be evaluated is left as it was, to be replaced by this edit.
         let _ = doc.apply_text_values(&doc.param_values().0, sk);
         let Some(LinkSource::Star(old)) = sk.link(&link).map(|l| l.source.clone()) else { return Err(bad(cmd, "not a star")) };
+        if let Some(follow) = &old.follows {
+            return Err(bad(
+                cmd,
+                format!(
+                    "this star is a mirror copy of `{}`: edit that star and the copy follows; move the copy to make it a star of its own",
+                    follow.source
+                ),
+            ));
+        }
         let spec = spec_from(doc, p, cmd, Some(&old))?;
         let geom = star_geometry(&spec).map_err(|e| bad(cmd, e.to_string()))?;
         sk.set_link_source(&link, LinkSource::Star(spec.clone()));
         sk.update_link(&link, &geom)?;
+        refresh_followers(sk, cmd)?;
         reply(sk, &link, &spec)
     })
 }

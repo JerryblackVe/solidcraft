@@ -2851,7 +2851,7 @@ fn an_import_can_come_locked_and_nodes_mode_shows_the_points_of_grouped_curves()
 }
 
 #[test]
-fn a_star_copied_and_pasted_stays_a_star_and_mirroring_or_patterning_one_is_refused() {
+fn a_star_copied_and_pasted_stays_a_star_and_patterning_one_is_refused() {
     // MEJ-4: the pasted copy is a star of its own, still over the parameter its radius was typed as.
     let mut s = new_sketch();
     run(&mut s, "parameters.add", json!({"name": "R", "expression": "10 mm"}));
@@ -2874,12 +2874,11 @@ fn a_star_copied_and_pasted_stays_a_star_and_mirroring_or_patterning_one_is_refu
     let c = run(&mut s, "sketch.edit_star", json!({"link": copy}));
     assert_eq!((o["star"]["points"].as_u64(), o["star"]["outer_radius"].as_f64()), (Some(5), Some(15.0)), "{o}");
     assert_eq!((c["star"]["points"].as_u64(), c["star"]["outer_radius"].as_f64(), c["star"]["center"].clone()), (Some(8), Some(15.0), at), "{c}");
-    // A mirror or a pattern of a star is refused with what to do instead, and changes nothing.
+    // A pattern of a star is refused with what to do instead, and changes nothing.
     let before = s.doc.to_json();
     let tip = sketch(&s).link_points(&star)[0];
     let tip = sketch(&s).points[tip].id.clone();
     for (command, p) in [
-        ("sketch.mirror", json!({"entities": curves, "line": "y"})),
         ("sketch.pattern.circular", json!({"entities": curves, "center": [0, 0], "count": 3})),
         ("sketch.pattern.rectangular", json!({"entities": [tip], "count": 3, "spacing": 30})),
     ] {
@@ -2938,6 +2937,64 @@ fn extending_filleting_or_chamfering_a_curve_of_a_group_keeps_the_new_curves_in_
     run(&mut s, "sketch.chamfer.equal_distance", json!({"a": id(corners[1].0), "b": id(corners[1].1), "distance": 5}));
     assert_eq!(sketch(&s).curves.len(), n + 3, "an extension, an arc and a cut");
     assert!(all_grouped(&s), "the new curves are in the group");
+}
+
+/// MEJ-12: a mirror of a star is a star that follows the original: its shape is the original's, edited
+/// or driven by a parameter, and only its place is its own. Moved by hand it is a star of its own.
+#[test]
+fn a_mirrored_star_follows_the_original_until_it_is_moved() {
+    let mut s = new_sketch();
+    run(&mut s, "parameters.add", json!({"name": "R", "expression": "10 mm"}));
+    let r = run(&mut s, "sketch.star", json!({"center": [40, 10], "outer_radius": "R", "points": 5, "angle": 10}));
+    let (star, curves) = (r["link"].as_str().unwrap().to_string(), r["curves"].clone());
+    let made = run(&mut s, "sketch.mirror", json!({"entities": curves, "line": "y"}));
+    assert_eq!(made["curves"].as_array().unwrap().len(), curves.as_array().unwrap().len(), "the mirror is a whole star: {made}");
+    let spec = |s: &Session, link: &str| match sketch(s).link(link).unwrap().source.clone() {
+        solidcraft_sketch::LinkSource::Star(spec) => spec,
+        other => panic!("a star, not {other:?}"),
+    };
+    let copy = sketch(&s)
+        .links
+        .iter()
+        .filter(|l| matches!(l.source, solidcraft_sketch::LinkSource::Star(_)))
+        .map(|l| l.id.clone())
+        .find(|l| *l != star)
+        .expect("a second star");
+    let c = spec(&s, &copy);
+    assert_eq!(c.follows.as_ref().map(|f| f.source.as_str()), Some(star.as_str()));
+    assert!((c.center.x + 40.0).abs() < 1e-9 && (c.center.y - 10.0).abs() < 1e-9, "{:?}", c.center);
+    // The mirror image of the star's turn: 10 degrees one way is 10 degrees the other.
+    assert!((c.angle + 10.0).abs() < 1e-9, "{}", c.angle);
+    // Edit the original: points, then a parameter. The copy follows both and keeps its place.
+    run(&mut s, "sketch.edit_star", json!({"link": star, "points": 8}));
+    run(&mut s, "parameters.change", json!({"name": "R", "expression": "15 mm"}));
+    let (o, c) = (spec(&s, &star), spec(&s, &copy));
+    assert_eq!((c.points, c.outer), (8, 15.0), "{c:?}");
+    assert_eq!(c.points, o.points);
+    assert_eq!(sketch(&s).link_curves(&copy).len(), sketch(&s).link_curves(&star).len(), "the same outline, point for point");
+    assert!((c.center.x + 40.0).abs() < 1e-9);
+    // A copy is edited through its original.
+    let err = s.execute("sketch.edit_star", &json!({"link": copy, "points": 6})).unwrap_err().to_string();
+    assert!(err.contains("mirror copy"), "{err}");
+    // Saved and opened, it still follows.
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert_eq!(
+        reopened
+            .doc
+            .sketch(1)
+            .unwrap()
+            .links
+            .iter()
+            .filter(|l| matches!(&l.source, solidcraft_sketch::LinkSource::Star(s) if s.follows.is_some()))
+            .count(),
+        1
+    );
+    // Move the copy by hand: it is a star of its own, and the original's edits no longer reach it.
+    let own: Vec<String> = sketch(&s).link_curves(&copy).iter().map(|i| sketch(&s).curves[*i].id.clone()).collect();
+    run(&mut s, "sketch.move", json!({"entities": own, "translate": [0, 30]}));
+    assert!(spec(&s, &copy).follows.is_none());
+    run(&mut s, "sketch.edit_star", json!({"link": star, "points": 6}));
+    assert_eq!(spec(&s, &copy).points, 8);
 }
 
 /// Volumes (mm³) of the bodies in the design, smallest first.
