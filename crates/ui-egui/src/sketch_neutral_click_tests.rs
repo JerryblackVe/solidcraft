@@ -79,10 +79,10 @@ fn a_star_is_drawn_from_its_centre_and_a_double_click_edits_it() {
     assert!(h.app.dialog.is_none() && h.app.tool.is_some(), "Star starts as a drawing tool");
     h.step(&json!({"click":{"world":[0, 0, 0]}})).unwrap();
     let tool = h.app.tool.as_ref().unwrap();
-    let outline = super::star_outline(tool, Vec2::new(0.0, 10.0)).unwrap();
+    let outline = super::star_outline(tool, Vec2::new(0.0, 10.0), 5.0).unwrap();
     assert_eq!(outline.len(), 11, "5 tips and 5 valleys, closed");
     assert!(outline[0].dist(Vec2::new(0.0, 10.0)) < 1e-9 && (outline[1].dist(Vec2::ZERO) - 4.0).abs() < 1e-9, "{outline:?}");
-    assert!(super::star_outline(tool, Vec2::ZERO).is_none());
+    assert!(super::star_outline(tool, Vec2::ZERO, 5.0).is_none());
     h.step(&json!({"click":{"world":[0, 10, 0]}})).unwrap();
     let state = h.app.session.world_state().unwrap();
     let sketch = &state.sketches[0].sketch;
@@ -102,4 +102,42 @@ fn a_star_is_drawn_from_its_centre_and_a_double_click_edits_it() {
         h.app.session.selection,
         h.app.status
     );
+}
+
+/// The Star tool's Points box sets the number of points before the second click: the preview and
+/// the drawn star follow it, and a count outside 3 to 200 draws nothing.
+#[test]
+fn a_typed_points_count_sets_the_stars_points() {
+    use solidcore_record::Vec2;
+    let mut h = Harness::new();
+    h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+    h.app.cam.distance = 50.0;
+    h.step(&json!({"start":"sketch.star"})).unwrap();
+    h.step(&json!({"click":{"world":[0, 0, 0]}})).unwrap();
+    h.frames(2);
+    let lock = |h: &mut Harness, text: &str| {
+        let tool = h.app.tool.as_mut().unwrap();
+        let points = tool.dims.iter_mut().find(|b| b.label == "Points").expect("a Points box next to Radius");
+        points.value = text.into();
+        points.locked = true;
+    };
+    lock(&mut h, "7");
+    h.frames(2);
+    let tool = h.app.tool.as_ref().unwrap();
+    assert_eq!(super::star_outline(tool, Vec2::new(0.0, 10.0), 7.0).unwrap().len(), 15, "7 tips and 7 valleys, closed");
+    assert!(super::star_outline(tool, Vec2::new(0.0, 10.0), 2.0).is_none() && super::star_outline(tool, Vec2::new(0.0, 10.0), 4.5).is_none());
+    h.step(&json!({"click":{"world":[0, 10, 0]}})).unwrap();
+    let sketch = &h.app.session.world_state().unwrap().sketches[0].sketch;
+    let Some(solidcraft_engine::sketch::LinkSource::Star(star)) = sketch.links.first().map(|l| l.source.clone()) else {
+        panic!("a star was drawn: {:?}", h.app.status)
+    };
+    assert_eq!(star.points, 7, "{star:?}");
+    // 2 points is no star: nothing more is drawn and the status says why.
+    h.step(&json!({"start":"sketch.star"})).unwrap();
+    h.step(&json!({"click":{"world":[30, 0, 0]}})).unwrap();
+    h.frames(2);
+    lock(&mut h, "2");
+    h.step(&json!({"click":{"world":[30, 10, 0]}})).unwrap();
+    assert_eq!(h.app.session.world_state().unwrap().sketches[0].sketch.links.len(), 1, "no second star");
+    assert!(format!("{:?}", h.app.status).contains("Points"), "{:?}", h.app.status);
 }

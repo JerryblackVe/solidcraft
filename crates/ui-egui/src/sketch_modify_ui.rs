@@ -313,18 +313,6 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
             range_unit: false,
         },
         "sketch.point.divide" => Mod::Divide { count: "4".into() },
-        "sketch.star" => Mod::Star {
-            x: crate::dialogs::length_default(&app.session, "0"),
-            y: crate::dialogs::length_default(&app.session, "0"),
-            points: "5".into(),
-            outer: crate::dialogs::length_default(&app.session, "20"),
-            inner: "40".into(),
-            skip: "0".into(),
-            tip_round: crate::dialogs::length_default(&app.session, "0"),
-            valley_round: crate::dialogs::length_default(&app.session, "0"),
-            angle: "0 deg".into(),
-            circles: false,
-        },
         _ => return None,
     };
     let i = inputs(&k);

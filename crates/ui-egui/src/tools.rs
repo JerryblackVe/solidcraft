@@ -778,7 +778,9 @@ fn run_shape(app: &mut SolveApp, t: &Tool) -> Result<Vec<String>, String> {
         "sketch.polygon.edge" => json!({"p0": xy(&p[0]), "p1": xy(&p[1]), "sides": sides}),
         // The click is the centre, the drag the tip radius, and the first tip points at the cursor
         // (0 degrees is a tip straight up). Points and depth are the defaults: Edit Star changes them.
-        "sketch.star" => json!({"center": xy(&p[0]), "outer_radius": d(0, 1), "angle": (p[1].0 - p[0].0).angle().to_degrees() - 90.0}),
+        "sketch.star" => {
+            json!({"center": xy(&p[0]), "outer_radius": d(0, 1), "points": crate::sketch_dims::locked_value(app, t, "Points").unwrap_or(5.0), "angle": (p[1].0 - p[0].0).angle().to_degrees() - 90.0})
+        }
         "sketch.slot.center_to_center" | "sketch.slot.overall" => {
             let dir = (p[1].0 - p[0].0).normalized().unwrap_or(Vec2::X);
             // Seed the creator with the typed width too: an Overall slot places its cap
@@ -1297,12 +1299,19 @@ pub(crate) fn polygon_outline(t: &Tool, hover: Vec2, sides: f64) -> Option<Vec<V
 
 /// The star the Star tool would draw: its tips and valleys with the default 5 points and depth,
 /// the first tip towards the cursor, closed. None until the cursor is off the centre.
-pub(crate) fn star_outline(t: &Tool, hover: Vec2) -> Option<Vec<Vec2>> {
+pub(crate) fn star_outline(t: &Tool, hover: Vec2, points: f64) -> Option<Vec<Vec2>> {
     let a = t.pts.first()?.0;
-    if t.cmd != "sketch.star" || t.pts.len() != 1 || !a.is_finite() || !hover.is_finite() || a.dist(hover) <= 1e-9 {
+    if t.cmd != "sketch.star"
+        || t.pts.len() != 1
+        || !a.is_finite()
+        || !hover.is_finite()
+        || a.dist(hover) <= 1e-9
+        || !(3.0..=200.0).contains(&points)
+        || points.fract() != 0.0
+    {
         return None;
     }
-    let (n, inner) = (5, 0.4);
+    let (n, inner) = (points as usize, 0.4);
     let tip = (hover - a).angle();
     let mut v: Vec<_> = (0..2 * n)
         .map(|i| a + Vec2::from_angle(tip + std::f64::consts::PI * i as f64 / n as f64) * (a.dist(hover) * if i % 2 == 0 { 1.0 } else { inner }))
@@ -1381,7 +1390,7 @@ pub fn preview(app: &SolveApp, t: &Tool, painter: &egui::Painter, proj: &Proj) {
         }
     }
 
-    if let Some(corners) = star_outline(t, h) {
+    if let Some(corners) = star_outline(t, h, crate::sketch_dims::locked_value(app, t, "Points").unwrap_or(5.0)) {
         let outline: Vec<_> = corners.iter().map(|c| ss.plane.to_world(*c)).collect();
         paint_sketch_path(&outline, crate::sketch_palette::mode(app), painter, proj, stroke);
         return;
