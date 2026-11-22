@@ -4287,6 +4287,7 @@ fn pick_cached_with(app: &mut SolveApp, proj: &Proj, pos: Pos2, feedback: Option
     app.dialog.is_none().hash(&mut h);
     measuring_mesh_edges(app).hash(&mut h);
     app.preferences.prefer_free_sketch_points.hash(&mut h);
+    app.session.sketch_nodes.hash(&mut h);
     app.preferences.select_hidden_edges.hash(&mut h);
     app.ui.visual_style.hash(&mut h);
     picking_3d_curve_points(app).hash(&mut h);
@@ -4579,7 +4580,7 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, options: PickOptions<'_>) -
     for ss in point_sketches.iter().filter_map(|sid| st.sketch(*sid)) {
         let sid = ss.feature;
         let shown = snapping.then(|| crate::dialogs::SnapPoints::of(&ss.sketch));
-        let visible = solidcraft_engine::view::SketchPointVisibility::new(&ss.sketch);
+        let visible = solidcraft_engine::view::SketchPointVisibility::shown(&app.session, &ss.sketch);
         if picking_3d_curve_points(app) && !ss.sketch.view.hide_points {
             for wire in &ss.sketch.wires {
                 for (index, at) in wire.fit.iter().enumerate() {
@@ -9294,7 +9295,7 @@ fn box_select(app: &mut SolveApp, proj: &Proj, bx: BoxSel, add: bool) {
                 out.push(Sel::SketchCurve { id: c.id.clone(), sketch: None });
             }
         }
-        let visible = solidcraft_engine::view::SketchPointVisibility::new(&ss.sketch);
+        let visible = solidcraft_engine::view::SketchPointVisibility::shown(&app.session, &ss.sketch);
         for (i, p) in ss.sketch.points.iter().enumerate().filter(|_| !off("sketch") && !off("sketch_points")) {
             if accepts.is_none_or(|a| a & crate::selection::SKETCH_POINTS != 0)
                 && i != 0
@@ -10074,7 +10075,7 @@ fn overlays(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
     let locked = sk.locked_points();
     let conflict = Conflict::of(app, sk, &ss.report);
     let virtual_corners: Vec<usize> = sk.virtual_corners().into_iter().map(|(i, _)| i).collect();
-    let visible = solidcraft_engine::view::SketchPointVisibility::new(sk);
+    let visible = solidcraft_engine::view::SketchPointVisibility::shown(&app.session, sk);
     let selected: std::collections::HashSet<_> = app
         .highlighted()
         .iter()

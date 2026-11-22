@@ -1022,9 +1022,11 @@ const PERSISTENT_COMMANDS: &[&str] = &[
 /// Component Colors is a plain on/off display setting: it shows pressed like the effects above,
 /// but is no status item (nothing to clear with Esc), so it stays out of the list.
 const COMPONENT_COLORS: &str = "inspect.colored_components";
+/// Nodes Mode (sketch): the same kind of switch; pressed means the points of grouped curves show.
+const NODES_MODE: &str = "sketch.nodes_mode";
 
 fn persistent_command(id: &str) -> bool {
-    PERSISTENT_COMMANDS.contains(&id) || id == COMPONENT_COLORS
+    PERSISTENT_COMMANDS.contains(&id) || id == COMPONENT_COLORS || id == NODES_MODE
 }
 
 fn persistent_available(app: &SolveApp, id: &str) -> bool {
@@ -1036,6 +1038,8 @@ pub(crate) fn persistent_pressed(app: &SolveApp, id: &str) -> bool {
         && persistent_available(app, id)
         && if id == COMPONENT_COLORS {
             app.session.colored_components.is_some()
+        } else if id == NODES_MODE {
+            app.session.sketch_nodes
         } else {
             app.session.status_items().iter().any(|item| item.command == id)
         }
@@ -1070,7 +1074,7 @@ pub(crate) fn persistent_button_name(app: &SolveApp, command: &solidcraft_engine
 }
 
 fn persistent_hint(app: &SolveApp, command: &solidcraft_engine::CommandSpec, enabled: bool) -> Option<String> {
-    (enabled && command.id != COMPONENT_COLORS && persistent_pressed(app, command.id)).then(|| {
+    (enabled && command.id != COMPONENT_COLORS && command.id != NODES_MODE && persistent_pressed(app, command.id)).then(|| {
         let name = persistent_button_name(app, command);
         solidcraft_ui_text::Locale::for_language(&app.preferences.language).format("ui.viewport_status_clear_hint", &[("name", &name)])
     })

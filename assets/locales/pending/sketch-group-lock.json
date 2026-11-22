@@ -1,0 +1,92 @@
+{
+  "en": {
+    "cmd.sketch.group_lock": "Lock Group",
+    "cmd.sketch.nodes_mode": "Nodes Mode",
+    "help.sketch.group_lock": "Locks a group so its drawing keeps its shape. Protect lets you move, turn and scale the whole object but not edit its points one by one; Total changes nothing. An edit that breaks the lock is refused.",
+    "help.sketch.nodes_mode": "Switches between object mode (a group is picked and moved as one object, its points hidden) and nodes mode (the points of grouped curves show and can be picked). Pressed means nodes mode.",
+    "sketch.group_lock_hint": "Free: anything may change. Protect: the whole object may move, turn and scale, but its points are not edited one by one. Total: nothing changes.",
+    "ui.lock_free": "Free",
+    "ui.lock_protect": "Protect",
+    "ui.lock_total": "Total"
+  },
+  "es": {
+    "cmd.sketch.group_lock": "Bloquear grupo",
+    "cmd.sketch.nodes_mode": "Modo nodos",
+    "help.sketch.group_lock": "Bloquea un grupo para que el dibujo conserve su forma. Proteger deja mover, girar y escalar el objeto entero, pero no editar sus puntos uno por uno; Total no deja cambiar nada. Una edición que rompa el bloqueo se rechaza.",
+    "help.sketch.nodes_mode": "Cambia entre el modo objeto (un grupo se elige y se mueve como un solo objeto, con sus puntos ocultos) y el modo nodos (los puntos de las curvas agrupadas se ven y se pueden elegir). Pulsado significa modo nodos.",
+    "sketch.group_lock_hint": "Libre: todo puede cambiar. Proteger: el objeto entero se mueve, gira y escala, pero sus puntos no se editan uno por uno. Total: nada cambia.",
+    "ui.lock_free": "Libre",
+    "ui.lock_protect": "Proteger",
+    "ui.lock_total": "Total"
+  },
+  "de": {
+    "cmd.sketch.group_lock": "Gruppe sperren",
+    "cmd.sketch.nodes_mode": "Knotenmodus",
+    "help.sketch.group_lock": "Sperrt eine Gruppe, damit die Zeichnung ihre Form behält. Schützen erlaubt, das ganze Objekt zu verschieben, zu drehen und zu skalieren, aber nicht seine Punkte einzeln zu ändern; Vollständig ändert nichts. Eine Änderung, die die Sperre bricht, wird abgelehnt.",
+    "help.sketch.nodes_mode": "Wechselt zwischen Objektmodus (eine Gruppe wird als ein Objekt gewählt und bewegt, ihre Punkte sind verborgen) und Knotenmodus (die Punkte gruppierter Kurven werden gezeigt und sind wählbar). Gedrückt bedeutet Knotenmodus.",
+    "sketch.group_lock_hint": "Frei: alles darf sich ändern. Schützen: das ganze Objekt darf sich bewegen, drehen und skalieren, seine Punkte aber nicht einzeln. Vollständig: nichts ändert sich.",
+    "ui.lock_free": "Frei",
+    "ui.lock_protect": "Schützen",
+    "ui.lock_total": "Vollständig"
+  },
+  "ko": {
+    "cmd.sketch.group_lock": "그룹 잠금",
+    "cmd.sketch.nodes_mode": "노드 모드",
+    "help.sketch.group_lock": "그룹을 잠가 그림이 모양을 유지하게 합니다. 보호는 객체 전체를 이동·회전·크기 조절할 수 있지만 점을 하나씩 편집할 수는 없습니다. 전체 잠금은 아무것도 바꾸지 못합니다. 잠금을 깨는 편집은 거부됩니다.",
+    "help.sketch.nodes_mode": "객체 모드(그룹을 하나의 객체로 선택·이동하며 점은 숨김)와 노드 모드(그룹된 곡선의 점이 보이고 선택 가능)를 전환합니다. 눌려 있으면 노드 모드입니다.",
+    "sketch.group_lock_hint": "자유: 모두 변경 가능. 보호: 객체 전체는 이동·회전·크기 조절 가능하지만 점은 하나씩 편집할 수 없음. 전체: 아무것도 바뀌지 않음.",
+    "ui.lock_free": "자유",
+    "ui.lock_protect": "보호",
+    "ui.lock_total": "전체"
+  },
+  "ja": {
+    "cmd.sketch.group_lock": "グループをロック",
+    "cmd.sketch.nodes_mode": "ノードモード",
+    "help.sketch.group_lock": "グループをロックして図の形を保ちます。「保護」はオブジェクト全体の移動・回転・拡大縮小はできますが、点を1つずつ編集することはできません。「完全」は何も変更できません。ロックを破る編集は拒否されます。",
+    "help.sketch.nodes_mode": "オブジェクトモード（グループを1つのオブジェクトとして選択・移動し、点は非表示）とノードモード（グループ化した曲線の点を表示して選択可能）を切り替えます。押された状態がノードモードです。",
+    "sketch.group_lock_hint": "自由：すべて変更可能。保護：オブジェクト全体は移動・回転・拡大縮小できますが、点は1つずつ編集できません。完全：何も変更されません。",
+    "ui.lock_free": "自由",
+    "ui.lock_protect": "保護",
+    "ui.lock_total": "完全"
+  },
+  "zh": {
+    "cmd.sketch.group_lock": "锁定编组",
+    "cmd.sketch.nodes_mode": "节点模式",
+    "help.sketch.group_lock": "锁定编组，使图形保持形状。“保护”允许移动、旋转和缩放整个对象，但不能逐个编辑其点；“完全”则任何内容都不能更改。破坏锁定的编辑会被拒绝。",
+    "help.sketch.nodes_mode": "在对象模式（编组作为一个对象被选取和移动，其点被隐藏）与节点模式（编组曲线的点会显示并可选取）之间切换。按下表示节点模式。",
+    "sketch.group_lock_hint": "自由：可任意更改。保护：整个对象可移动、旋转和缩放，但其点不能逐个编辑。完全：不能更改任何内容。",
+    "ui.lock_free": "自由",
+    "ui.lock_protect": "保护",
+    "ui.lock_total": "完全"
+  },
+  "ar": {
+    "cmd.sketch.group_lock": "قفل المجموعة",
+    "cmd.sketch.nodes_mode": "وضع العقد",
+    "help.sketch.group_lock": "يقفل مجموعة ليحافظ الرسم على شكله. «حماية» تتيح تحريك الكائن كله وتدويره وتكبيره دون تعديل نقاطه واحدة واحدة؛ «كامل» لا يسمح بأي تغيير. يُرفض أي تعديل يخالف القفل.",
+    "help.sketch.nodes_mode": "يبدّل بين وضع الكائن (تُحدَّد المجموعة وتُحرَّك ككائن واحد وتُخفى نقاطها) ووضع العقد (تظهر نقاط المنحنيات المجمّعة ويمكن تحديدها). الزر المضغوط يعني وضع العقد.",
+    "sketch.group_lock_hint": "حر: يمكن تغيير أي شيء. حماية: يمكن تحريك الكائن كله وتدويره وتكبيره دون تعديل نقاطه واحدة واحدة. كامل: لا شيء يتغير.",
+    "ui.lock_free": "حر",
+    "ui.lock_protect": "حماية",
+    "ui.lock_total": "كامل"
+  },
+  "he": {
+    "cmd.sketch.group_lock": "נעילת קבוצה",
+    "cmd.sketch.nodes_mode": "מצב צמתים",
+    "help.sketch.group_lock": "נועל קבוצה כדי שהציור ישמור על צורתו. «הגנה» מאפשרת להזיז, לסובב ולהגדיל את האובייקט כולו אך לא לערוך את נקודותיו אחת אחת; «מלא» לא משנה דבר. עריכה ששוברת את הנעילה נדחית.",
+    "help.sketch.nodes_mode": "מחליף בין מצב אובייקט (קבוצה נבחרת וזזה כאובייקט אחד, נקודותיה מוסתרות) למצב צמתים (נקודות העקומות המקובצות מוצגות וניתנות לבחירה). לחוץ פירושו מצב צמתים.",
+    "sketch.group_lock_hint": "חופשי: הכול יכול להשתנות. הגנה: האובייקט כולו יכול לזוז, להסתובב ולהשתנות בגודלו, אך נקודותיו לא נערכות אחת אחת. מלא: דבר אינו משתנה.",
+    "ui.lock_free": "חופשי",
+    "ui.lock_protect": "הגנה",
+    "ui.lock_total": "מלא"
+  },
+  "vi": {
+    "cmd.sketch.group_lock": "Khóa nhóm",
+    "cmd.sketch.nodes_mode": "Chế độ nút",
+    "help.sketch.group_lock": "Khóa một nhóm để bản vẽ giữ nguyên hình dạng. Bảo vệ cho phép di chuyển, xoay và co giãn cả đối tượng nhưng không sửa từng điểm; Hoàn toàn thì không cho đổi gì. Thao tác làm hỏng khóa sẽ bị từ chối.",
+    "help.sketch.nodes_mode": "Chuyển giữa chế độ đối tượng (nhóm được chọn và di chuyển như một đối tượng, các điểm bị ẩn) và chế độ nút (các điểm của đường cong trong nhóm hiện ra và chọn được). Nút được nhấn nghĩa là chế độ nút.",
+    "sketch.group_lock_hint": "Tự do: mọi thứ đều đổi được. Bảo vệ: cả đối tượng di chuyển, xoay, co giãn được nhưng không sửa từng điểm. Hoàn toàn: không đổi gì.",
+    "ui.lock_free": "Tự do",
+    "ui.lock_protect": "Bảo vệ",
+    "ui.lock_total": "Hoàn toàn"
+  }
+}

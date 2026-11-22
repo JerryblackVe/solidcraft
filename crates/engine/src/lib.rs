@@ -920,6 +920,10 @@ pub struct Session {
     pub section_hatch: bool,
     /// Component identification colours are enabled when present; view state only.
     pub colored_components: Option<()>,
+    /// Sketch nodes mode (`sketch.nodes_mode`): the points of grouped curves are drawn and can be
+    /// picked. Off (the default) is object mode: a group is picked and edited as one. View state
+    /// only: not saved, not an undo step.
+    pub sketch_nodes: bool,
     /// Surface analysis shading the model (zebra, draft, curvature map).
     pub analysis: Option<SurfaceAnalysis>,
     /// The seams `inspect.continuity` last measured, for the viewport to shade. View state: not
@@ -1364,6 +1368,7 @@ impl Session {
             section_folder: None,
             section_hatch: true,
             colored_components: None,
+            sketch_nodes: false,
             analysis: None,
             continuity: Vec::new(),
             isocurves: Vec::new(),
@@ -3211,6 +3216,7 @@ impl Session {
             section_folder: None,
             section_hatch: true,
             colored_components: None,
+            sketch_nodes: false,
             analysis: None,
             continuity: Vec::new(),
             isocurves: Vec::new(),

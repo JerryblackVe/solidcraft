@@ -2703,6 +2703,28 @@ fn trimming_or_breaking_a_curve_of_a_group_keeps_the_pieces_in_the_group() {
     assert!(all_grouped(&s));
 }
 
+#[test]
+fn an_import_can_come_locked_and_nodes_mode_shows_the_points_of_grouped_curves() {
+    let mut s = new_sketch();
+    let r = run(&mut s, "sketch.insert_svg", json!({"text": crown_svg(40), "width": 80, "lock": "Protect"}));
+    assert!(r["group"].is_string() && r.get("fixed").is_none());
+    assert_eq!(sketch(&s).object_groups[0].lock, solidcraft_sketch::GroupLock::Protect);
+    assert!(s.execute("sketch.insert_svg", &json!({"text": crown_svg(5), "lock": "frozen"})).is_err());
+    assert!(s.execute("sketch.insert_svg", &json!({"text": crown_svg(5), "lock": "total", "group": false})).is_err());
+    // Object mode (the default) leaves out the points of grouped curves; nodes mode shows them.
+    let shown = |s: &Session| {
+        let sk = sketch(s);
+        let v = crate::view::SketchPointVisibility::shown(s, &sk);
+        sk.points.iter().filter(|p| v.takes(p)).count()
+    };
+    assert_eq!(run(&mut s, "sketch.nodes_mode", json!({}))["nodes"], json!(true));
+    let all = shown(&s);
+    assert!(all > 40);
+    assert_eq!(run(&mut s, "sketch.nodes_mode", json!({"nodes": false}))["nodes"], json!(false));
+    assert_eq!(shown(&s), 1, "only the origin is left");
+    assert!(s.execute("sketch.nodes_mode", &json!({"nodes": "yes"})).is_err());
+}
+
 /// Volumes (mm³) of the bodies in the design, smallest first.
 fn body_volumes(s: &mut Session) -> Vec<f64> {
     let m = run(s, "inspect.measure", json!({}));

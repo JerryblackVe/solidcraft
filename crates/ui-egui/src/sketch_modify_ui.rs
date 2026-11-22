@@ -67,7 +67,12 @@ pub const MODIFIERS: &[ToolModifiers] = &[
     // Group and Ungroup: curves and a name; no viewport modifier chords.
     ToolModifiers { tool: "sketch.group", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "sketch.ungroup", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
+    // Lock Group: one group and a choice in the dialog; no viewport modifier chords.
+    ToolModifiers { tool: "sketch.group_lock", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
 ];
+
+/// The three locks of a group, in `sketch.group_lock`'s order of strength.
+pub(crate) const GROUP_LOCKS: [&str; 3] = ["Free", "Protect", "Total"];
 
 /// The equation curve's two forms: x(t) and y(t), or y = f(x).
 pub(crate) const EQUATION_FORMS: [&str; 2] = ["Parametric", "Explicit"];
@@ -184,6 +189,8 @@ pub enum Mod {
     Group { name: String },
     /// `sketch.ungroup`: the group the picked curve is in is taken apart.
     Ungroup,
+    /// `sketch.group_lock`: the group the picked curve is in gets a lock (an index into [`GROUP_LOCKS`]).
+    GroupLock { lock: usize },
 }
 
 impl Mod {
@@ -210,6 +217,7 @@ impl Mod {
             Mod::Star { .. } => "STAR",
             Mod::Group { .. } => "GROUP",
             Mod::Ungroup => "UNGROUP",
+            Mod::GroupLock { .. } => "LOCK GROUP",
         }
     }
 
@@ -226,7 +234,7 @@ impl Mod {
             Mod::PatternCirc { angle, .. } => Some(("Angle", ValueKind::Angle, angle)),
             Mod::Corner { chamfer: false, size, .. } => Some(("Radius", ValueKind::Length, size)),
             Mod::Corner { size, .. } => Some(("Distance", ValueKind::Length, size)),
-            Mod::Equation { .. } | Mod::Divide { .. } | Mod::Star { .. } | Mod::Group { .. } | Mod::Ungroup => None,
+            Mod::Equation { .. } | Mod::Divide { .. } | Mod::Star { .. } | Mod::Group { .. } | Mod::Ungroup | Mod::GroupLock { .. } => None,
         }
     }
 }
@@ -262,7 +270,7 @@ fn inputs(k: &Mod) -> Vec<SelInput> {
         Mod::Equation { .. } | Mod::Star { .. } => Vec::new(),
         Mod::Divide { .. } => vec![SelInput::new("Curves", CURVES, true)],
         Mod::Group { .. } => vec![SelInput::new("Curves", CURVES, true)],
-        Mod::Ungroup => vec![SelInput::new("Group", CURVES, false)],
+        Mod::Ungroup | Mod::GroupLock { .. } => vec![SelInput::new("Group", CURVES, false)],
     }
 }
 
@@ -344,6 +352,8 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
         },
         "sketch.group" => Mod::Group { name: "Group".into() },
         "sketch.ungroup" => Mod::Ungroup,
+        // Protect first: the lock a drawing that must keep its shape asks for.
+        "sketch.group_lock" => Mod::GroupLock { lock: 1 },
         _ => return None,
     };
     let i = inputs(&k);
@@ -646,6 +656,7 @@ pub(crate) fn command(k: &Mod) -> &'static str {
         Mod::Star { .. } => "sketch.star",
         Mod::Group { .. } => "sketch.group",
         Mod::Ungroup => "sketch.ungroup",
+        Mod::GroupLock { .. } => "sketch.group_lock",
     }
 }
 
@@ -782,6 +793,10 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Mod, doc: &Document) -> bool {
             enter |= number(ui, "Name", name);
         }
         Mod::Ungroup => {}
+        Mod::GroupLock { lock } => {
+            ui_kit::choice_row(ui, "Lock", "group_lock", lock, &GROUP_LOCKS);
+            ui_kit::text(ui, solidcraft_ui_text::tr("sketch.group_lock_hint"), ui_kit::Text::Note("group_lock"));
+        }
         Mod::Divide { count } => {
             enter |= quantity(ui, doc, "Segments", count, 2, DIVIDE_MAX);
             ui_kit::text(ui, solidcraft_ui_text::tr("sketch.divide_hint"), ui_kit::Text::Note("divide"));
@@ -1255,6 +1270,11 @@ pub fn commands(app: &SolveApp, k: &Mod, inputs: &[SelInput], extra: &Map<String
         Mod::Ungroup => {
             let Some(entity) = curve_ids(inputs, 0).into_iter().next() else { return Err("Select a curve of the group first".into()) };
             ("sketch.ungroup", json!({"entity": entity}))
+        }
+        Mod::GroupLock { lock } => {
+            let Some(entity) = curve_ids(inputs, 0).into_iter().next() else { return Err("Select a curve of the group first".into()) };
+            let lock = GROUP_LOCKS.get(*lock).map_or("protect", |l| l).to_ascii_lowercase();
+            ("sketch.group_lock", json!({"entity": entity, "lock": lock}))
         }
         Mod::Divide { count } => {
             let curves = curve_ids(inputs, 0);

@@ -517,6 +517,8 @@ pub const SECTIONS: &[Section] = &[
             "sketch.transform",
             "sketch.group",
             "sketch.ungroup",
+            "sketch.group_lock",
+            "sketch.nodes_mode",
             "sketch.copy",
             "sketch.cut",
             "sketch.paste",
