@@ -7991,6 +7991,11 @@ fn show_view(app: &mut SolveApp, ui: &mut egui::Ui) {
                 } else if !crate::sketch3d::click(app, &proj, p) {
                     match annotation {
                         Some(sel) => select(app, Some(sel), add || pen_select, allow_toggle || pen_select),
+                        // A text's outline or a body made from a text: the whole text, then the
+                        // letter, then (an ordinary click) the curve or face alone.
+                        None if !pen_select
+                            && !resp.double_clicked()
+                            && cand.as_ref().and_then(|c| c.1.clone()).is_some_and(|sel| crate::text_pick::click(app, &sel, add)) => {}
                         // Clicking again on the same spot selects the next thing under it (not
                         // the second click of a double-click, which has its own actions).
                         None if !pen_select && !add && !resp.double_clicked() && crate::select_other::cycle_click(app, &proj, p) => {}
