@@ -816,16 +816,14 @@ fn font_row(ui: &mut egui::Ui, k: &mut Tx) {
             let shown = [shown_sample.as_str(), typed.as_str(), option.label].into_iter().find(|s| !s.is_empty()).unwrap_or_default();
             let left = name_rect.right() + t.space_4;
             let star_width = t.form_close_size + t.space_4;
-            if let Some(texture) = crate::font_preview::preview(ui.ctx(), option.value, shown, height.round().max(8.0) as usize) {
+            if let Some(texture) = crate::font_preview::preview(ui.ctx(), option.value, shown, height.round().max(8.0) as usize, t.text) {
                 let size = texture.size_vec2();
                 let room = egui::Rect::from_min_max(egui::pos2(left, rect.top()), egui::pos2(rect.right() - star_width, rect.bottom()));
                 let image = egui::Rect::from_min_size(egui::pos2(left, rect.center().y - size.y / 2.0), size);
-                ui.painter().with_clip_rect(room).image(
-                    texture.id(),
-                    image,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    t.text,
-                );
+                ui.scope(|ui| {
+                    ui.set_clip_rect(room.intersect(ui.clip_rect()));
+                    egui::Image::new(&texture).paint_at(ui, image);
+                });
             }
             let star = egui::Rect::from_center_size(
                 egui::pos2(rect.right() - star_width / 2.0, rect.center().y),

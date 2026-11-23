@@ -113,20 +113,22 @@ pub fn share(ctx: &egui::Context, saved: &mut FontPicks) {
     });
 }
 
-/// Previews made, by font and sample, and how many were made in the current frame.
+type Key = (String, String, Color32);
+
+/// Previews made, by font, sample and ink, and how many were made in the current frame.
 #[derive(Clone, Default)]
 struct Previews {
-    made: HashMap<(String, String), Option<TextureHandle>>,
-    order: Vec<(String, String)>,
+    made: HashMap<Key, Option<TextureHandle>>,
+    order: Vec<Key>,
     frame: u64,
     this_frame: usize,
 }
 
-/// `sample` drawn in `font` ("" is the built-in font), `height` pixels tall at most, white on
-/// clear (tint it to draw). None when the font cannot set the sample, or when this frame has made
+/// `sample` drawn in `font` ("" is the built-in font), `height` pixels tall at most, in `ink` on
+/// clear (draw it untinted). None when the font cannot set the sample, or when this frame has made
 /// its share of previews already: the list asks again on the next frame.
-pub fn preview(ctx: &egui::Context, font: &str, sample: &str, height: usize) -> Option<TextureHandle> {
-    let key = (font.to_owned(), sample.to_owned());
+pub fn preview(ctx: &egui::Context, font: &str, sample: &str, height: usize, ink: Color32) -> Option<TextureHandle> {
+    let key = (font.to_owned(), sample.to_owned(), ink);
     let id = egui::Id::unique("sketch_text_font_previews");
     let frame = ctx.cumulative_frame_nr();
     // Some(made) when it was made before; None when it may be made now.
@@ -156,7 +158,7 @@ pub fn preview(ctx: &egui::Context, font: &str, sample: &str, height: usize) -> 
         }
         None => {}
     }
-    let texture = render(font, sample, height).map(|img| ctx.load_texture(format!("font_preview:{font}:{sample}"), img, TextureOptions::LINEAR));
+    let texture = render(font, sample, height, ink).map(|img| ctx.load_texture(format!("font_preview:{font}:{sample}"), img, TextureOptions::LINEAR));
     ctx.data_mut(|d| {
         let p = d.get_temp_mut_or_default::<Previews>(id);
         p.made.insert(key.clone(), texture.clone());
@@ -170,8 +172,8 @@ pub fn preview(ctx: &egui::Context, font: &str, sample: &str, height: usize) -> 
 }
 
 /// The sample's outlines in `font`, filled (even-odd: a letter's counters stay open) into an
-/// image `height` pixels tall at most, as wide as the sample needs up to [`MAX_WIDTH`].
-pub fn render(font: &str, sample: &str, height: usize) -> Option<ColorImage> {
+/// image `height` pixels tall at most, in `ink`, as wide as the sample needs up to [`MAX_WIDTH`].
+pub fn render(font: &str, sample: &str, height: usize, ink: Color32) -> Option<ColorImage> {
     let font = (!font.trim().is_empty()).then_some(font);
     let geom = solidcraft_engine::sketch::text_geometry_in(font, sample, Vec2::new(0.0, 0.0), 1.0, 0.0).ok()?;
     let edges: Vec<(Vec2, Vec2)> = geom.iter().flat_map(flatten).collect();
@@ -212,7 +214,7 @@ pub fn render(font: &str, sample: &str, height: usize) -> Option<ColorImage> {
             }
         }
     }
-    let pixels = cover.iter().map(|c| Color32::from_white_alpha((c.clamp(0.0, 1.0) * 255.0).round() as u8)).collect();
+    let pixels = cover.iter().map(|c| ink.gamma_multiply(c.clamp(0.0, 1.0))).collect();
     Some(ColorImage::new([width, height], pixels))
 }
 
@@ -273,23 +275,25 @@ fn flatten(g: &LinkGeom) -> Vec<(Vec2, Vec2)> {
 mod tests {
     use super::*;
 
+    const INK: Color32 = Color32::from_rgb(200, 100, 50);
+
     /// The built-in font's "O": a ring, so its middle is clear and its stroke is ink; an "I" is
     /// narrower than "WW"; a sample no font can set makes no picture.
     #[test]
     fn a_preview_fills_the_outlines_and_leaves_the_counters_open() {
-        let o = render("", "O", 40).unwrap();
+        let o = render("", "O", 40, INK).unwrap();
         let [w, h] = o.size;
         assert_eq!(h, 40);
         let at = |x: usize, y: usize| o.pixels[y * w + x].a();
         assert_eq!(at(w / 2, h / 2), 0, "the counter of the O is open");
         let row: Vec<u8> = (0..w).map(|x| at(x, h / 2)).collect();
         assert!(row.iter().any(|a| *a > 200), "the stroke of the O is ink: {row:?}");
-        assert!(render("", "I", 40).unwrap().size[0] < render("", "WW", 40).unwrap().size[0]);
-        assert!(render("", " ", 40).is_none());
-        assert!(render("/no/such/font.ttf", "Ab", 40).is_none());
-        assert!(render("", "Ab", 2).is_none());
+        assert!(render("", "I", 40, INK).unwrap().size[0] < render("", "WW", 40, INK).unwrap().size[0]);
+        assert!(render("", " ", 40, INK).is_none());
+        assert!(render("/no/such/font.ttf", "Ab", 40, INK).is_none());
+        assert!(render("", "Ab", 2, INK).is_none());
         // A long sample is cut at the widest picture.
-        assert_eq!(render("", &"W".repeat(MAX_SAMPLE_CHARS), 40).unwrap().size[0], MAX_WIDTH);
+        assert_eq!(render("", &"W".repeat(MAX_SAMPLE_CHARS), 40, INK).unwrap().size[0], MAX_WIDTH);
     }
 
     #[test]
