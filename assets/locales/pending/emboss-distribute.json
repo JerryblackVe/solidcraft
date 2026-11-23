@@ -2,9 +2,12 @@
   "en": {
     "Distribute": "Distribute",
     "ui.emboss_distribute_needs_faces": "Distribute: not available until target faces are picked: each profile needs a face to go on.",
-    "ui.emboss_distribute_note": "Each profile goes on the face chosen for it, centred on the point picked on that face.",
+    "ui.emboss_distribute_note": "Each profile goes on the face chosen for it, centered on the point picked on that face.",
     "ui.emboss_face_n": "Face {n}",
     "ui.emboss_profile_n": "Profile {n}"
+  },
+  "en-GB": {
+    "ui.emboss_distribute_note": "Each profile goes on the face chosen for it, centred on the point picked on that face."
   },
   "es": {
     "Distribute": "Distribuir",
@@ -16,7 +19,7 @@
   "ar": {
     "Distribute": "توزيع",
     "ui.emboss_distribute_needs_faces": "توزيع: غير متاح حتى تُحدد الأوجه الهدف: كل مقطع يحتاج وجهًا يوضع عليه.",
-    "ui.emboss_distribute_note": "يوضع كل مقطع على الوجه المختار له، في منتصف النقطة المحددة على ذلك الوجه.",
+    "ui.emboss_distribute_note": "يوضع كل مقطع على الوجه المختار له، متمركزًا على النقطة المحددة على ذلك الوجه.",
     "ui.emboss_face_n": "الوجه {n}",
     "ui.emboss_profile_n": "المقطع {n}"
   },
