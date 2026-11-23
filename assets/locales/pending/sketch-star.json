@@ -2,8 +2,11 @@
   "en": {
     "cmd.sketch.edit_star": "Edit Star",
     "cmd.sketch.star": "Star",
-    "help.sketch.star": "Draws a star from its centre, number of points and size, with optional rounded tips and valleys. Use it for a star you may change later: Edit Star changes the points, size, depth, rounding and turn without drawing it again.",
+    "help.sketch.star": "Draws a star from its center, number of points and size, with optional rounded tips and valleys. Use it for a star you may change later: Edit Star changes the points, size, depth, rounding and turn without drawing it again.",
     "ui.star.construction_circles": "Construction Circles"
+  },
+  "en-GB": {
+    "help.sketch.star": "Draws a star from its centre, number of points and size, with optional rounded tips and valleys. Use it for a star you may change later: Edit Star changes the points, size, depth, rounding and turn without drawing it again."
   },
   "de": {
     "cmd.sketch.edit_star": "Stern bearbeiten",
