@@ -44,15 +44,16 @@ pub struct StarSpec {
     /// The expressions behind the numbers above that were typed over the design's parameters.
     #[serde(default, skip_serializing_if = "StarExprs::is_empty")]
     pub exprs: StarExprs,
-    /// Set on a mirror copy: it takes its shape from another star and keeps its own place.
+    /// Set on a mirror or pattern copy: it takes its shape from another star and keeps its own place.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follows: Option<StarFollow>,
 }
 
 /// A star that follows another: the points, radius, depth, skip, roundings and circles are the
 /// source's, and its centre and turn are the source's moved the way this says. The way is worked
-/// out again from the mirror line (`line`) each time the sketch is solved, so the copy follows the
-/// line when it moves; the numbers are the way as last worked out, and all there is once the line is gone.
+/// out again from the mirror line (`line`), or from the pattern that made the copy, each time the
+/// sketch is solved, so the copy follows the line, or the pattern's centre and direction lines, when
+/// they move; the numbers are the way as last worked out, and all there is once those are gone.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StarFollow {
     /// The link id of the star it follows.
@@ -102,6 +103,7 @@ impl crate::Sketch {
     /// the links whose numbers changed: their outlines are rebuilt from them.
     pub fn resolve_star_follows(&mut self) -> Vec<String> {
         let mut changed = Vec::new();
+        let patterned = self.pattern_star_follows();
         for i in 0..self.links.len() {
             let crate::LinkSource::Star(spec) = &self.links[i].source else { continue };
             let Some(follow) = spec.follows.clone() else { continue };
@@ -112,11 +114,13 @@ impl crate::Sketch {
             let mut next = spec.clone();
             match from {
                 Some(from) => {
-                    // The mirror line is where it is now; one that is gone or no longer a line leaves the way as it was.
+                    // The mirror line or the pattern's centre and lines are where they are now; one that
+                    // is gone or no longer a line leaves the way as it was.
                     let moved = follow.line.as_deref().and_then(|id| {
                         let Some(crate::Shape::Line { a, b }) = self.curve_index(id).and_then(|c| self.shape(c)) else { return None };
                         (b - a).normalized().map(|u| StarFollow::mirror(&follow.source, Some(id), a, u))
                     });
+                    let moved = moved.or_else(|| patterned.get(&self.links[i].id).filter(|f| f.source == follow.source).cloned());
                     let follow = moved.unwrap_or(follow);
                     follow.apply(&from, &mut next);
                     next.follows = Some(follow);
