@@ -850,7 +850,7 @@ fn font_row(ui: &mut egui::Ui, k: &mut Tx) {
         &options,
         custom.as_deref(),
         families.is_none().then(|| solidcraft_ui_text::tr("sketch_text.loading_fonts")),
-        ui_kit::SearchRows { header: &mut header, row: &mut row },
+        ui_kit::SearchRows { width: solidcraft_theme::Tokens::get().space_24 * 18.0, header: &mut header, row: &mut row },
     );
     // A click on a star marks the font; it does not pick it.
     let chosen = if star_clicked.is_some() { None } else { chosen };

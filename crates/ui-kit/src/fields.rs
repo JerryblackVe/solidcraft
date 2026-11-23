@@ -476,6 +476,8 @@ pub fn searchable_dropdown(
 /// How a [`searchable_dropdown_rows`] draws its list: something above the list (a sample text
 /// field), and each option's row, drawn by the caller.
 pub struct SearchRows<'a> {
+    /// The width the list needs; the popup opens that wide, or as wide as the window leaves it.
+    pub width: f32,
     /// Drawn above the list, under the search field.
     pub header: &'a mut dyn FnMut(&mut Ui),
     /// Draws option `index` of the options given (`selected`: it is the current one) and returns
@@ -528,6 +530,9 @@ fn searchable_dropdown_with(
         combo.icon(dropdown_arrow)
     };
     let popup = super::container::show_combo(ui, ui.make_persistent_id(egui::IdSalt::new(id)), combo, |ui| {
+        if let Some(rows) = rows.as_ref() {
+            ui.set_width(rows.width.min(ui.ctx().content_rect().width() - Tokens::get().space_24 * 2.0));
+        }
         let search = ui.add(
             text_input(egui::TextEdit::singleline(filter))
                 .id_salt(format!("{id}_search"))

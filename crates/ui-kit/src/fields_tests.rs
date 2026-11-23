@@ -324,6 +324,48 @@ fn searchable_dropdown_filters_selects_and_accepts_custom_values() {
     }
 }
 
+/// A list with rows of its own opens as wide as it asks, and never wider than the window.
+#[test]
+fn searchable_dropdown_rows_open_as_wide_as_asked_within_the_window() {
+    let widest = |asked: f32| {
+        let ctx = crate::test_support::context();
+        let window = ctx.content_rect().width();
+        let mut filter = String::new();
+        let options = [SearchOption { value: "one", label: "One", handle: None }];
+        let seen = std::cell::Cell::new(0.0f32);
+        let mut header = |_: &mut Ui| {};
+        let mut draw_row = |ui: &mut Ui, _: usize, _: &SearchOption<'_>, _: bool| {
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), egui::Sense::click());
+            seen.set(rect.width());
+            response
+        };
+        let mut draw = |ui: &mut Ui| {
+            row(ui, "Font", |ui| {
+                searchable_dropdown_rows(
+                    ui,
+                    "rows_test",
+                    "One",
+                    &mut filter,
+                    &options,
+                    None,
+                    None,
+                    SearchRows { width: asked, header: &mut header, row: &mut draw_row },
+                );
+            });
+        };
+        frame(&ctx, vec![], &mut draw);
+        let at = registry::handle_at("dialog:Font").unwrap();
+        frame(&ctx, pointer(at, true), &mut draw);
+        frame(&ctx, pointer(at, false), &mut draw);
+        frame(&ctx, vec![], &mut draw);
+        (seen.get(), window)
+    };
+    let (wide, _) = widest(250.0);
+    assert!(wide >= 240.0, "asked 250, the row is {wide}");
+    let (huge, window) = widest(100_000.0);
+    assert!(huge < window, "a list asking too much stays inside the {window} window: {huge}");
+}
+
 #[test]
 fn search_picker_filters_focuses_picks_and_takes_custom_values() {
     let ctx = crate::test_support::context();
