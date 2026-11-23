@@ -1,5 +1,8 @@
 {
   "en": {
+    "sketch.hint.star": "Star: click the center, then drag or click to set the size and turn; double-click a star to change it"
+  },
+  "en-GB": {
     "sketch.hint.star": "Star: click the centre, then drag or click to set the size and turn; double-click a star to change it"
   },
   "es": {
