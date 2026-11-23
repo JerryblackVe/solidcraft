@@ -269,6 +269,12 @@ replace_face
     Offset = replace_face.offset (Length)
   expressions: replace_face.angle, replace_face.offset, 0, 0, 0
 align
+place_on_plane
+  inputs:
+    Angle = place_plane.angle (Angle)
+    Offset = place_plane.offset (Length)
+    Offset = place_on_plane.offset (Length)
+  expressions: place_plane.angle, place_plane.offset, place_on_plane.offset, 0, 0, 0
 coil
   inputs:
     Diameter = coil.diameter (Length)
