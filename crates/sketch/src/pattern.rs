@@ -160,14 +160,9 @@ impl Sketch {
         self.patterns.remove(index);
         let entity_ids = old.entities.clone();
         let (center, slots) = match &kind {
-            SketchPatternKind::Circular { center, count, angle, alignment, reversed } => {
+            SketchPatternKind::Circular { center, count, .. } => {
                 let center = self.resolve_point(center).ok_or_else(|| SketchError::Invalid("missing pattern center".into()))?;
-                let full = (angle.abs() - 360.0).abs() < 1e-9;
-                let step = angle / if full { *count as f64 } else { (count.max(&2) - 1) as f64 };
-                (
-                    Some(center),
-                    (1..*count).map(|i| ([i, 0], (step * alignment.multiplier(i, *reversed)).to_radians(), Vec2::ZERO)).collect::<Vec<_>>(),
-                )
+                (Some(center), (1..*count).map(|i| ([i, 0], copy_angle(&kind, [i, 0]), Vec2::ZERO)).collect::<Vec<_>>())
             }
             SketchPatternKind::Rectangular { count, count2, .. } => {
                 (None, (0..*count).flat_map(|i| (0..*count2).filter_map(move |j| (i != 0 || j != 0).then_some(([i, j], 0.0, Vec2::ZERO)))).collect())
@@ -198,18 +193,8 @@ impl Sketch {
         }
         for (index, angle, offset) in slots {
             let (base_offset, directions) = linear_displacement(self, &kind, index, offset);
-            let c = center.and_then(|i| self.point(i)).unwrap_or(Vec2::ZERO);
-            let mut displacement = base_offset;
-            for (line, distance) in directions.into_iter().flatten() {
-                if let Some(crate::Shape::Line { a, b }) = self.shape(line)
-                    && let Some(u) = (b - a).normalized()
-                {
-                    displacement += u * distance.x + u.perp() * distance.y;
-                }
-            }
-            let transform = |p| rotate(c, angle)(p) + displacement;
-            let follow =
-                |source: &String| crate::StarFollow { source: source.clone(), flip: false, turn: angle.to_degrees(), shift: transform(Vec2::ZERO), line: None };
+            let transform = copy_transform(self, center, angle, base_offset, directions);
+            let follow = |source: &String| star_follow(source, angle, &transform);
             let instance = if let Some(i) = existing.iter().position(|instance| instance.index == index) {
                 let instance = existing.remove(i);
                 for (seed, copy) in old.stars.iter().zip(&instance.stars) {
@@ -287,8 +272,6 @@ impl Sketch {
     /// Make the star that copies `follow.source` for one pattern copy, or move the one it has
     /// (`copy`): a star that takes the source's shape and sits where `follow` puts it. A copy that
     /// is gone, or was moved by hand and so follows nothing, is left as it is.
-    /// shortcut: the place is worked out here, when the pattern is rebuilt, not by the solver, so a
-    /// dragged centre or direction line moves the star copies at the next rebuild; upgrade with MEJ-27.
     fn place_star_copy(&mut self, follow: crate::StarFollow, copy: Option<&String>) -> Result<String, SketchError> {
         let source = match self.link(&follow.source).map(|l| &l.source) {
             Some(crate::LinkSource::Star(source)) => source.clone(),
@@ -312,6 +295,30 @@ impl Sketch {
                 Ok(id.clone())
             }
         }
+    }
+
+    /// Where each pattern puts its star copies now, by the copy's link id: worked out from where the
+    /// pattern's centre and direction lines are, so the copies follow them when the solver moves them.
+    pub(crate) fn pattern_star_follows(&self) -> std::collections::HashMap<String, crate::StarFollow> {
+        let mut out = std::collections::HashMap::new();
+        for pattern in self.patterns.iter().filter(|p| !p.stars.is_empty()) {
+            let center = match &pattern.kind {
+                SketchPatternKind::Circular { center, .. } => match self.resolve_point(center) {
+                    Some(i) => Some(i),
+                    None => continue,
+                },
+                SketchPatternKind::Rectangular { .. } => None,
+            };
+            for instance in &pattern.instances {
+                let angle = copy_angle(&pattern.kind, instance.index);
+                let (offset, directions) = linear_displacement(self, &pattern.kind, instance.index, Vec2::ZERO);
+                let transform = copy_transform(self, center, angle, offset, directions);
+                for (seed, copy) in pattern.stars.iter().zip(&instance.stars) {
+                    out.insert(copy.clone(), star_follow(seed, angle, &transform));
+                }
+            }
+        }
+        out
     }
 
     /// Remove the stars a pattern made for its copies, outline and all; one moved by hand is the
@@ -558,6 +565,40 @@ impl Sketch {
         }
         Ok(())
     }
+}
+
+/// The turn, in radians, of a circular pattern's copy at `index`; 0 for a rectangular one.
+fn copy_angle(kind: &SketchPatternKind, [i, _]: [usize; 2]) -> f64 {
+    let SketchPatternKind::Circular { count, angle, alignment, reversed, .. } = kind else { return 0.0 };
+    let full = (angle.abs() - 360.0).abs() < 1e-9;
+    let step = angle / if full { *count as f64 } else { (count.max(&2) - 1) as f64 };
+    (step * alignment.multiplier(i, *reversed)).to_radians()
+}
+
+/// Where a pattern copy takes a point: turned `angle` about the centre, then moved by `offset` and
+/// by each direction line's share along the line as it is now.
+fn copy_transform(
+    sk: &Sketch,
+    center: Option<usize>,
+    angle: f64,
+    offset: Vec2,
+    directions: [Option<(usize, Vec2)>; 2],
+) -> impl Fn(Vec2) -> Vec2 + use<> {
+    let c = center.and_then(|i| sk.point(i)).unwrap_or(Vec2::ZERO);
+    let mut displacement = offset;
+    for (line, distance) in directions.into_iter().flatten() {
+        if let Some(crate::Shape::Line { a, b }) = sk.shape(line)
+            && let Some(u) = (b - a).normalized()
+        {
+            displacement += u * distance.x + u.perp() * distance.y;
+        }
+    }
+    move |p| rotate(c, angle)(p) + displacement
+}
+
+/// The star a pattern copy makes of `source`, placed the way `transform` (a turn of `angle`) takes it.
+fn star_follow(source: &str, angle: f64, transform: &impl Fn(Vec2) -> Vec2) -> crate::StarFollow {
+    crate::StarFollow { source: source.to_owned(), flip: false, turn: angle.to_degrees(), shift: transform(Vec2::ZERO), line: None }
 }
 
 /// Keep sampled vector directions compatible with older designs, while picked lines are

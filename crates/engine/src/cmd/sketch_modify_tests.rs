@@ -2710,6 +2710,61 @@ fn a_patterned_star_makes_stars_that_follow_the_original() {
     assert!((moved.center.x - o.center.x - 100.0).abs() < 1e-9 && (moved.center.y - o.center.y).abs() < 1e-9, "{moved:?}");
 }
 
+/// MEJ-27: the stars a pattern copies follow its centre and its direction line when the solver
+/// moves them (a drag, a dimension), not only when the pattern is rebuilt.
+#[test]
+fn patterned_stars_follow_a_dragged_centre_and_direction_line() {
+    let mut s = new_sketch();
+    let star_at = |s: &Session, link: &str| match &sketch(s).link(link).unwrap().source {
+        solidcraft_sketch::LinkSource::Star(spec) => (spec.center, spec.angle),
+        other => panic!("a star, not {other:?}"),
+    };
+    let copies = |s: &Session| -> Vec<String> {
+        sketch(s)
+            .links
+            .iter()
+            .filter(|l| matches!(&l.source, solidcraft_sketch::LinkSource::Star(x) if x.follows.is_some()))
+            .map(|l| l.id.clone())
+            .collect()
+    };
+    // A circular pattern about a centre point that is then dragged: every copy stays the original
+    // turned about the centre where it is now, outline and all.
+    let r = run(&mut s, "sketch.star", json!({"center": [40, 0], "outer_radius": 10, "points": 5}));
+    let star = r["link"].as_str().unwrap().to_string();
+    let made = run(&mut s, "sketch.pattern.circular", json!({"entities": r["curves"], "center": [0, 0], "count": 4}));
+    let centre = made["center"].as_str().unwrap().to_string();
+    run(&mut s, "sketch.drag", json!({"entity": centre, "from": [0, 0], "to": [-10, 5]}));
+    let c = point_at(&sketch(&s), &centre);
+    assert!(c.dist(Vec2::new(-10.0, 5.0)) < 1e-6, "{c:?}");
+    let (o, _) = star_at(&s, &star);
+    let mut got: Vec<(Vec2, f64)> = copies(&s).iter().map(|l| star_at(&s, l)).collect();
+    got.sort_by(|a, b| a.1.total_cmp(&b.1));
+    for ((at, angle), quarter) in got.iter().zip([1.0_f64, 2.0, 3.0]) {
+        let t = (90.0 * quarter).to_radians();
+        let d = o - c;
+        let want = c + Vec2::new(d.x * t.cos() - d.y * t.sin(), d.x * t.sin() + d.y * t.cos());
+        assert!(at.dist(want) < 1e-6, "copy at {at:?}, want {want:?}");
+        assert!((angle - 90.0 * quarter).abs() < 1e-9, "{angle}");
+    }
+    for copy in copies(&s) {
+        let sk = sketch(&s);
+        let (at, _) = star_at(&s, &copy);
+        let far = sk.link_points(&copy).iter().filter_map(|i| sk.point(*i)).map(|p| p.dist(at)).fold(0.0, f64::max);
+        assert!((far - 10.0).abs() < 1e-6, "the outline sits on the copy's centre: {far}");
+    }
+    // A rectangular pattern along a line that is then turned: the copy moves along the line as it is now.
+    let mut s = new_sketch();
+    let line = ids(&run(&mut s, "sketch.line", json!({"points": [[0, -20], [30, -20]], "connect": false, "infer": false}))["curves"])[0].clone();
+    let r = run(&mut s, "sketch.star", json!({"center": [0, 10], "outer_radius": 5, "points": 6}));
+    let star = r["link"].as_str().unwrap().to_string();
+    run(&mut s, "sketch.pattern.rectangular", json!({"entities": r["curves"], "direction": line, "count": 2, "spacing": 50}));
+    run(&mut s, "sketch.constraint.fix", json!({"entities": [format!("{line}.start")]}));
+    run(&mut s, "sketch.drag", json!({"entity": format!("{line}.end"), "from": [30, -20], "to": [0, 10]}));
+    let (o, _) = star_at(&s, &star);
+    let (at, _) = star_at(&s, &copies(&s)[0]);
+    assert!(at.dist(o + Vec2::new(0.0, 50.0)) < 1e-6, "the copy is 50 along the turned line: {at:?} from {o:?}");
+}
+
 /// MEJ-23: the copy follows the mirror line too: when the line is moved or turned the copy stays its
 /// mirror image in it, and it still follows the original; a line that is deleted leaves it where it was.
 #[test]
