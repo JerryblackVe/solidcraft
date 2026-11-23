@@ -183,10 +183,11 @@ pub fn render(font: &str, sample: &str, height: usize, ink: Color32) -> Option<C
     let (lo, hi) = edges.iter().fold((Vec2::new(f64::MAX, f64::MAX), Vec2::new(f64::MIN, f64::MIN)), |(lo, hi), (a, b)| {
         (Vec2::new(lo.x.min(a.x).min(b.x), lo.y.min(a.y).min(b.y)), Vec2::new(hi.x.max(a.x).max(b.x), hi.y.max(a.y).max(b.y)))
     });
-    // The capital height (1 mm here) fills most of the row; descenders and accents fit in the rest.
-    let px = (height as f64 - 2.0) / (hi.y - lo.y).max(1.0);
+    // The ink fills the middle of the row, a tenth of it clear above and below.
+    let margin = (height as f64 / 10.0).max(1.0);
+    let px = (height as f64 - 2.0 * margin) / (hi.y - lo.y).max(1.0);
     let width = (((hi.x - lo.x) * px).ceil() as usize + 2).clamp(1, MAX_WIDTH);
-    let to = |p: Vec2| ((p.x - lo.x) * px + 1.0, (hi.y - p.y) * px + 1.0);
+    let to = |p: Vec2| ((p.x - lo.x) * px + 1.0, (hi.y - p.y) * px + margin);
     let edges: Vec<((f64, f64), (f64, f64))> = edges.iter().map(|(a, b)| (to(*a), to(*b))).collect();
     let mut cover = vec![0.0f32; width * height];
     const SUB: usize = 4;
@@ -294,6 +295,16 @@ mod tests {
         assert!(render("", "Ab", 2, INK).is_none());
         // A long sample is cut at the widest picture.
         assert_eq!(render("", &"W".repeat(MAX_SAMPLE_CHARS), 40, INK).unwrap().size[0], MAX_WIDTH);
+    }
+
+    /// A row's picture leaves a margin above and below the ink, so neighbouring rows never touch.
+    #[test]
+    fn a_preview_leaves_a_margin_above_and_below_the_ink() {
+        let img = render("", "Ab", 40, INK).unwrap();
+        let [w, h] = img.size;
+        let inked: Vec<usize> = (0..h).filter(|y| (0..w).any(|x| img.pixels[y * w + x].a() > 0)).collect();
+        let (first, last) = (inked[0], inked[inked.len() - 1]);
+        assert!(first >= h / 10 && h - 1 - last >= h / 10, "ink spans rows {first}..={last} of {h}");
     }
 
     #[test]
