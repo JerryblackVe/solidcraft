@@ -1,10 +1,14 @@
 {
   "en": {
     "sketch_text.all_fonts": "All fonts",
-    "sketch_text.favorite_font": "Favourite: keep this font at the top of the list",
-    "sketch_text.favorite_fonts": "Favourites",
+    "sketch_text.favorite_font": "Favorite: keep this font at the top of the list",
+    "sketch_text.favorite_fonts": "Favorites",
     "sketch_text.recent_fonts": "Recent",
     "sketch_text.sample_hint": "Sample text (default: your text)"
+  },
+  "en-GB": {
+    "sketch_text.favorite_font": "Favourite: keep this font at the top of the list",
+    "sketch_text.favorite_fonts": "Favourites"
   },
   "es": {
     "sketch_text.all_fonts": "Todas las fuentes",
