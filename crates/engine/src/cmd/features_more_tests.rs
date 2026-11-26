@@ -667,21 +667,21 @@ fn emboss_and_deboss_on_a_face() {
 }
 
 #[test]
-fn emboss_on_a_face_refuses_a_profile_off_it_and_leaves_the_design() {
-    // Two squares over a 40 x 40 top, one of them beside it: the emboss is refused as a whole
-    // rather than raising one square and leaving the other out.
+fn emboss_on_a_face_leaves_out_a_profile_off_it_and_says_so() {
+    // Two squares over a 40 x 40 top, one of them beside it: the one over the top is raised and
+    // the other is left out with a warning, as on several faces (MEJ-42).
     let mut s = Session::default();
     run(&mut s, "solid.box", json!({"length": 40, "width": 40, "height": 20, "body_name": "Block"}));
     run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 30], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Marks"}));
     run(&mut s, "sketch.rectangle.two_point", json!({"p0": [10, 10], "p1": [15, 15]}));
     run(&mut s, "sketch.rectangle.two_point", json!({"p0": [50, 10], "p1": [55, 15]}));
     run(&mut s, "sketch.finish", json!({}));
-    let saved = s.doc.to_json();
     let v = volume(&mut s);
-    let e = s.execute("solid.emboss", &json!({"sketch": "Marks", "profiles": "all", "depth": 1, "face": [20, 20, 20]})).unwrap_err().to_string();
-    assert!(e.contains("not fitting the selected target face") && e.contains("profile 2 of 2 lies off it"), "{e}");
-    assert_eq!(s.doc.to_json(), saved);
-    assert_eq!(volume(&mut s), v);
+    let reply = run(&mut s, "solid.emboss", json!({"sketch": "Marks", "profiles": "all", "depth": 1, "face": [20, 20, 20]}));
+    let warning = reply["warning"].as_str().unwrap_or_default();
+    assert!(warning.contains("profile 2 lies off the selected face and is left out"), "{reply}");
+    // The 5 x 5 square on the top, 1 mm high.
+    assert!(rel(volume(&mut s) - v, 25.0) < 1e-6, "{}", volume(&mut s) - v);
 }
 
 #[test]
@@ -739,19 +739,104 @@ fn one_emboss_puts_each_profile_on_the_selected_face_it_lies_over() {
 }
 
 #[test]
-fn an_emboss_refuses_a_profile_over_none_of_its_faces_and_leaves_the_design() {
+fn an_emboss_across_a_step_raises_the_part_over_each_top() {
+    // MEJ-42: a 5 x 5 square across the riser (x 18..23) keeps 2 x 5 on the low top and 3 x 5 on
+    // the high one, 1 mm high; with the marks' 2 x 25, 75 in all.
     let mut s = step_with_marks();
-    // A square across the step lies over neither top.
     run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 30], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Across"}));
     run(&mut s, "sketch.rectangle.two_point", json!({"p0": [18, 30], "p1": [23, 35]}));
     run(&mut s, "sketch.finish", json!({}));
-    let saved = s.doc.to_json();
+    let v = volume(&mut s);
     let p = json!({"sketch": "Marks", "depth": 1, "faces": [[2, 2, 10], [38, 38, 20]], "more_profiles": [{"sketch": "Across"}]});
-    let e = s.execute("solid.emboss", &p).unwrap_err().to_string();
-    assert!(e.contains("profile 1 of sketch 2 lies over none of the 2 selected faces"), "{e}");
+    let reply = run(&mut s, "solid.emboss", p);
+    assert!(reply["warning"].is_null(), "{reply}");
+    assert!(rel(volume(&mut s) - v, 75.0) < 1e-6, "{}", volume(&mut s) - v);
+}
+/// MEJ-42: three 10 x 50 x 3 slats with 1 mm slots between them (x 0..10, 11..21, 22..32) and a
+/// sketch above (z = 10) with a rectangle across all three (x 2..30, y 20..30).
+fn slats_under_a_band() -> Session {
+    let mut s = Session::default();
+    for (x, name) in [(0, "S1"), (11, "S2"), (22, "S3")] {
+        run(&mut s, "solid.box", json!({"length": 10, "width": 50, "height": 3, "corner": [x, 0, 0], "operation": "new", "body_name": name}));
+    }
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 10], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Band"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [2, 20], "p1": [30, 30]}));
+    run(&mut s, "sketch.finish", json!({}));
+    s
+}
+
+#[test]
+fn an_emboss_across_slots_raises_on_each_slat_what_lies_over_it() {
+    let mut s = slats_under_a_band();
+    let slats = |s: &Session| ["S1", "S2", "S3"].map(|n| body_volume(s, n));
+    let before = slats(&s);
+    assert!(before.iter().all(|v| rel(*v, 1500.0) < 1e-9), "{before:?}");
+    let reply = run(&mut s, "solid.emboss", json!({"sketch": "Band", "depth": 1, "faces": [[5, 25, 3], [16, 25, 3], [27, 25, 3]], "name": "Raised"}));
+    assert!(reply["warning"].is_null(), "{reply}");
+    // 8 x 10 on the outer slats (x 2..10, 22..30) and the whole 10 x 10 on the middle one, 1 mm
+    // high; the slots get nothing.
+    let change = |s: &Session| -> Vec<f64> { slats(s).iter().zip(before).map(|(v, b)| v - b).collect() };
+    let added = change(&s);
+    assert!(added.iter().zip([80.0, 100.0, 80.0]).all(|(got, want)| rel(*got, want) < 1e-6), "{added:?}");
+    assert_eq!(s.model.state().bodies.len(), 3, "the slots stay open");
+    // Sunk instead, from the History.
+    run(&mut s, "timeline.edit", json!({"feature": "Raised", "set": {"deboss": true}}));
+    let sunk = change(&s);
+    assert!(sunk.iter().zip([-80.0, -100.0, -80.0]).all(|(got, want)| rel(*got, want) < 1e-6), "{sunk:?}");
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    // Only the middle slat picked: it takes its 10 x 10, the rest is left out.
+    run(&mut s, "solid.emboss", json!({"sketch": "Band", "depth": 1, "face": [16, 25, 3]}));
+    let added = change(&s);
+    assert!(added[0].abs() < 1e-9 && rel(added[1], 100.0) < 1e-6 && added[2].abs() < 1e-9, "{added:?}");
+}
+
+#[test]
+fn an_emboss_on_stacked_faces_leaves_out_what_the_upper_one_covers() {
+    // A 20 x 40 x 3 plate and one on top of it moved 15 along x; a band x 5..30 over both. The
+    // lower top keeps x 5..15 (10 x 10): what lies under the upper plate is left out. The upper
+    // top takes x 15..30 (15 x 10).
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 20, "width": 40, "height": 3, "operation": "new", "body_name": "Low"}));
+    run(&mut s, "solid.box", json!({"length": 20, "width": 40, "height": 3, "corner": [15, 0, 3], "operation": "new", "body_name": "High"}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 20], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Band"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [5, 10], "p1": [30, 20]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let (low, high) = (body_volume(&s, "Low"), body_volume(&s, "High"));
+    run(&mut s, "solid.emboss", json!({"sketch": "Band", "depth": 1, "faces": [[2, 30, 3], [30, 30, 6]]}));
+    assert!(rel(body_volume(&s, "Low") - low, 100.0) < 1e-6, "{}", body_volume(&s, "Low") - low);
+    assert!(rel(body_volume(&s, "High") - high, 150.0) < 1e-6, "{}", body_volume(&s, "High") - high);
+}
+
+#[test]
+fn an_emboss_on_a_top_and_its_base_raises_both() {
+    // A 10 x 10 square over a 40 x 20 x 10 box, 1.5 mm, on the top and the base: the base looks
+    // the other way, so the top does not cover it; 10 x 10 x 1.5 = 150 on each.
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 40, "width": 20, "height": 10, "operation": "new", "body_name": "Box"}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 10], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Lid"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [15, 5], "p1": [25, 15]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let v = volume(&mut s);
+    run(&mut s, "solid.emboss", json!({"sketch": "Lid", "depth": 1.5, "faces": [[2, 2, 10], [2, 2, 0]], "name": "Both"}));
+    assert!(rel(volume(&mut s) - v, 300.0) < 1e-6, "{}", volume(&mut s) - v);
+    run(&mut s, "timeline.edit", json!({"feature": "Both", "set": {"deboss": true}}));
+    assert!(rel(v - volume(&mut s), 300.0) < 1e-6, "{}", volume(&mut s));
+}
+
+#[test]
+fn an_emboss_refuses_a_profile_over_none_of_its_faces_and_leaves_the_design() {
+    let mut s = step_with_marks();
+    // A square beside the step lies over neither top.
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 30], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Beside"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [45, 30], "p1": [50, 35]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let saved = s.doc.to_json();
+    let e = s.execute("solid.emboss", &json!({"sketch": "Beside", "depth": 1, "faces": [[2, 2, 10], [38, 38, 20]]})).unwrap_err().to_string();
+    assert!(e.contains("profile 1 lies over none of the 2 selected faces"), "{e}");
     assert_eq!(s.doc.to_json(), saved);
-    let e = s.execute("solid.emboss", &json!({"sketch": "Marks", "depth": 1, "faces": [[2, 2, 10]]})).unwrap_err().to_string();
-    assert!(e.contains("not fitting the selected target face") && e.contains("profile 2 of 2 lies off it"), "{e}");
+    let e = s.execute("solid.emboss", &json!({"sketch": "Beside", "depth": 1, "faces": [[2, 2, 10]]})).unwrap_err().to_string();
+    assert!(e.contains("profile 1 lies off the selected face"), "{e}");
     assert_eq!(s.doc.to_json(), saved);
     // A face picked twice is said so.
     let e = s.execute("solid.emboss", &json!({"sketch": "Marks", "depth": 1, "faces": [[2, 2, 10], [2, 2, 10]]})).unwrap_err().to_string();

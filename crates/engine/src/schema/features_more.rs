@@ -410,8 +410,10 @@ pub struct EmbossParams {
     #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "EmbossFacePoint")]
     pub face: Option<EmbossFacePoint>,
-    /// World points on several faces to emboss (in place of `face`): each profile goes onto the
-    /// face it lies over, and one that lies over none refuses the emboss.
+    /// World points on several faces to emboss (in place of `face`): each profile is projected
+    /// onto every face and keeps what lies over it (a planar face cuts it at its edges, so what
+    /// falls between faces is left out, and a face under one nearer the sketch loses what that one
+    /// covers). A profile over none is left out with a warning; when none lands, it refuses.
     #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = 64))]
     pub faces: Option<Vec<EmbossFacePoint>>,

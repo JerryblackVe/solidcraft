@@ -173,7 +173,7 @@ pub fn emboss_face_normal(body: &Body, face: usize, at: Vec3) -> Result<Option<V
 /// (either side) each region is laid on the wall at its centroid's arc length from the sketch;
 /// on any other face it is projected along the sketch normal.
 pub fn emboss_project_face(body: &Body, face: usize, at: Vec3, plane: &Plane, regions: &[Region2], depth: f64) -> Result<Body> {
-    let pieces = emboss_face_pieces(body, face, at, plane, regions, depth)?;
+    let pieces = emboss_face_pieces(body, face, at, plane, regions, depth, false)?;
     // Every region must reach the face: one that misses it would leave its letter out.
     let missed: Vec<String> = pieces.iter().enumerate().filter(|(_, p)| p.is_none()).map(|(i, _)| (i + 1).to_string()).collect();
     if let Some((last, rest)) = missed.split_last() {
@@ -188,9 +188,18 @@ pub fn emboss_project_face(body: &Body, face: usize, at: Vec3, plane: &Plane, re
 
 /// The piece of an emboss (`depth > 0`) or deboss (`depth < 0`) of each of `regions` on face
 /// `face` of `body`, as [`emboss_project_face`] lays it: `None` for a region that lies off the
-/// face. Nothing is applied: [`emboss_apply`] joins or cuts the pieces, so pieces of several faces
-/// (of one body) go on in one step.
-pub fn emboss_face_pieces(body: &Body, face: usize, at: Vec3, plane: &Plane, regions: &[Region2], depth: f64) -> Result<Vec<Option<Body>>> {
+/// face. With `clip`, a region partly over a planar face that looks at the sketch keeps the part
+/// over it, cut at the face's edges. Nothing is applied: [`emboss_apply`] joins or cuts the pieces,
+/// so pieces of several faces (of one body) go on in one step.
+pub fn emboss_face_pieces(
+    body: &Body,
+    face: usize,
+    at: Vec3,
+    plane: &Plane,
+    regions: &[Region2],
+    depth: f64,
+    clip: bool,
+) -> Result<Vec<Option<Body>>> {
     body.require_brep("emboss")?;
     if !depth.is_finite() || depth.abs() < 1e-6 || depth.abs() > 1e6 || regions.is_empty() || regions.len() > 4096 {
         return Err(refuse("needs finite nonzero depth and 1..4096 profiles"));
@@ -303,6 +312,7 @@ pub fn emboss_face_pieces(body: &Body, face: usize, at: Vec3, plane: &Plane, reg
             through = true;
             slab
         };
+        let clip = clip && facing(&rec, face, plane);
         let mut pieces = Vec::with_capacity(prisms.len());
         for prism in &prisms {
             let piece = match prism {
@@ -311,11 +321,13 @@ pub fn emboss_face_pieces(body: &Body, face: usize, at: Vec3, plane: &Plane, reg
                 // one below, unless the slab cuts it short (over the face's edge or a hole),
                 // where the two join round the side.
                 Some(prism) => match crate::boolean(prism, &slab, crate::BoolOp::Intersect)? {
-                    Some(_)
+                    // Cut short and clipped: kept where it breaks the face; wholly inside the body
+                    // it would be a hidden hollow, or nothing.
+                    Some(piece)
                         if through
                             && crate::boolean(prism, &slab, crate::BoolOp::Cut)?.map_or(0, |rest| rest.lumps().map_or(0, |l| l.len())) != 2 =>
                     {
-                        None
+                        if clip && crate::boolean(&piece, body, crate::BoolOp::Cut)?.is_some() { Some(piece) } else { None }
                     }
                     piece => piece,
                 },
@@ -323,6 +335,32 @@ pub fn emboss_face_pieces(body: &Body, face: usize, at: Vec3, plane: &Plane, reg
             pieces.push(piece);
         }
         Ok(pieces)
+    })
+}
+
+/// Whether face `face` is planar and looks at the sketch, within 60° of its normal: a region cut
+/// at its edges (square to the face) keeps its shape there.
+fn facing(rec: &Brep, face: usize, plane: &Plane) -> bool {
+    matches!(surf_of(rec, face), Some(Surf::Plane { n, .. }) if n.dot(plane.normal()).abs() >= 0.5)
+}
+
+/// What face `face` of `body` covers, for an emboss with several faces: the column over and
+/// under it, `reach` each way, where the face is planar and looks at the sketch (as
+/// [`emboss_face_pieces`] cuts at its edges), and whether its outside looks the sketch normal's
+/// way; `None` on any other face. A piece on a selected face that looks the same way, further
+/// from the sketch, loses what lies in it, hidden under this face.
+pub fn emboss_face_shadow(body: &Body, face: usize, plane: &Plane, reach: f64) -> Result<Option<(Body, bool)>> {
+    body.require_brep("emboss")?;
+    if !reach.is_finite() || reach <= 0.0 || reach > 1e7 || Plane::new(plane.origin, plane.x, plane.y).is_none() {
+        return Err(refuse("invalid sketch frame or shadow reach"));
+    }
+    guard("emboss shadow", || {
+        let rec = record(body)?;
+        let Some(Surf::Plane { n, .. }) = surf_of(&rec, face).filter(|_| facing(&rec, face, plane)) else {
+            return Ok(None);
+        };
+        let sheet = crate::surfaces::offset_faces(body, &[face], -reach, (body.size() * 1e-7).max(1e-7))?;
+        Ok(Some((crate::thicken(&sheet, 2.0 * reach, false)?, n.dot(plane.normal()) > 0.0)))
     })
 }
 
