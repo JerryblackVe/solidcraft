@@ -197,8 +197,8 @@ pub use delete_face::delete_faces;
 pub use distance::{BodyDistance, DistanceShape, Members, body_distance, edges_closest, faces_closest, point_closest};
 pub use draft_corners::{CornerFill, CornerOption, CornerRefusal, CornerReport, DraftCorner, draft_corners};
 pub use emboss::{
-    cylinder_emboss_anchor, emboss_anchor, emboss_apply, emboss_cylinder, emboss_cylinder_at, emboss_face_pieces, emboss_project_face,
-    has_cylinder_emboss_wall, infer_cylinder_emboss,
+    cylinder_emboss_anchor, emboss_anchor, emboss_apply, emboss_cylinder, emboss_cylinder_at, emboss_face_pieces, emboss_face_shadow,
+    emboss_project_face, has_cylinder_emboss_wall, infer_cylinder_emboss,
 };
 pub use failure::ErrorCode;
 pub use fair::{
