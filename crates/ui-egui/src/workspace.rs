@@ -517,7 +517,7 @@ pub const SECTIONS: &[Section] = &[
     Section {
         tab: "SKETCH",
         panel: "MODIFY",
-        promoted: 3,
+        promoted: 8,
         ids: &[
             "sketch.trim",
             "sketch.offset",
@@ -740,6 +740,8 @@ pub const RIBBON_LABELS: &[(&str, &str)] = &[
     ("sketch.pattern.circular", "Circular"),
     ("sketch.pattern.rectangular", "Rectangular"),
     ("sketch.rectangle.two_point", "Rectangle"),
+    ("sketch.transform", "Move"),
+    ("sketch.ungroup", "Explode"),
     ("solid.move", "Move / Copy"),
     ("solid.pattern.rectangular", "Pattern"),
     ("surface.extrude", "Extrude"),
@@ -1419,7 +1421,9 @@ mod tests {
         }
         for (s, (cmds, n)) in lists {
             assert!(
-                n <= 4 || (s.tab == "SKETCH" && ((s.panel == "CONSTRAIN" && n == 7) || (s.panel == "CREATE" && n == 5))),
+                n <= 4
+                    || (s.tab == "SKETCH"
+                        && ((s.panel == "CONSTRAIN" && n == 7) || (s.panel == "CREATE" && n == 5) || (s.panel == "MODIFY" && n == 8))),
                 "{}/{} promotes {n} commands",
                 s.tab,
                 s.panel
@@ -1534,6 +1538,28 @@ mod tests {
         assert_eq!(modify.iter().take(n).map(|c| c.id).collect::<Vec<_>>(), ["frame.rotate_member"]);
         let at = |p: &str| panels("WELDMENTS").iter().position(|q| *q == p);
         assert_eq!(at("MODIFY"), at("CREATE").map(|i| i + 1));
+    }
+
+    /// Sketch Modify shows Transform, Group, Ungroup, Group Lock and Nodes on the ribbon, not
+    /// only in its drop-down: with three promoted buttons nobody found them.
+    #[test]
+    fn sketch_modify_shows_transform_group_lock_and_nodes_on_the_ribbon() {
+        let specs = solidcraft_engine::command_specs();
+        let (commands, n) = layout("SKETCH", "MODIFY", &specs).unwrap();
+        let shown: Vec<_> = commands.iter().take(n).map(|c| c.id).collect();
+        assert_eq!(
+            shown,
+            [
+                "sketch.trim",
+                "sketch.offset",
+                "sketch.fillet",
+                "sketch.transform",
+                "sketch.group",
+                "sketch.ungroup",
+                "sketch.group_lock",
+                "sketch.nodes_mode"
+            ]
+        );
     }
 
     /// Weldments is there in a fresh document (a frame starts from a sketch of its lines), holds
