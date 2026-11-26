@@ -97,8 +97,8 @@ fn eval(doc: &Document, text: &str, kind: ValueKind) -> solidcraft_engine::doc::
     crate::length_input::eval(doc, definition(text).map_or(text, |(_, rhs)| rhs), kind)
 }
 
-/// Whether a box becomes one of the shape's dimensions. A rounded rectangle's radius is its own
-/// parameter (sent with the shape); sides and rho are counts and shape factors.
+/// Whether a box becomes one of the shape's dimensions. A rounded rectangle's or a star's radius
+/// is its own parameter (sent with the shape); sides and rho are counts and shape factors.
 fn is_dimension(t: &Tool, label: &str) -> bool {
     if solidcraft_engine::cmd::construction_line_mode(t.cmd).is_some() {
         return matches!(
@@ -107,7 +107,7 @@ fn is_dimension(t: &Tool, label: &str) -> bool {
                 | ("sketch.construction_line.parallel" | "sketch.construction_line.horizontal" | "sketch.construction_line.vertical", "Offset")
         ) || label == "Length";
     }
-    !matches!(label, "Sides" | "Points" | "Rho") && !(t.cmd == "sketch.rectangle.rounded" && label == "Radius")
+    !matches!(label, "Sides" | "Points" | "Rho") && !(matches!(t.cmd, "sketch.rectangle.rounded" | "sketch.star") && label == "Radius")
 }
 
 fn dir_or_x(v: Vec2) -> Vec2 {

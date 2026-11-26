@@ -164,3 +164,31 @@ fn the_untouched_points_box_shows_the_points_drawn() {
     };
     assert_eq!(f64::from(star.points), shown[points].0, "{star:?}");
 }
+
+/// A star sized by typing in its boxes is drawn with the typed radius, with or without a typed
+/// Points count: the Radius box is the star's own number, not a dimension.
+#[test]
+fn a_star_typed_in_its_boxes_is_drawn() {
+    for points in [None, Some("10")] {
+        let mut h = Harness::new();
+        h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+        h.app.cam.distance = 50.0;
+        h.step(&json!({"start":"sketch.star"})).unwrap();
+        h.step(&json!({"click":{"world":[0, 0, 0]}})).unwrap();
+        h.frames(2);
+        let tool = h.app.tool.as_mut().unwrap();
+        for (label, text) in [("Radius", Some("26")), ("Points", points)] {
+            if let Some(text) = text {
+                let b = tool.dims.iter_mut().find(|b| b.label == label).expect(label);
+                b.value = text.into();
+                b.locked = true;
+            }
+        }
+        h.step(&json!({"click":{"world":[3, 8, 0]}})).unwrap();
+        let sketch = &h.app.session.world_state().unwrap().sketches[0].sketch;
+        let Some(solidcraft_engine::sketch::LinkSource::Star(star)) = sketch.links.first().map(|l| l.source.clone()) else {
+            panic!("{points:?}: a star was drawn: {:?}", h.app.status)
+        };
+        assert!((star.outer - 26.0).abs() < 1e-9 && star.points == if points.is_some() { 10 } else { 5 }, "{star:?}");
+    }
+}

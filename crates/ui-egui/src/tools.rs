@@ -778,8 +778,10 @@ fn run_shape(app: &mut SolveApp, t: &Tool) -> Result<Vec<String>, String> {
         "sketch.polygon.edge" => json!({"p0": xy(&p[0]), "p1": xy(&p[1]), "sides": sides}),
         // The click is the centre, the drag the tip radius, and the first tip points at the cursor
         // (0 degrees is a tip straight up). Points and depth are the defaults: Edit Star changes them.
+        // A typed Radius goes as typed, so a star typed `R` follows the parameter.
         "sketch.star" => {
-            json!({"center": xy(&p[0]), "outer_radius": d(0, 1), "points": crate::sketch_dims::locked_value(app, t, "Points").unwrap_or(crate::sketch_dims::DEFAULT_STAR_POINTS), "angle": (p[1].0 - p[0].0).angle().to_degrees() - 90.0})
+            let outer = crate::sketch_dims::locked_expression(t, "Radius").map_or_else(|| json!(d(0, 1)), |e| json!(e));
+            json!({"center": xy(&p[0]), "outer_radius": outer, "points": crate::sketch_dims::locked_value(app, t, "Points").unwrap_or(crate::sketch_dims::DEFAULT_STAR_POINTS), "angle": (p[1].0 - p[0].0).angle().to_degrees() - 90.0})
         }
         "sketch.slot.center_to_center" | "sketch.slot.overall" => {
             let dir = (p[1].0 - p[0].0).normalized().unwrap_or(Vec2::X);
