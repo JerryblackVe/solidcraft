@@ -809,6 +809,27 @@ fn an_emboss_on_stacked_faces_leaves_out_what_the_upper_one_covers() {
 }
 
 #[test]
+fn an_emboss_on_stacked_faces_of_a_moved_component_leaves_out_what_the_upper_one_covers() {
+    // The same plates, the lower one built at x = -50 in a component then moved 50 along x, as a
+    // STEP part sits: the upper top's cover must be taken into the lower body's own frame, or it
+    // misses and the lower top takes 15 x 10 instead of 10 x 10.
+    let mut s = Session::default();
+    let part = run(&mut s, "component.create", json!({"name": "Part", "grounded": false}));
+    run(&mut s, "solid.box", json!({"length": 20, "width": 40, "height": 3, "corner": [-50, 0, 0], "body_name": "Low"}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "occurrence.move", json!({"occurrence": part["occurrence"], "translate": [50, 0, 0]}));
+    run(&mut s, "component.capture_position", json!({}));
+    run(&mut s, "solid.box", json!({"length": 20, "width": 40, "height": 3, "corner": [15, 0, 3], "operation": "new", "body_name": "High"}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 20], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Band"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [5, 10], "p1": [30, 20]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let (low, high) = (body_volume(&s, "Low"), body_volume(&s, "High"));
+    run(&mut s, "solid.emboss", json!({"sketch": "Band", "depth": 1, "faces": [[2, 30, 3], [30, 30, 6]]}));
+    assert!(rel(body_volume(&s, "Low") - low, 100.0) < 1e-6, "{}", body_volume(&s, "Low") - low);
+    assert!(rel(body_volume(&s, "High") - high, 150.0) < 1e-6, "{}", body_volume(&s, "High") - high);
+}
+
+#[test]
 fn an_emboss_on_a_top_and_its_base_raises_both() {
     // A 10 x 10 square over a 40 x 20 x 10 box, 1.5 mm, on the top and the base: the base looks
     // the other way, so the top does not cover it; 10 x 10 x 1.5 = 150 on each.
@@ -822,6 +843,35 @@ fn an_emboss_on_a_top_and_its_base_raises_both() {
     assert!(rel(volume(&mut s) - v, 300.0) < 1e-6, "{}", volume(&mut s) - v);
     run(&mut s, "timeline.edit", json!({"feature": "Both", "set": {"deboss": true}}));
     assert!(rel(v - volume(&mut s), 300.0) < 1e-6, "{}", volume(&mut s));
+}
+
+#[test]
+fn an_emboss_on_a_side_the_sketch_does_not_look_at_takes_its_profiles_adapted() {
+    // A 10 x 10 square over a 40 x 20 x 10 box, 1.5 mm, on the top, the base and the right side
+    // (x = 40, 20 x 10): on the side it stands upright, centred on the picked point (y 5..15,
+    // z 0..10), where it fits; 150 on each face, out to x = 41.5 and z -1.5..11.5.
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 40, "width": 20, "height": 10, "operation": "new", "body_name": "Box"}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 10], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Lid"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [15, 5], "p1": [25, 15]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let v = volume(&mut s);
+    run(&mut s, "solid.emboss", json!({"sketch": "Lid", "depth": 1.5, "faces": [[2, 2, 10], [2, 2, 0], [40, 10, 5]]}));
+    assert!(rel(volume(&mut s) - v, 450.0) < 1e-6, "{}", volume(&mut s) - v);
+    let b = s.model.state().bodies[0].body.exact_bounds().unwrap();
+    assert!((b.max.x - 41.5).abs() < 1e-6 && (b.min.z + 1.5).abs() < 1e-6 && (b.max.z - 11.5).abs() < 1e-6, "{b:?}");
+    // A 30 x 30 square does not fit the 20 x 10 side: 98 % of it (14.7 each way from the centre)
+    // fits up to a scale of 5 / 14.7, and it goes on at 90 % of that: 30 * 0.9 * 5 / 14.7 = 9.18
+    // a side, 84.3 mm³ at 1 mm (the largest fit is found to 1 part in 4096).
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 40, "width": 20, "height": 10, "operation": "new", "body_name": "Box"}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 10], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Big"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [5, -5], "p1": [35, 25]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let v = volume(&mut s);
+    run(&mut s, "solid.emboss", json!({"sketch": "Big", "depth": 1, "faces": [[40, 10, 5]]}));
+    let side = 30.0 * 0.9 * 5.0 / 14.7;
+    assert!(rel(volume(&mut s) - v, side * side) < 2e-3, "{}", volume(&mut s) - v);
 }
 
 #[test]
@@ -866,8 +916,11 @@ fn an_emboss_distributes_its_profiles_one_face_each() {
     let mut s = plate_with_bars();
     let faces = json!([[20, 20, 3], [20, 0, 1.5], [40, 20, 1.5]]);
     let saved = s.doc.to_json();
-    let e = s.execute("solid.emboss", &json!({"sketch": "Bars", "depth": 1, "faces": faces})).unwrap_err().to_string();
-    assert!(e.contains("lies over none"), "not distributed unless asked: {e}");
+    // Not distributed, the bars (26 x 2 together) miss the top and stand on each side together,
+    // adapted: they fit the 40 x 3 front and right side whole, 3 x 6 x 2 x 1 = 36 on each.
+    run(&mut s, "solid.emboss", json!({"sketch": "Bars", "depth": 1, "faces": faces}));
+    assert!(rel(volume(&mut s), 4800.0 + 72.0) < 1e-6, "{}", volume(&mut s));
+    run(&mut s, "edit.undo", json!({}));
     run(&mut s, "solid.emboss", json!({"sketch": "Bars", "depth": 1, "faces": faces, "distribute": [0, 1, 2], "name": "Spread"}));
     assert!(rel(volume(&mut s), 4800.0 + 36.0) < 1e-6, "{}", volume(&mut s));
     let bounds = |s: &Session| s.model.state().bodies[0].body.exact_bounds().unwrap();
