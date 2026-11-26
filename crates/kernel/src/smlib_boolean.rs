@@ -152,7 +152,11 @@ mod smlib {
         if check.is_valid() {
             return Ok(step);
         }
-        Err(failed(&crate::validation::refuses(operands.iter().map(|s| s.check(CheckLevel::All))), check))
+        let checks: Vec<_> = operands.iter().map(|s| s.check(CheckLevel::All)).collect();
+        if crate::validation::inherited(&check.to_string(), &checks) {
+            return Ok(step);
+        }
+        Err(failed(&crate::validation::refuses(checks.into_iter()), check))
     }
 
     /// `body` with `history` where it describes `body` made from `a` and `b`.

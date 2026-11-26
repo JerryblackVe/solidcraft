@@ -193,6 +193,39 @@ pub(crate) fn refuses(checks: impl ExactSizeIterator<Item = solidcraft_smlib::Re
     format!("SMLib's check refuses the result{whose}")
 }
 
+/// The names of the tests a check text says failed (`SmEdge::Test #7 Bad Edge Length`), cut where
+/// the values or the owner start; `None` when a line says something else than a test failed
+/// (its `N failed tests:` header and "AssertValid skipped" lines apart).
+fn test_names(text: &str) -> Option<Vec<&str>> {
+    let mut names = Vec::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("AssertValid skipped")) {
+        if line.ends_with("failed tests:") || line.ends_with("failed test:") {
+            continue;
+        }
+        let end = [line.find(" ("), line.find(" [owner")].into_iter().flatten().min().unwrap_or(line.len());
+        let name = line.get(..end)?.trim_end();
+        name.contains("::Test #").then_some(())?;
+        names.push(name);
+    }
+    Some(names)
+}
+
+/// The tests of how a curve is stored, not of what the solid is: a part from another system can carry
+/// them as it is (repeated control points, polar angles that do not run one way) and no step on it makes or fixes them.
+const STORAGE_TESTS: &[&str] = &["SmBSplineCurve::", "SmPolarConversion::"];
+
+/// Whether `detail`, the check of a step's result, fails only [`STORAGE_TESTS`] an operand's check
+/// (`operands`, as [`refuses`] takes them) fails too. A boolean, round or shell that carries
+/// the curves of such a part over untouched makes a result that fails the same tests, which says
+/// nothing against the step: it is accepted then (BUG-21). Any other test, a storage test the
+/// operands pass, a check that says anything but failed tests, and an operand whose check could not
+/// run all refuse the result.
+pub(crate) fn inherited(detail: &str, operands: &[solidcraft_smlib::Result<solidcraft_smlib::CheckReport>]) -> bool {
+    let Some(names) = test_names(detail).filter(|n| !n.is_empty()) else { return false };
+    let had: Vec<&str> = operands.iter().filter_map(|c| c.as_ref().ok()).filter_map(|c| test_names(&c.text)).flatten().collect();
+    names.iter().all(|n| STORAGE_TESTS.iter().any(|t| n.starts_with(t)) && had.contains(n))
+}
+
 /// SMLib's full check of a body a feature keeps, once a step of the feature left its check to
 /// the end: an error with the check's reason unless it passes. A body decoded from a step's
 /// result is checked as that step would have checked it, on its result; any other (a copy moved
@@ -213,8 +246,12 @@ fn verdict(what: &str, check: std::result::Result<solidcraft_smlib::CheckReport,
     match check {
         Ok(c) if c.is_valid() => Ok(()),
         Ok(c) => {
-            let checks = operands.iter().map(|o| solidcraft_smlib::Brep::from_record(o, true).and_then(|s| s.check_owned(CheckLevel::All)));
-            Err(KernelError::Failed(format!("{what}: {}: {c}", refuses(checks))))
+            let checks: Vec<_> =
+                operands.iter().map(|o| solidcraft_smlib::Brep::from_record(o, true).and_then(|s| s.check_owned(CheckLevel::All))).collect();
+            if inherited(&c.to_string(), &checks) {
+                return Ok(());
+            }
+            Err(KernelError::Failed(format!("{what}: {}: {c}", refuses(checks.into_iter()))))
         }
         Err(e) => Err(KernelError::Failed(format!("{what}: {e}"))),
     }
@@ -429,6 +466,32 @@ mod tests {
         }
         assert!(failure.to_string().starts_with(&format!("{} failed test", report.failures)), "{failure}");
         assert_eq!(failing_check(&good).unwrap(), None, "the box passes");
+    }
+
+    /// BUG-21: a part SMLib's check fails as it is (a B-spline with repeated control points,
+    /// polar angles that do not run one way) keeps failing it after a boolean that carries those
+    /// curves over untouched, and the step accepts the result; any other test, or a storage
+    /// test the operands pass, still refuses it.
+    #[test]
+    fn a_result_failing_only_storage_tests_its_operand_already_fails_is_accepted() {
+        let report = |text: &str| solidcraft_smlib::CheckReport { failures: text.lines().count(), text: text.to_string() };
+        let spline = "SmBSplineCurve::Test #15 Bad Repeated CPts: BSplineCurve has Internal Coincident ControlPoints (tolerance= 1e-06) [owner SmBSplineCurve]";
+        let polar = "SmPolarConversion::Test #3 Angles: Stored Angles must increase or decrease monotonically [owner SmPolarConversion]";
+        let edge = "SmEdge::Test #7 Bad Edge Length: less than edge tolerance (offset=0, tolerance=1e-6) [owner SmEdge]";
+        let detail = |text: &str| format!("{} failed tests:\n{text}", text.lines().count());
+        let operands = [Ok(report(&format!("{spline}\n{polar}"))), Ok(report(""))];
+        assert!(inherited(&detail(&format!("{spline}\n{polar}\n{spline}")), &operands), "the same tests, repeated on more edges");
+        assert!(inherited(&detail(spline), &operands), "fewer of them");
+        assert!(
+            !inherited(&detail(edge), &[Ok(report(edge))]),
+            "only how a curve is stored is carried over, a part with a bad edge is still refused"
+        );
+        assert!(!inherited(&detail(&format!("{spline}\n{edge}")), &operands), "a test the operands pass is the result's own fault");
+        assert!(!inherited(&detail(edge), &[Ok(report(spline))]), "a test the operand does not fail");
+        assert!(!inherited(&detail(polar), &[Ok(report("")), Ok(report(""))]), "operands that pass");
+        assert!(!inherited(&detail(polar), &[Err(solidcraft_smlib::Error::Argument)]), "an operand the check could not run");
+        assert!(!inherited("record refused: vertex tolerance grown past 1 mm", &operands), "not a list of failed tests");
+        assert!(!inherited(&detail(""), &operands), "nothing named");
     }
 
     #[test]
