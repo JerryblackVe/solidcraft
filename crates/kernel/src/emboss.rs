@@ -304,6 +304,29 @@ pub fn emboss_face_pieces(
                 prisms.push(crate::extrude(&local, std::slice::from_ref(reg), -pad, pad)?.into_iter().next());
             }
             slab
+        } else if let Some(Surf::Sphere { c, r, convex }) = surf_of(&rec, face)
+            && is_whole_sphere(&rec, c, r, convex)
+        {
+            // SMLib does not thicken a whole sphere (BUG-24): the slab is the exact shell between
+            // the offsets' radii, and the prisms stop at the equator square to the sketch, so
+            // each meets the shell only on the hemisphere the pick is on, not its far side. Only
+            // for a body that is the sphere: a cap or dome has an edge the shell would hang over.
+            if d + overlap >= r {
+                return Err(refuse("the depth must stay below the sphere's radius"));
+            }
+            let (r_in, r_out) = if convex { (r + lo, r + hi) } else { (r - hi, r - lo) };
+            let outer = crate::sphere(c, r_out)?;
+            let slab = if r_in > 1e-6 {
+                crate::boolean(&outer, &crate::sphere(c, r_in)?, crate::BoolOp::Cut)?.ok_or_else(|| refuse("slab"))?
+            } else {
+                outer
+            };
+            let n = plane.normal();
+            let equator = (c - plane.origin).dot(n);
+            let reach = r + d + 1.0;
+            let (start, end) = if (at - c).dot(n) >= 0.0 { (equator, equator + reach) } else { (equator - reach, equator) };
+            prisms = crate::extrude(plane, regions, start, end)?.into_iter().map(Some).collect();
+            slab
         } else {
             let sheet = crate::surfaces::offset_faces(body, &[face], lo, (body.size() * 1e-7).max(1e-7))?;
             let slab = crate::thicken(&sheet, hi - lo, false)?;
@@ -336,6 +359,15 @@ pub fn emboss_face_pieces(
         }
         Ok(pieces)
     })
+}
+
+/// Whether every face of `rec` lies on the sphere of centre `c` and radius `r` (a whole ball, or
+/// a hollow one, stored as one face or several): no edge of a cap or dome on it.
+fn is_whole_sphere(rec: &Brep, c: Vec3, r: f64, convex: bool) -> bool {
+    let tol = (r * 1e-7).max(1e-7);
+    (0..rec.faces.len()).all(
+        |f| matches!(surf_of(rec, f), Some(Surf::Sphere { c: c2, r: r2, convex: k2 }) if k2 == convex && c2.dist(c) <= tol && (r2 - r).abs() <= tol),
+    )
 }
 
 /// Whether face `face` is planar and looks at the sketch, within 60° of its normal: a region cut

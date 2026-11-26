@@ -685,6 +685,33 @@ fn emboss_on_a_face_leaves_out_a_profile_off_it_and_says_so() {
 }
 
 #[test]
+fn emboss_on_a_whole_sphere_follows_the_hemisphere_it_is_picked_on() {
+    // BUG-24: SMLib does not thicken a whole sphere, so Emboss on one failed with "SMLib thicken:
+    // operation: invalid argument". A 6 x 6 square seen from the top of a 40 mm ball, 1 mm high, is
+    // the column over it between the spheres of radius 20 and 21: the integral over the square of
+    // sqrt(21^2 - p^2) - sqrt(20^2 - p^2), p the distance from the axis, which is 36 * (1 + 6 / 840) = 36.26.
+    // Never a floating slab at the sketch.
+    let mut s = Session::default();
+    run(&mut s, "solid.sphere", json!({"diameter": 40, "body_name": "Ball"}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 25], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Mark"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [-3, -3], "p1": [3, 3]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let ball = volume(&mut s);
+    run(&mut s, "solid.emboss", json!({"sketch": "Mark", "depth": 1, "faces": [[0, 0, 20]]}));
+    let raised = volume(&mut s) - ball;
+    assert!((raised - 36.26).abs() < 0.1, "the raised patch is {raised} mm3, not about 36.26");
+    let top = measure(&mut s)["bodies"][0]["bbox"]["max"][2].as_f64().unwrap_or(f64::NAN);
+    assert!((top - 21.0).abs() < 0.05, "the patch stands on the ball (top {top}), not at the sketch (25 to 26)");
+    // A cap of the ball has an edge the shell would hang over: it is refused, not built floating.
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "solid.box", json!({"length": 60, "width": 60, "height": 40, "corner": [-30, -30, -30], "operation": "cut"}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 25], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Wide"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [-25, -3], "p1": [25, 3]}));
+    run(&mut s, "sketch.finish", json!({}));
+    assert!(s.execute("solid.emboss", &json!({"sketch": "Wide", "depth": 1, "faces": [[0, 0, 20]]})).is_err());
+}
+
+#[test]
 fn emboss_face_off_the_part_says_how_far() {
     // #392: a point beside the face was refused with "`face` must identify exactly one target
     // body surface", which didn't say the point was off the face.
