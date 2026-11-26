@@ -515,7 +515,10 @@ mod imp {
             if step == crate::validation::Step::Check {
                 let check = r.check(CheckLevel::All).map_err(|e| failed(what, "check", e))?;
                 if !check.is_valid() {
-                    return Err(failed(what, &crate::validation::refuses([sb.check(CheckLevel::All)].into_iter()), check));
+                    let input = [sb.check(CheckLevel::All)];
+                    if !crate::validation::inherited(&check.to_string(), &input) {
+                        return Err(failed(what, &crate::validation::refuses(input.into_iter()), check));
+                    }
                 }
             }
             let (out, result_order) = body_from_smlib_ordered(&r)?;

@@ -93,9 +93,12 @@ pub(crate) fn run(
     if step == Step::Check {
         let check = r.check(CheckLevel::All).map_err(|e| failed(name, "check", e))?;
         if !check.is_valid() {
-            let input = sb.check(CheckLevel::All).is_ok_and(|c| !c.is_valid());
-            let what = if input { "SMLib's check refuses the result (the body already fails it)" } else { "SMLib's check refuses the result" };
-            return Err(failed(name, what, check));
+            let input = sb.check(CheckLevel::All);
+            if !crate::validation::inherited(&check.to_string(), std::slice::from_ref(&input)) {
+                let input = input.is_ok_and(|c| !c.is_valid());
+                let what = if input { "SMLib's check refuses the result (the body already fails it)" } else { "SMLib's check refuses the result" };
+                return Err(failed(name, what, check));
+            }
         }
     }
     let (body, or) = body_from_smlib_ordered(&r)?;
