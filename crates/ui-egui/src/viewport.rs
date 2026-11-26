@@ -7951,14 +7951,26 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         {
             crate::sketch_text::open(app, &entity);
         }
-        // Double-click a star (one outline curve picked by the first click): edit its numbers.
+        // Double-click a star (an outline curve or its fill picked by the first click): edit its
+        // numbers. With the Star tool drawing, the first click only placed a centre, so a
+        // double-click on a star edits that star instead.
+        let star_tool = app.tool.as_ref().is_some_and(|t| t.cmd == "sketch.star" && t.pts.len() <= 1);
         if resp.double_clicked()
             && !pen_select
             && !held
             && !dim_edit
-            && app.tool.is_none()
             && app.dialog.is_none()
-            && let Some(curve) = crate::sketch_modify_ui::selected_star(app)
+            && let Some(curve) = if app.tool.is_none() {
+                crate::sketch_modify_ui::selected_star(app)
+            } else if star_tool {
+                pick_cached(app, &proj, p).iter().find_map(|h| match h {
+                    Hit::SketchCurve { id, .. } => crate::sketch_modify_ui::star_of(app, &Sel::SketchCurve { id: id.clone(), sketch: None }),
+                    Hit::Profile { sketch, index } => crate::sketch_modify_ui::star_of(app, &Sel::Profile { sketch: *sketch, index: *index }),
+                    _ => None,
+                })
+            } else {
+                None
+            }
         {
             crate::sketch_modify_ui::edit_star(app, &curve);
         }

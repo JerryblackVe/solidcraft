@@ -103,3 +103,29 @@ fn a_star_is_drawn_from_its_centre_and_a_double_click_edits_it() {
         h.app.status
     );
 }
+
+/// A double-click inside a star (its fill, not its outline) opens Edit Star, and so does a
+/// double-click on a star while the Star tool is still drawing: it edits that star, it does not
+/// start another one.
+#[test]
+fn a_double_click_on_a_stars_fill_or_with_the_star_tool_edits_the_star() {
+    let editing = |h: &Harness| {
+        matches!(h.app.dialog.as_ref().map(|d| &d.kind), Some(crate::dialogs::Kind::SketchModify(crate::sketch_modify_ui::Mod::Star { .. })))
+    };
+    let mut h = Harness::new();
+    h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+    h.app.run("sketch.star", json!({"center":[0, 0], "outer_radius":10, "points":5})).unwrap();
+    h.app.cam.distance = 50.0;
+    h.frames(2);
+    h.step(&json!({"click":{"world":[1.5, -0.5, 0]},"double":true})).unwrap();
+    h.frames(2);
+    assert!(editing(&h), "the fill: {:?} {:?}", h.app.session.selection, h.app.status);
+    h.app.dialog = None;
+    h.app.session.selection.clear();
+    h.step(&json!({"start":"sketch.star"})).unwrap();
+    let before = h.app.session.doc.to_json();
+    h.step(&json!({"click":{"world":[1.5, -0.5, 0]},"double":true})).unwrap();
+    h.frames(2);
+    assert!(editing(&h) && h.app.tool.is_none(), "with the tool: {:?} {:?}", h.app.tool.as_ref().map(|t| t.cmd), h.app.status);
+    assert_eq!(h.app.session.doc.to_json(), before, "nothing was drawn");
+}
