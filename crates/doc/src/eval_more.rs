@@ -66,7 +66,9 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                 // Otherwise each profile is projected onto every selected face (laid round a
                 // cylinder wall) and keeps what lies over it: a planar face cuts it at its edges, so
                 // what falls between faces is left out, and a face under a selected face nearer the
-                // sketch loses what that one covers. All of one body's pieces go on in one step.
+                // sketch loses what that one covers. A planar face the sketch does not look at (a
+                // side under a sketch above) takes the profiles adapted to it instead. All of one
+                // body's pieces go on in one step.
                 struct Laid {
                     body: usize,
                     face: usize,
@@ -74,22 +76,32 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                     plane: Plane,
                     near: f64,
                     curved: bool,
+                    adapted: bool,
                     pieces: Vec<(usize, usize, Body)>,
                 }
                 let mut laid = Vec::with_capacity(faces.len());
                 let mut bodies: BTreeMap<usize, ModelBody> = BTreeMap::new();
                 for (slot, face) in faces.iter().enumerate() {
                     let mut here: Option<Laid> = None;
-                    for (k, (feature, plane, regions, _)) in sources.iter().enumerate() {
+                    for (k, (feature, plane, regions, unmoved)) in sources.iter().enumerate() {
                         let (i, mb, hit, plane, frame) = emboss_face_hit(doc, f, st, face, slot, *feature, plane)?;
                         let at = kernel::emboss_anchor(&mb.body, hit.face, hit.point)?;
-                        let pieces = kernel::emboss_face_pieces(&mb.body, hit.face, at, &plane, regions, signed, true)?;
+                        let side = mb.body.planar_face(hit.face).and(kernel::emboss_face_normal(&mb.body, hit.face, at)?);
+                        let side = side.filter(|n| n.dot(plane.normal()).abs() < 0.5);
+                        let pieces = match side {
+                            Some(normal) => {
+                                let (.., unmoved, _) = emboss_face_hit(doc, f, st, face, slot, *feature, unmoved)?;
+                                emboss_adapted(&mb.body, hit.face, at, normal, &unmoved, regions, shift, signed)?
+                            }
+                            None => kernel::emboss_face_pieces(&mb.body, hit.face, at, &plane, regions, signed, true)?,
+                        };
                         let l = here.get_or_insert_with(|| Laid {
                             body: i,
                             face: hit.face,
                             frame,
                             near: (at - plane.origin).dot(plane.normal()).abs(),
                             curved: mb.body.planar_face(hit.face).is_none(),
+                            adapted: side.is_some(),
                             plane,
                             pieces: Vec::new(),
                         });
@@ -113,7 +125,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                     let mut covers = Vec::new();
                     // A face that looks the other way (a base under a selected top) is not covered.
                     let over = |near: f64, up: bool| near < l.near - 1e-6 && own.is_none_or(|own| own == up);
-                    for (_, frame, _, shadow) in shadows.iter().flatten().filter(|(near, _, up, _)| over(*near, *up)) {
+                    for (_, frame, _, shadow) in shadows.iter().flatten().filter(|(near, _, up, _)| !l.adapted && over(*near, *up)) {
                         covers.push(kernel::transform_matrix(shadow, crate::mat_mul(&into, frame))?);
                     }
                     'piece: for (k, r, mut piece) in l.pieces {
@@ -3172,11 +3184,75 @@ fn emboss_shifted_plane(plane: &Plane, regions: &[Region2], (dx, dy, angle): (f6
 
 /// The centre of the box round `regions`' outlines, in sketch coordinates (0, 0 for none).
 fn regions_centre(regions: &[Region2]) -> Vec2 {
+    regions_box(regions).map_or(Vec2::new(0.0, 0.0), |(lo, hi)| Vec2::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0))
+}
+
+/// The box round `regions`' outlines, in sketch coordinates, as its low and high corners.
+fn regions_box(regions: &[Region2]) -> Option<(Vec2, Vec2)> {
     let (mut lo, mut hi) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
     for p in regions.iter().flat_map(|r| r.outer.polyline(1e-4)) {
         (lo, hi) = (Vec2::new(lo.x.min(p.x), lo.y.min(p.y)), Vec2::new(hi.x.max(p.x), hi.y.max(p.y)));
     }
-    if lo.x <= hi.x { Vec2::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0) } else { Vec2::new(0.0, 0.0) }
+    (lo.x <= hi.x).then_some((lo, hi))
+}
+
+/// The plane that lays `regions` (sketched on `plane`) on a face with outward `normal`, their
+/// box's centre on the picked point `at`, then shifted and turned. The sketch's x is laid on the
+/// face; on a face square to it (a side wall under a sketch above), the sketch's normal is the
+/// profile's up, so it stands upright. y completes it.
+fn emboss_face_place(at: Vec3, normal: Vec3, plane: &Plane, regions: &[Region2], shift: (f64, f64, f64)) -> Result<Plane> {
+    let along = |v: Vec3| (v - normal * v.dot(normal)).normalized();
+    let x =
+        along(plane.x).or_else(|| along(plane.normal()).map(|up| up.cross(normal))).ok_or_else(|| DocError::Invalid("emboss face frame".into()))?;
+    let c = regions_centre(regions);
+    let y = normal.cross(x);
+    let place = Plane::new(at - x * c.x - y * c.y, x, y).ok_or_else(|| DocError::Invalid("emboss face frame".into()))?;
+    emboss_shifted_plane(&place, regions, shift)
+}
+
+/// Adapt: `regions` on planar face `face` of `body` that their sketch (`plane`, unshifted, in the
+/// body's frame) does not look at, such as a side under a sketch above. They are laid as
+/// Distribute lays a profile, square to the face's outward `normal` with the box's centre on the
+/// picked point `at`, then shifted and turned; when 98 % of their box does not lie on the face,
+/// they shrink about its centre, keeping their shape, to 90 % of the largest size that does.
+#[allow(clippy::too_many_arguments)]
+fn emboss_adapted(
+    body: &Body,
+    face: usize,
+    at: Vec3,
+    normal: Vec3,
+    plane: &Plane,
+    regions: &[Region2],
+    shift: (f64, f64, f64),
+    signed: f64,
+) -> Result<Vec<Option<Body>>> {
+    let Some((lo, hi)) = regions_box(regions) else { return Ok(vec![None; regions.len()]) };
+    let c = Vec2::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0);
+    let place = emboss_face_place(at, normal, plane, regions, shift)?;
+    let (w, h) = ((hi.x - lo.x) * 0.49, (hi.y - lo.y) * 0.49);
+    let fits = |s: f64| -> Result<bool> {
+        let (a, b) = (Vec2::new(c.x - w * s, c.y - h * s), Vec2::new(c.x + w * s, c.y + h * s));
+        let corners = [a, Vec2::new(b.x, a.y), b, Vec2::new(a.x, b.y)];
+        let segs = (0..4).map(|i| Seg2::Line { a: corners[i], b: corners[(i + 1) % 4] }).collect();
+        let rect = Region2 { outer: Loop2 { segs }, holes: Vec::new() };
+        Ok(matches!(kernel::emboss_face_pieces(body, face, at, &place, &[rect], signed, false)?.first(), Some(Some(_))))
+    };
+    let scale = if fits(1.0)? {
+        1.0
+    } else {
+        let (mut ok, mut no) = (0.0, 1.0);
+        for _ in 0..12 {
+            let mid = (ok + no) / 2.0;
+            if fits(mid)? { ok = mid } else { no = mid }
+        }
+        0.9 * ok
+    };
+    let Some(m) = solidcraft_geom::Similarity2::new(scale, 0.0, Vec2::new(c.x * (1.0 - scale), c.y * (1.0 - scale))) else {
+        return Ok(vec![None; regions.len()]);
+    };
+    let similar = |l: &Loop2| Loop2 { segs: l.segs.iter().map(|s| s.similar(&m)).collect() };
+    let scaled: Vec<Region2> = regions.iter().map(|r| Region2 { outer: similar(&r.outer), holes: r.holes.iter().map(similar).collect() }).collect();
+    Ok(kernel::emboss_face_pieces(body, face, at, &place, &scaled, signed, true)?)
 }
 
 /// An Emboss's sources: each sketch's feature, its shifted plane, its profiles and its plane.
@@ -3226,16 +3302,7 @@ fn emboss_distribute(
         let (i, mb, hit, plane, _) = emboss_face_hit(doc, f, st, face, slot, feature, plane)?;
         let at = kernel::emboss_anchor(&mb.body, hit.face, hit.point)?;
         let normal = kernel::emboss_face_normal(&mb.body, hit.face, at)?.unwrap_or_else(|| plane.normal());
-        // The sketch's x laid on the face; on a face square to it (a side wall under a sketch
-        // above), the sketch's normal is the profile's up, so it stands upright. y completes it.
-        let along = |v: Vec3| (v - normal * v.dot(normal)).normalized();
-        let x = along(plane.x)
-            .or_else(|| along(plane.normal()).map(|up| up.cross(normal)))
-            .ok_or_else(|| DocError::Invalid("emboss face frame".into()))?;
-        let c = regions_centre(std::slice::from_ref(region));
-        let y = normal.cross(x);
-        let place = Plane::new(at - x * c.x - y * c.y, x, y).ok_or_else(|| DocError::Invalid("emboss face frame".into()))?;
-        let place = emboss_shifted_plane(&place, std::slice::from_ref(region), shift)?;
+        let place = emboss_face_place(at, normal, &plane, std::slice::from_ref(region), shift)?;
         let piece =
             kernel::emboss_face_pieces(&mb.body, hit.face, at, &place, std::slice::from_ref(region), signed, false)?.into_iter().next().flatten();
         let piece = piece.ok_or_else(|| {
