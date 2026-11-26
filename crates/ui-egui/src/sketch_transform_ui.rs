@@ -102,30 +102,54 @@ fn pointer_on_sketch(plane: &Plane, proj: &Proj, at: Pos2) -> Option<Vec2> {
     plane.intersect_ray(o, d).map(|w| plane.to_local(w))
 }
 
+/// The picked curves by index, with an ellipse's axes (they go with it when OK applies,
+/// `sketch.transform`), and the picked points by index.
+fn picked(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<(Vec<usize>, Vec<usize>)> {
+    let state = crate::open_meshing::session_world(&app.session);
+    let sk = &state.sketch(app.session.active_sketch?)?.sketch;
+    let mut points: Vec<usize> = Vec::new();
+    let mut drawn: Vec<usize> = Vec::new();
+    for id in crate::sketch_modify_ui::entity_ids(&app.session, &d.inputs, 0) {
+        if let Some(i) = sk.curve_index(&id) {
+            let (major, minor) = sk.ellipse_axis_lines(i).unwrap_or((None, None));
+            for c in std::iter::once(i).chain(major.map(|(l, _)| l)).chain(minor.map(|(l, ..)| l)) {
+                if !drawn.contains(&c) {
+                    drawn.push(c);
+                }
+            }
+        } else if let Some(i) = sk.resolve_point(&id) {
+            points.push(i);
+        }
+    }
+    Some((drawn, points))
+}
+
+/// The open sketch's curves and points Transform draws where OK would put them, by index (a
+/// curve's own points with it). They are not drawn where they are while its window is open: the
+/// shape moves with the handles, as one copy.
+pub(crate) fn moving(app: &SolveApp) -> (Vec<usize>, Vec<usize>) {
+    let Some(d) = app.dialog.as_ref().filter(|d| matches!(d.kind, Kind::SketchModify(Mod::Transform { .. }))) else { return Default::default() };
+    let state = crate::open_meshing::session_world(&app.session);
+    let (Some(sk), Some(_), Some((curves, mut points))) =
+        (app.session.active_sketch.and_then(|sid| state.sketch(sid)).map(|ss| &ss.sketch), picked_box(app, d), picked(app, d))
+    else {
+        return Default::default();
+    };
+    for c in curves.iter().filter_map(|&c| sk.curves.get(c)) {
+        points.extend(c.kind.point_ids());
+    }
+    (curves, points)
+}
+
 /// The picked curves (as polylines on the sketch) and the box around them and the picked points:
 /// its middle, its size and its turn (a turned group's, else 0: along the sketch's axes). None
 /// when nothing usable is picked or the box has no extent.
 fn picked_box(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<(Vec<Vec<Vec2>>, [f64; 2], [f64; 2], f64)> {
     let state = crate::open_meshing::session_world(&app.session);
     let sk = &state.sketch(app.session.active_sketch?)?.sketch;
-    let mut lines: Vec<Vec<Vec2>> = Vec::new();
-    let mut points: Vec<Vec2> = Vec::new();
-    let mut drawn: Vec<usize> = Vec::new();
-    for id in crate::sketch_modify_ui::entity_ids(&app.session, &d.inputs, 0) {
-        if let Some(i) = sk.curve_index(&id) {
-            // An ellipse's axes go with it when OK applies (`sketch.transform`), so they are
-            // drawn with it.
-            let (major, minor) = sk.ellipse_axis_lines(i).unwrap_or((None, None));
-            for c in std::iter::once(i).chain(major.map(|(l, _)| l)).chain(minor.map(|(l, ..)| l)) {
-                if !drawn.contains(&c) {
-                    drawn.push(c);
-                    lines.push(sk.polyline(c));
-                }
-            }
-        } else if let Some(p) = sk.resolve_point(&id).and_then(|i| sk.point(i)) {
-            points.push(p);
-        }
-    }
+    let (drawn, points) = picked(app, d)?;
+    let points = points.into_iter().filter_map(|i| sk.point(i));
+    let lines: Vec<Vec<Vec2>> = drawn.iter().map(|c| sk.polyline(*c)).collect();
     let base = sk.box_angle(&drawn);
     // Measured in the box's own frame, then its middle back on the sketch.
     let all: Vec<Vec2> = lines.iter().flatten().copied().chain(points).map(|q| turn(q, -base)).collect();
@@ -557,5 +581,38 @@ mod tests {
         let (lines, _, size, _) = picked_box(&h.app, d).expect("a box round the ellipse");
         assert_eq!(lines.len(), 2, "the ellipse and its major axis");
         assert!((size[0] - 40.0).abs() < 1e-3, "{size:?}");
+    }
+
+    /// While Transform's window is open the picked curves are drawn once, where the handles put
+    /// them: the sketch scene and the selection highlight leave them out where they are.
+    #[test]
+    fn the_picked_curves_are_not_drawn_twice_while_transform_is_open() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("sketch.create", serde_json::json!({"plane": "XY"})).unwrap();
+        h.app.run("sketch.ellipse", serde_json::json!({"center": [0, 0], "major": [20, 0], "minor_radius": 8})).unwrap();
+        h.app.run("sketch.line", serde_json::json!({"points": [[-30, 20], [30, 20]]})).unwrap();
+        h.call("ui.view", serde_json::json!({"view": "top"}));
+        h.settle();
+        h.step(&serde_json::json!({"click": {"sketch": [10.0, 6.928]}})).unwrap();
+        h.frames(2);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let drawn = |app: &SolveApp| {
+            let scene = crate::viewport::build_sketch_scene(app, &crate::viewport::projection(app, rect));
+            let lit = crate::viewport::build_highlight(app).merged();
+            (scene.lines.len() + scene.overlay.len(), lit.lines.len() + lit.overlay.len())
+        };
+        let (scene, lit) = drawn(&h.app);
+        assert!(moving(&h.app).0.is_empty(), "no Transform window");
+        h.step(&serde_json::json!({"start": "sketch.transform"})).unwrap();
+        h.frames(3);
+        assert_eq!(moving(&h.app).0.len(), 3, "the ellipse and its two axes");
+        assert!(!moving(&h.app).1.is_empty(), "with their points");
+        let (moving_scene, moving_lit) = drawn(&h.app);
+        assert!(moving_scene < scene && moving_scene > 0, "the line stays: {moving_scene} of {scene}");
+        assert!(moving_lit < lit, "{moving_lit} of {lit}");
+        h.step(&serde_json::json!({"key": "Escape"})).unwrap();
+        h.frames(2);
+        assert_eq!(moving(&h.app), Default::default());
+        assert_eq!(drawn(&h.app).0, scene, "drawn where they are again");
     }
 }

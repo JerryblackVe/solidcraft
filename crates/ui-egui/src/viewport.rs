@@ -1019,6 +1019,7 @@ fn sketch_scene_key(app: &SolveApp, proj: &Proj) -> u64 {
     (std::sync::Arc::as_ptr(&crate::open_meshing::shown_world(app)) as usize).hash(&mut h);
     // The open sketch follows a dimension's typed value.
     crate::dim_view::preview_solve(app).hash(&mut h);
+    crate::sketch_transform_ui::moving(app).0.hash(&mut h);
     crate::sketch_display::projection_key(proj, app.viewport.pixels_per_point()).hash(&mut h);
     h.finish()
 }
@@ -3168,6 +3169,8 @@ pub(crate) fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
         })
         .chain(failing.iter().map(|ss| (ss.feature, &**ss, true)))
         .collect();
+    // The curves Transform shows moved are drawn there only, not also where they are.
+    let transformed = crate::sketch_transform_ui::moving(app).0;
     for (sid, ss, failed) in shown {
         // A budget per sketch, so one large sketch leaves the next its curves (#6524).
         let mut uncached = crate::sketch_display::Uncached::default();
@@ -3191,6 +3194,12 @@ pub(crate) fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
         let profiles = if hidden { &[][..] } else { &ss.profiles[..] };
         let profile_fill = sc.color(c4(tk.profile_fill));
         for (index, profile) in profiles.iter().enumerate() {
+            if active
+                && !transformed.is_empty()
+                && profile.curve_ids().iter().all(|id| ss.sketch.curve_index(id).is_some_and(|i| transformed.contains(&i)))
+            {
+                continue;
+            }
             let (sampled, cached);
             let display = if here {
                 sampled = uncached.profile(&profile.region, &ss.plane, proj, ppp);
@@ -3226,6 +3235,9 @@ pub(crate) fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
             parts
         });
         for (k, (pts, col, cons)) in lines.into_iter().enumerate() {
+            if active && owners.get(k).is_some_and(|curve| transformed.contains(curve)) {
+                continue;
+            }
             let conflicting = owners.get(k).is_some_and(|&curve| conflict.curve(curve));
             let segs = sketch_segments(&pts, sketch_line_mode(col, cons), unit);
             let haloed = app.preferences.sketch_halo && !active && col != colors::SKETCH_PROJECTED && col != colors::SKETCH_LOST;
@@ -6114,6 +6126,7 @@ fn highlight_key_with_projection(app: &SolveApp, projection: impl FnOnce() -> Pr
     app.preferences.origin_axes_across_view.hash(&mut h);
     // A typed dimension value hides the hovered profile (see `build_highlight`).
     crate::dim_view::preview_solve(app).is_some().hash(&mut h);
+    crate::sketch_transform_ui::moving(app).0.hash(&mut h);
     for p in preview_points(app) {
         [p.x, p.y, p.z].map(f64::to_bits).hash(&mut h);
     }
@@ -6513,6 +6526,8 @@ fn build_highlight_with_projection(app: &SolveApp, projection: impl FnOnce() -> 
     let items = app.highlighted();
     let sketches = selected_sketches(app, &items);
     let mut sel = Vec::new();
+    // The curves Transform shows moved are lit only there (`sketch_transform_ui::show`).
+    let transformed = crate::sketch_transform_ui::moving(app).0;
     for item in &items {
         for piece in displayed_selection(app, item).into_iter().filter(|s| !product || matches!(s, Sel::Body { .. } | Sel::Face { .. })) {
             if !sel.iter().any(|x| crate::selection::same_item(x, &piece)) {
@@ -6925,6 +6940,7 @@ fn build_highlight_with_projection(app: &SolveApp, projection: impl FnOnce() -> 
             Sel::SketchCurve { id, .. } if crate::dim_view::previewed_sketch(app).is_none() => {
                 if let Some(ss) = crate::sketch_view::active_sketch(app).and_then(|sid| st.sketch(sid))
                     && let Some(ci) = ss.sketch.curve_index(id)
+                    && !transformed.contains(&ci)
                 {
                     let sel_edge = feedback.color(c4(t.sel_edge));
                     for pts in &crate::sketch_display::curve_sample(app, ss.feature, ci, &ss.plane, &display_proj(app)).parts {
@@ -10128,8 +10144,10 @@ fn overlays(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
             painter.rect_filled(Rect::from_center_size(end, vec2(5.0, 5.0)), 0.0, t.sketch_point_free);
         }
     }
+    // The points Transform shows moved are not drawn where they are (`sketch_transform_ui::show`).
+    let transformed = crate::sketch_transform_ui::moving(app).1;
     for (i, p) in sk.points.iter().enumerate() {
-        if !visible.takes(p) && !selected_handles.contains(&i) {
+        if (!visible.takes(p) && !selected_handles.contains(&i)) || transformed.contains(&i) {
             continue;
         }
         let hidden = (sk.view.hide_points && i != 0) || (sk.view.hide_projected && p.link.is_some());
