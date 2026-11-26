@@ -409,14 +409,28 @@ pub fn edit_star(app: &mut SolveApp, id: &str) -> bool {
     true
 }
 
-/// The star the selection is part of: the id of one of its curves, when one star outline is picked.
+/// The star the selection is part of: the id of one of its curves, when one star outline or the
+/// region it bounds (its fill) is picked.
 pub(crate) fn selected_star(app: &SolveApp) -> Option<String> {
-    let [Sel::SketchCurve { id, .. }] = app.session.selection.as_slice() else { return None };
+    let [sel] = app.session.selection.as_slice() else { return None };
+    star_of(app, sel)
+}
+
+/// The star `sel` belongs to (one of its curves, or a profile bounded by that star alone): the id
+/// of one of its curves.
+pub(crate) fn star_of(app: &SolveApp, sel: &Sel) -> Option<String> {
     let sid = app.session.active_sketch?;
     let state = crate::open_meshing::session_world(&app.session);
-    let sk = &state.sketch(sid)?.sketch;
-    let link = sk.curve_index(id).and_then(|i| sk.curves.get(i))?.link.as_deref()?;
-    matches!(sk.link(link)?.source, LinkSource::Star(_)).then(|| id.clone())
+    let ss = state.sketch(sid)?;
+    let ids = match sel {
+        Sel::SketchCurve { id, .. } => vec![id.clone()],
+        Sel::Profile { sketch, index } if *sketch == sid => ss.profiles.get(*index)?.curve_ids(),
+        _ => return None,
+    };
+    let sk = &ss.sketch;
+    let link_of = |id: &String| sk.curve_index(id).and_then(|i| sk.curves.get(i)).and_then(|c| c.link.as_deref());
+    let link = link_of(ids.first()?)?;
+    (matches!(sk.link(link)?.source, LinkSource::Star(_)) && ids.iter().all(|id| link_of(id) == Some(link))).then(|| ids[0].clone())
 }
 
 /// The equation curve the selection is, when it is one curve that has formulas.
