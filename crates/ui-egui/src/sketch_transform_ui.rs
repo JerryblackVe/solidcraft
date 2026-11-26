@@ -615,4 +615,32 @@ mod tests {
         assert_eq!(moving(&h.app), Default::default());
         assert_eq!(drawn(&h.app).0, scene, "drawn where they are again");
     }
+
+    /// The constraint glyphs of what Transform moves are not drawn where that geometry was.
+    #[test]
+    fn the_picked_curves_constraint_glyphs_hide_while_transform_is_open() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("sketch.create", serde_json::json!({"plane": "XY"})).unwrap();
+        h.app.run("sketch.rectangle.two_point", serde_json::json!({"p0": [-20, -10], "p1": [10, 10]})).unwrap();
+        h.call("ui.view", serde_json::json!({"view": "top"}));
+        h.settle();
+        let glyphs = || crate::sketch_tools::glyph_positions().len();
+        let all = glyphs();
+        assert!(all > 0, "the rectangle shows its constraints");
+        // The top and right sides (one line alone has no box to move).
+        let sk = h.app.session.doc.sketch(h.app.session.active_sketch.unwrap()).unwrap().clone();
+        let side = |on: &dyn Fn(Vec2) -> bool| {
+            let i = (0..sk.curves.len()).find(|&i| sk.polyline(i).iter().all(|p| on(*p))).unwrap();
+            solidcraft_engine::Sel::SketchCurve { id: sk.curves[i].id.clone(), sketch: None }
+        };
+        h.app.session.selection = vec![side(&|p| (p.y - 10.0).abs() < 1e-9), side(&|p| (p.x - 10.0).abs() < 1e-9)];
+        h.step(&serde_json::json!({"start": "sketch.transform"})).unwrap();
+        h.frames(3);
+        assert!(!moving(&h.app).0.is_empty(), "the top and right sides are picked");
+        let moving_glyphs = glyphs();
+        assert!(moving_glyphs < all && moving_glyphs > 0, "the other sides keep theirs: {moving_glyphs} of {all}");
+        h.step(&serde_json::json!({"key": "Escape"})).unwrap();
+        h.frames(3);
+        assert_eq!(glyphs(), all, "back where they are");
+    }
 }

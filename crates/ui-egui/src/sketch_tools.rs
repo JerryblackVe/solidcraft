@@ -2070,7 +2070,13 @@ fn glyphs(app: &SolveApp, painter: &egui::Painter, proj: &Proj, hover: Option<Po
         dim_texts.iter().any(|d| d.intersects(r))
     };
     let mut placed: Vec<(String, Pos2, Pos2)> = Vec::new();
+    // A constraint on what Transform shows moved has no glyph where that geometry was.
+    let (moving_curves, moving_points) = crate::sketch_transform_ui::moving(app);
     for c in glyph_constraints(&ss.sketch) {
+        let (curves, points) = constraint_entities(&c.kind);
+        if curves.iter().any(|i| moving_curves.contains(i)) || points.iter().any(|i| moving_points.contains(i)) {
+            continue;
+        }
         for (at, dir) in glyph_anchors(&ss.sketch, &c.kind) {
             let Some(base) = proj.to_screen(ss.plane.to_world(at)) else { continue };
             // The entity's direction on screen, and its side.
