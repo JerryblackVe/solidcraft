@@ -1,4 +1,4 @@
-//! Rib, Web, Emboss, Replace Face, Align and Remove.
+//! Rib, Web, Emboss, Replace Face, Align, Place on Plane and Remove.
 
 use serde_json::Value;
 use solidcore_record::Vec3;
@@ -15,7 +15,7 @@ use super::features::{
 use crate::params::{bad, bool_, expr, req_expr, str_, string_list, vec3};
 use crate::schema::align::AlignParams;
 use crate::schema::features::FeatureResult;
-use crate::schema::features_more::{BoundaryFillParams, CoilParams, EmbossParams, RemoveParams, ReplaceFaceParams, RibParams};
+use crate::schema::features_more::{BoundaryFillParams, CoilParams, EmbossParams, PlaceOnPlaneParams, RemoveParams, ReplaceFaceParams, RibParams};
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};
 
@@ -23,6 +23,7 @@ use crate::{Result, Session};
 const RIB_CONTRACT: TypedContract<RibParams> = TypedContract::new();
 const ALIGN_CONTRACT: TypedContract<AlignParams> = TypedContract::new();
 const REMOVE_CONTRACT: TypedContract<RemoveParams> = TypedContract::new();
+const PLACE_ON_PLANE_CONTRACT: TypedContract<PlaceOnPlaneParams> = TypedContract::new();
 const BOUNDARY_FILL_CONTRACT: TypedContract<BoundaryFillParams> = TypedContract::new();
 const COIL_CONTRACT: TypedContract<CoilParams> = TypedContract::new();
 const EMBOSS_CONTRACT: TypedContract<EmbossParams> = TypedContract::new();
@@ -60,7 +61,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("emboss")
         .contract(&EMBOSS_CONTRACT)
         .output(output_schema_for::<FeatureResult>)
-        .params("sketch, profiles?; depth; mode?: emboss|deboss; targets?; face?: world point [x,y,z] on the face to emboss: planar, a cylinder wall or another curved face (inferred when exactly one supported tangent cylinder matches the selected profiles); faces?: several such points, each profile going onto the face it lies over; text?: a text's group id (sketch.groups) in place of profiles, letters?: some of its letters by index; more_profiles?: [{sketch, profiles?|text, letters?}] more profiles from the same or other sketches; dx?, dy?: shift along the sketch's x and y; angle?: turn about the profiles' centre; flip?: raise or sink toward the sketch's back (no face)"),
+        .params("sketch, profiles?; depth; mode?: emboss|deboss; targets?; face?: world point [x,y,z] on the face to emboss: planar, a cylinder wall or another curved face (inferred when exactly one supported tangent cylinder matches the selected profiles); one sketch tangent to a complete cylinder wall wraps round it, anything else is projected, and the reply warns when profiles are projected onto a curved face; faces?: several such points, each profile going onto the face it lies over; text?: a text's group id (sketch.groups) in place of profiles, letters?: some of its letters by index; more_profiles?: [{sketch, profiles?|text, letters?}] more profiles from the same or other sketches; dx?, dy?: shift along the sketch's x and y; angle?: turn about the profiles' centre; flip?: raise or sink toward the sketch's back (no face); distribute?: for each profile in order (the first sketch's, then more_profiles'), the index in `faces` of the face it goes on, centred on that point (six letters on six faces); without it each profile goes onto the face it lies over"),
     CommandSpec::new("solid.replace_face", "Replace Face", crate::checked!("solid.replace_face", replace_face))
         .contract(&REPLACE_FACE_CONTRACT)
         .output(output_schema_for::<FeatureResult>)
@@ -73,6 +74,12 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&ALIGN_CONTRACT)
         .output(output_schema_for::<FeatureResult>)
         .params("bodies: [names]; from: [x,y,z] | \"origin\" | {snap: vertex|edge_mid|face_center|circle_center, at: [x,y,z]} | from_face: [x,y,z] | from_plane: XY|XZ|YZ|construction or offset plane name or id|{origin, normal}; to: (the same) | to_face: [x,y,z] | to_plane: (a plane as from_plane; the point or face goes onto it along its normal, and the plane may move later: the bodies follow); from_frame / to_frame: a frame found again whenever the design changes, so the bodies follow it, in place of that side's point, face or plane: a joint origin as joint.create takes one ({face|circle|edge|point: [x,y,z]}, a face's name, a named joint origin) or {sketch, point|curve} (a sketch point, or a circle's, arc's or ellipse's centre, z along the sketch's normal), on the bodies' own component; faces, planes and frames also turn to meet; flip?: bool; axes?: [x, y, z] (point-to-point only: which world axes the offset moves along; default all three, at least one true); angle?: expr (a turn about the target's direction after the move)"),
+    CommandSpec::new("solid.place_on_plane", "Place on Plane", crate::checked!("solid.place_on_plane", place_on_plane))
+        .at("SOLID", "MODIFY")
+        .icon("align")
+        .contract(&PLACE_ON_PLANE_CONTRACT)
+        .output(output_schema_for::<FeatureResult>)
+        .params("bodies: [names]; plane?: XY|XZ|YZ (default XY)|construction plane name or id|{origin, normal}|{face: [x,y,z]} (a planar face of a body that does not move, followed as it changes); offset?: length expr (the gap left between the bodies and the plane, default 0); each?: bool (default false: the bodies move together as one set, keeping where they are relative to each other; true: each rests on the plane by itself). The bodies move along the plane's normal only, never turning, until the point nearest the plane (of the exact geometry) touches it from the side the normal points to"),
     CommandSpec::new("solid.remove", "Remove", crate::checked!("solid.remove", remove))
         .at("SOLID", "MODIFY")
         .icon("delete")
@@ -249,6 +256,25 @@ fn emboss(s: &mut Session, p: &Value) -> Result<Value> {
     if points.len() == 1 && targets.len() > 1 {
         return Err(bad(cmd, "an emboss on a selected face needs one target body"));
     }
+    // Distribute: the face (index into the points) each profile goes on, in profile order.
+    let distribute: Vec<u32> = match p.get("distribute") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(list)) if (1..=4096).contains(&list.len()) => list
+            .iter()
+            .map(|v| v.as_u64().and_then(|n| u32::try_from(n).ok()))
+            .collect::<Option<Vec<u32>>>()
+            .ok_or_else(|| bad(cmd, "`distribute` must list face indices: 0 for the first face in `faces`"))?,
+        Some(_) => return Err(bad(cmd, "`distribute` must list, for each profile, the index of the face it goes on (1 to 4096 entries)")),
+    };
+    if let Some(far) = distribute.iter().find(|n| usize::try_from(**n).map_or(true, |n| n >= points.len())) {
+        return Err(bad(
+            cmd,
+            match points.len() {
+                0 => "`distribute` puts the profiles on selected faces: give the faces in `faces`".to_owned(),
+                n => format!("`distribute` names face {far}, but `{key}` gives {n} (0 to {})", n - 1),
+            },
+        ));
+    }
     let mut faces = Vec::with_capacity(points.len());
     let mut bodies: Vec<String> = Vec::new();
     for value in points {
@@ -288,6 +314,7 @@ fn emboss(s: &mut Session, p: &Value) -> Result<Value> {
             dy,
             angle,
             flip,
+            distribute,
         },
     )
 }
@@ -332,11 +359,13 @@ fn emboss_profiles(s: &Session, p: &Value, sketch: u64) -> Result<solidcraft_doc
     // A candidate bounded by another candidate's hole is that letter's counter.
     let holes: Vec<std::collections::BTreeSet<&str>> =
         candidates.iter().flat_map(|pr| pr.hole_curves.iter().map(|h| h.iter().map(String::as_str).collect())).collect();
-    let loops: Vec<Vec<String>> = candidates
+    let mut loops: Vec<Vec<String>> = candidates
         .into_iter()
         .filter(|pr| !holes.contains(&pr.outer_curves.iter().map(String::as_str).collect()))
         .map(|pr| pr.outer_curves.clone())
         .collect();
+    // In reading order, so the first letter goes on a distribution's first face.
+    loops.sort_by_key(|l| group.members.iter().position(|m| l.first().is_some_and(|c| m.curves.contains(c))).unwrap_or(usize::MAX));
     if loops.is_empty() {
         return Err(bad(cmd, format!("the text `{text}` makes no closed profile to emboss")));
     }
@@ -776,6 +805,57 @@ fn align_frame(s: &Session, p: &Value, key: &str, bodies: &[String]) -> Result<O
     }
     frame.resolve(&s.doc, &st).map_err(|e| bad(cmd, format!("`{fk}`: {e}")))?;
     Ok(Some(frame))
+}
+
+fn place_on_plane(s: &mut Session, p: &Value) -> Result<Value> {
+    use solidcraft_doc::PlaneRef;
+    let cmd = "solid.place_on_plane";
+    let bodies = string_list(cmd, p, "bodies")?;
+    if bodies.is_empty() {
+        return Err(bad(cmd, "`bodies` must list bodies"));
+    }
+    {
+        let st = s.model.state();
+        if let Some(b) = bodies.iter().find(|b| st.body(b).is_none()) {
+            return Err(bad(cmd, format!("no body `{b}`")));
+        }
+    }
+    let offset = expr(p, "offset");
+    if let Some(e) = &offset {
+        check_expr(s, e, Kind::Length, cmd, "offset")?;
+    }
+    let each = bool_(p, "each").unwrap_or(false);
+    // A planar face is attached exactly, as a sketch on it is, so the bodies follow it.
+    let face = p.get("plane").filter(|v| v.get("face").is_some());
+    let plane = match (face, p.get("plane")) {
+        (Some(face), _) => {
+            let plane = super::sketch::face::capture(s, face, cmd)?;
+            super::sketch::face::capture_positions(s, &plane)?;
+            plane
+        }
+        (None, None | Some(Value::Null)) => PlaneRef::Origin { name: "XY".into() },
+        (None, v) => plane_param(s, v, cmd)?,
+    };
+    // The plane must be found the same without the bodies that move: on one of them it would
+    // move away with them.
+    {
+        let st = s.model.state();
+        let mut rest = (*st).clone();
+        rest.bodies.retain(|b| !bodies.contains(&b.name));
+        let (vals, _) = s.doc.param_values();
+        let here = s.doc.resolve_plane_in(&vals, &plane, 0, s.active_component, Some(&st)).map_err(|e| bad(cmd, format!("`plane`: {e}")))?;
+        let same = s
+            .doc
+            .resolve_plane_in(&vals, &plane, 0, s.active_component, Some(&rest))
+            .is_ok_and(|q| q.origin.dist(here.origin) <= 1e-9 * (1.0 + here.origin.len()) && q.normal().dot(here.normal()) > 1.0 - 1e-12);
+        let on_moved = super::sketch::face::anchor(&plane).is_some_and(|a| bodies.contains(&a.target.body));
+        if !same || on_moved {
+            return Err(bad(cmd, "the plane is on a body that moves: pick a face of another body, or a plane"));
+        }
+    }
+    let kind = FeatureKind::PlaceOnPlane { bodies: bodies.into_iter().map(BodyName).collect(), plane, offset, each };
+    // A captured face is in its body's frame already.
+    if face.is_some() { super::features::add_feature_in(s, p, kind, false) } else { add_feature(s, p, kind) }
 }
 
 fn remove(s: &mut Session, p: &Value) -> Result<Value> {

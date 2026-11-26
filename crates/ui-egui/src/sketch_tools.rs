@@ -556,8 +556,13 @@ pub struct Lined {
 
 /// The points the cursor can line up with: the sketch's visible points on screen (line ends,
 /// centres, standalone points, the origin) and the shape's own points so far.
-fn align_targets(proj: &Proj, sk: &solidcraft_engine::sketch::Sketch, plane: &solidcore_record::Plane, own: &[Vec2]) -> Vec<(Option<String>, Vec2)> {
-    let visible = solidcraft_engine::view::SketchPointVisibility::new(sk);
+fn align_targets(
+    proj: &Proj,
+    sk: &solidcraft_engine::sketch::Sketch,
+    visible: &solidcraft_engine::view::SketchPointVisibility,
+    plane: &solidcore_record::Plane,
+    own: &[Vec2],
+) -> Vec<(Option<String>, Vec2)> {
     let on_screen = |p: Vec2| proj.to_screen(plane.to_world(p)).is_some_and(|q| proj.rect.contains(q));
     let mut out: Vec<(Option<String>, Vec2)> =
         sk.points.iter().filter(|p| visible.takes(p) && on_screen(p.pos)).map(|p| (Some(p.id.clone()), p.pos)).collect();
@@ -696,7 +701,7 @@ pub fn refine_snap(
     if !mid_only
         && app.preferences.sketch_recent_snap
         && best.is_none()
-        && let Some(at) = app.viewport.tracking.meeting(sk, plane, proj, a)
+        && let Some(at) = app.viewport.tracking.meeting(sk, &solidcraft_engine::view::SketchPointVisibility::shown(&app.session, sk), plane, proj, a)
     {
         best = Some((at.dist(lp), "+", at));
     }
@@ -765,7 +770,11 @@ pub fn refine_snap(
     };
     // Points to line up with as well (#7828): with `sketch_align_points` off, none, so only the
     // previous point, one axis at a time, as before.
-    let mut targets = if app.preferences.sketch_align_points { align_targets(proj, sk, plane, &own) } else { Vec::new() };
+    let mut targets = if app.preferences.sketch_align_points {
+        align_targets(proj, sk, &solidcraft_engine::view::SketchPointVisibility::shown(&app.session, sk), plane, &own)
+    } else {
+        Vec::new()
+    };
     // A hovered line's midpoint guide lines up too, as the "mid:<line>" point the constraint
     // command makes on that line (#13413).
     if app.preferences.sketch_align_points {

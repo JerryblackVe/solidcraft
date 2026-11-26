@@ -85,6 +85,8 @@ fn table(id: &str) -> &'static [(&'static str, K)] {
         // frame itself: a pick mapped into the frame of the body under it would put the two ends
         // in different frames when they lie on separately placed components.
         "solid.align" => &[("bodies", Body)],
+        // Place on Plane moves its bodies along the plane's normal, worked out when evaluated.
+        "solid.place_on_plane" => &[("bodies", Body)],
         // A mirror keeps the placement its bodies were picked at (`cmd::features::placed_bodies`);
         // its plane is in the active component, where the copies go.
         "solid.mirror" => &[("plane", HerePlane)],

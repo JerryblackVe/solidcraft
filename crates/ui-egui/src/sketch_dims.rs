@@ -23,6 +23,9 @@ use solidcraft_theme::Tokens;
 /// type one (#17052).
 const INFINITE: &str = "\u{221e}";
 
+/// The points of a star until the Points box holds a count.
+pub(crate) const DEFAULT_STAR_POINTS: f64 = 5.0;
+
 /// One value box.
 #[derive(Clone, Debug)]
 pub struct DimBox {
@@ -67,6 +70,8 @@ pub fn boxes_for(cmd: &str, n: usize) -> Vec<DimBox> {
         ("sketch.arc.center_point" | "sketch.slot.arc_center", 1) => vec![b("Radius", Length)],
         ("sketch.arc.center_point" | "sketch.slot.arc_center", 2) => vec![b("Sweep", Angle)],
         ("sketch.polygon.inscribed" | "sketch.polygon.circumscribed", 1) => vec![b("Radius", Length), b("Sides", Unitless)],
+        // The star's tip distance and its number of points.
+        ("sketch.star", 1) => vec![b("Radius", Length), b("Points", Unitless)],
         // By side: the side from the first click to the second (#11271).
         ("sketch.polygon.edge", 1) => vec![b("Length", Length), b("Sides", Unitless)],
         ("sketch.slot.center_to_center" | "sketch.slot.overall" | "sketch.slot.center_point", 1) => vec![b("Length", Length)],
@@ -92,8 +97,8 @@ fn eval(doc: &Document, text: &str, kind: ValueKind) -> solidcraft_engine::doc::
     crate::length_input::eval(doc, definition(text).map_or(text, |(_, rhs)| rhs), kind)
 }
 
-/// Whether a box becomes one of the shape's dimensions. A rounded rectangle's radius is its own
-/// parameter (sent with the shape); sides and rho are counts and shape factors.
+/// Whether a box becomes one of the shape's dimensions. A rounded rectangle's or a star's radius
+/// is its own parameter (sent with the shape); sides and rho are counts and shape factors.
 fn is_dimension(t: &Tool, label: &str) -> bool {
     if solidcraft_engine::cmd::construction_line_mode(t.cmd).is_some() {
         return matches!(
@@ -102,7 +107,7 @@ fn is_dimension(t: &Tool, label: &str) -> bool {
                 | ("sketch.construction_line.parallel" | "sketch.construction_line.horizontal" | "sketch.construction_line.vertical", "Offset")
         ) || label == "Length";
     }
-    !matches!(label, "Sides" | "Rho") && !(t.cmd == "sketch.rectangle.rounded" && label == "Radius")
+    !matches!(label, "Sides" | "Points" | "Rho") && !(matches!(t.cmd, "sketch.rectangle.rounded" | "sketch.star") && label == "Radius")
 }
 
 fn dir_or_x(v: Vec2) -> Vec2 {
@@ -178,6 +183,7 @@ pub fn effective(app: &SolveApp, t: &Tool, h: Vec2) -> Vec2 {
         }
         ("sketch.polygon.inscribed" | "sketch.polygon.circumscribed", 1) => a + dir_or_x(h - a) * lk("Radius").unwrap_or((h - a).len()),
         ("sketch.polygon.edge", 1) => a + dir_or_x(h - a) * lk("Length").unwrap_or((h - a).len()),
+        ("sketch.star", 1) => a + dir_or_x(h - a) * lk("Radius").unwrap_or((h - a).len()),
         ("sketch.slot.center_to_center" | "sketch.slot.overall" | "sketch.slot.center_point", 2) => match lk("Width") {
             Some(w) => {
                 let c0 = t.pts.first().map(|p| p.0).unwrap_or(a);
@@ -305,7 +311,7 @@ fn line_boxes(a: Vec2, e: Vec2, px: f64, off: f64) -> Vec<(f64, Vec2)> {
 /// The value each box shows while it follows the cursor, and where it sits (sketch coordinates).
 /// `px` is the size of a screen pixel in sketch units: boxes sit a little off the segment they
 /// measure so they don't cover it.
-fn live(app: &SolveApp, t: &Tool, e: Vec2, px: f64) -> Vec<(f64, Vec2)> {
+pub(crate) fn live(app: &SolveApp, t: &Tool, e: Vec2, px: f64) -> Vec<(f64, Vec2)> {
     let off = 20.0 * px;
     // A one-click construction line's Offset box waits above and right of the pointer before any
     // click, clear of the grey coordinates below it (#15618). A bare digit goes there.
@@ -407,8 +413,9 @@ fn live(app: &SolveApp, t: &Tool, e: Vec2, px: f64) -> Vec<(f64, Vec2)> {
         // box covered the cursor of a short radius and took the click meant for the start point,
         // so the arc waited for Enter (#12208).
         ("sketch.arc.center_point" | "sketch.slot.arc_center", 1) => vec![((e - a).len(), e + dir_or_x(e - a) * (2.5 * off))],
-        ("sketch.polygon.inscribed" | "sketch.polygon.circumscribed" | "sketch.polygon.edge", 1) => {
-            vec![((e - a).len(), (a + e) * 0.5), (6.0, a + (e - a) * 0.5 + (e - a).perp() * 0.3)]
+        ("sketch.polygon.inscribed" | "sketch.polygon.circumscribed" | "sketch.polygon.edge" | "sketch.star", 1) => {
+            let count = if t.cmd == "sketch.star" { DEFAULT_STAR_POINTS } else { 6.0 };
+            vec![((e - a).len(), (a + e) * 0.5), (count, a + (e - a) * 0.5 + (e - a).perp() * 0.3)]
         }
         ("sketch.arc.center_point" | "sketch.slot.arc_center", 2) => {
             let a0 = (a - first).angle();
@@ -664,6 +671,8 @@ pub fn validate(app: &SolveApp, t: &Tool) -> Result<(), String> {
             "Sweep" => return Err("Sweep must lie strictly between -360 and 360 degrees, and cannot be zero".into()),
             "Sides" if (3.0..=200.0).contains(&value) && value.fract() == 0.0 => {}
             "Sides" => return Err("Sides must be an integer from 3 to 200".into()),
+            "Points" if (3.0..=200.0).contains(&value) && value.fract() == 0.0 => {}
+            "Points" => return Err("Points must be an integer from 3 to 200".into()),
             "Rho" if value > 1e-6 && value < 1.0 - 1e-6 => {}
             "Rho" => return Err("Rho must lie strictly between 0 and 1 (below 0.5 an ellipse, 0.5 a parabola, above 0.5 a hyperbola)".into()),
             _ if value > 1e-9 => {}
@@ -818,8 +827,9 @@ fn boxes(app: &SolveApp, ui: &mut egui::Ui, proj: &Proj, t: &mut Tool) -> Option
     // Polygon values used to sit inside the radius, so both boxes covered a small polygon
     // and each other. Place them together outside its projected outline, in screen space:
     // their separation must not shrink with the shape or a tilted sketch plane.
-    let polygon_positions = if matches!(t.cmd, "sketch.polygon.inscribed" | "sketch.polygon.circumscribed" | "sketch.polygon.edge") {
+    let polygon_positions = if matches!(t.cmd, "sketch.polygon.inscribed" | "sketch.polygon.circumscribed" | "sketch.polygon.edge" | "sketch.star") {
         let corners = crate::tools::polygon_outline(t, e, locked(app, t, "Sides").unwrap_or(6.0))
+            .or_else(|| crate::tools::star_outline(t, e, locked(app, t, "Points").unwrap_or(DEFAULT_STAR_POINTS)))
             .unwrap_or_else(|| t.pts.iter().map(|p| p.0).chain(std::iter::once(e)).collect());
         let points: Vec<_> = corners.iter().filter_map(|p| proj.to_screen(plane.to_world(*p))).collect();
         let bounds = egui::Rect::from_points(&points);
@@ -921,6 +931,19 @@ fn boxes(app: &SolveApp, ui: &mut egui::Ui, proj: &Proj, t: &mut Tool) -> Option
         let mut text = b.value.clone();
         if construction && b.label == "Length" && text.is_empty() {
             text = INFINITE.to_owned();
+        }
+        // A key that moves the caret (Left, Right, Home, End) in a box that follows the cursor
+        // keeps its value where it is, so the caret can move into it and the user can add to
+        // it (`50.00` then `-5`); otherwise the next frame selects the whole text again and
+        // typing replaces it (#20607).
+        if has_focus
+            && !b.locked
+            && !b.value.is_empty()
+            && ui.input(|input| {
+                [egui::Key::ArrowLeft, egui::Key::ArrowRight, egui::Key::Home, egui::Key::End].into_iter().any(|key| input.key_pressed(key))
+            })
+        {
+            b.locked = true;
         }
         // While a box follows the cursor its whole text is selected, so typing replaces it.
         if (has_focus || (focus && i == 0)) && !b.locked {

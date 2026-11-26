@@ -359,7 +359,9 @@ pub(super) fn text_number_in(
             match doc.eval(&e, kind) {
                 Ok(x) => {
                     let x = crate::params::finite(x).ok_or_else(|| bad(cmd, must))?;
-                    Ok((x, (!expr::references(&e).is_empty()).then_some(e)))
+                    // A definition (`h = 5 mm`) is kept too: `define_inline` makes its parameter next.
+                    let kept = expr::definition(&e).is_some() || !expr::references(&e).is_empty();
+                    Ok((x, kept.then_some(e)))
                 }
                 // Say what is wrong with it (an unknown parameter, a length where an angle goes).
                 Err(error) => Err(bad(cmd, format!("{key}: {error}"))),
@@ -493,7 +495,8 @@ pub(super) fn text_link<'a>(sk: &'a Sketch, entity: &str) -> Option<&'a str> {
         .and_then(|i| sk.curves.get(i))
         .and_then(|c| c.link.as_deref())
         .or_else(|| sk.resolve_point(entity).and_then(|i| sk.points.get(i)).and_then(|p| p.link.as_deref()))?;
-    sk.link(link).filter(|source| source.kind == LinkKind::Text).map(|source| source.id.as_str())
+    // A star moves as a unit the same way (`transform_star`).
+    sk.link(link).filter(|source| matches!(source.kind, LinkKind::Text | LinkKind::Star)).map(|source| source.id.as_str())
 }
 
 /// Transform a text source as a unit; generated outlines remain linked and editable.
@@ -518,6 +521,9 @@ pub(super) fn transform_text(
     factor: f64,
     copy: bool,
 ) -> Result<Vec<usize>> {
+    if let Some(LinkSource::Star(spec)) = sk.link(link).map(|l| l.source.clone()) {
+        return transform_star(sk, cmd, link, spec, place, rotation, factor, copy);
+    }
     let Some(LinkSource::Text { text, at, height, angle, font, style, mut exprs }) = sk.link(link).map(|l| l.source.clone()) else {
         return Err(bad(cmd, "the selected source is not text"));
     };
@@ -548,6 +554,55 @@ pub(super) fn transform_text(
         if sk.update_link(link, &geom)? {
             return Err(bad(cmd, "moving text must preserve its outline topology; edit the text source first"));
         }
+        link.to_owned()
+    };
+    Ok(sk.link_curves(&link))
+}
+
+/// Place a star as a unit, as a text is: its centre goes where `place` takes it, it turns by
+/// `rotation` (radians) and its radius and roundings scale by `factor`.
+#[allow(clippy::too_many_arguments)]
+fn transform_star(
+    sk: &mut Sketch,
+    cmd: &str,
+    link: &str,
+    mut spec: solidcraft_sketch::StarSpec,
+    place: &dyn Fn(Vec2) -> Vec2,
+    rotation: f64,
+    factor: f64,
+    copy: bool,
+) -> Result<Vec<usize>> {
+    let moved = place(spec.center);
+    // What the move changes is a number now, not the expression it was; the rest stays.
+    if (moved.x - spec.center.x).abs() > 1e-12 {
+        spec.exprs.x = None;
+    }
+    if (moved.y - spec.center.y).abs() > 1e-12 {
+        spec.exprs.y = None;
+    }
+    if rotation.abs() > 1e-12 {
+        spec.exprs.angle = None;
+    }
+    if (factor - 1.0).abs() > 1e-12 {
+        (spec.exprs.outer, spec.exprs.tip_round, spec.exprs.valley_round) = (None, None, None);
+    }
+    // Placed by hand it no longer follows another star; the stars that follow it go with it.
+    spec.follows = None;
+    spec.center = moved;
+    spec.angle += rotation.to_degrees();
+    spec.outer *= factor;
+    spec.tip_round *= factor;
+    spec.valley_round *= factor;
+    let geom = solidcraft_sketch::star_geometry(&spec).map_err(|e| bad(cmd, e.to_string()))?;
+    let source = LinkSource::Star(spec);
+    let link = if copy {
+        sk.add_link(LinkKind::Star, source, &geom)?
+    } else {
+        sk.set_link_source(link, source);
+        if sk.update_link(link, &geom)? {
+            return Err(bad(cmd, "moving a star must keep its outline: edit the star first"));
+        }
+        super::sketch_star::refresh_followers(sk, cmd)?;
         link.to_owned()
     };
     Ok(sk.link_curves(&link))

@@ -159,6 +159,12 @@ crate::dialog_descriptor::dialog_descriptors! {
             FeatureKind::OffsetFace { distance, .. }) {
             distance: String = "2 mm".into() => shown_expr(distance, ValueKind::Length),
         } => json!({"distance": distance});
+        // The bodies rest on the plane as one set, or each by itself; XY when no plane is picked.
+        PlaceOnPlane("solid.place_on_plane", "PLACE ON PLANE", [("Bodies", BODIES, true), ("Plane (XY if none)", PLANES | PLANAR_FACES, false)],
+            FeatureKind::PlaceOnPlane { offset, each, .. }) {
+            offset: String = "0 mm".into() => offset.as_ref().map_or_else(|| "0 mm".to_string(), |e| shown_expr(e, ValueKind::Length)),
+            each: bool = false => *each,
+        } => json!({"offset": offset, "each": each});
         Stock("solid.bounding_solid", "STOCK", [("Bodies (all if none)", BODIES, true)],
             FeatureKind::BoundingSolid { margin, .. }) {
             margin: String = "2 mm".into() => shown_expr(margin, ValueKind::Length),
@@ -170,17 +176,20 @@ crate::dialog_descriptor::dialog_descriptors! {
             operation: usize = 0 => op_index(operation),
         } => json!({"diameter": diameter, "operation": OPS.get(*operation).copied().unwrap_or("new")});
         Emboss("solid.emboss", "EMBOSS", [("Profiles", PROFILES, true), ("Target Faces (optional)", FACES, true)],
-            FeatureKind::Emboss { depth, deboss, dx, dy, angle, flip, .. }) {
+            FeatureKind::Emboss { depth, deboss, dx, dy, angle, flip, distribute, .. }) {
             depth: String = "1 mm".into() => shown_expr(depth, ValueKind::Length),
             deboss: bool = false => *deboss,
             dx: String = String::new() => dx.as_deref().map(|e| shown_expr(e, ValueKind::Length)).unwrap_or_default(),
             dy: String = String::new() => dy.as_deref().map(|e| shown_expr(e, ValueKind::Length)).unwrap_or_default(),
             angle: String = String::new() => angle.as_deref().map(|e| shown_expr(e, ValueKind::Angle)).unwrap_or_default(),
             flip: bool = false => *flip,
+            distribute: Vec<u32> = Vec::new() => distribute.clone(),
         } => {
-            // An empty shift is none; flipping is for profiles with no face picked.
+            // An empty shift is none; flipping is for profiles with no face picked; no
+            // distribution puts each profile on the face it lies over.
             let given = |e: &String| if e.trim().is_empty() { Value::Null } else { json!(e) };
-            json!({"depth": depth, "mode": if *deboss { "deboss" } else { "emboss" }, "dx": given(dx), "dy": given(dy), "angle": given(angle), "flip": *flip})
+            let distribute = if distribute.is_empty() { Value::Null } else { json!(distribute) };
+            json!({"depth": depth, "mode": if *deboss { "deboss" } else { "emboss" }, "dx": given(dx), "dy": given(dy), "angle": given(angle), "flip": *flip, "distribute": distribute})
         };
         ; custom {
             /// Pick a plane or planar face; the sketch starts on it at once.
@@ -1546,6 +1555,7 @@ impl Dialog {
                 | Kind::PathPattern { .. }
                 | Kind::Pipe { .. }
                 | Kind::Stock { .. }
+                | Kind::PlaceOnPlane { .. }
                 | Kind::Scale { .. }
                 | Kind::OffsetFaces { .. }
                 | Kind::PatternRect { .. }
@@ -1620,6 +1630,7 @@ impl Dialog {
             }
             Kind::Pipe { diameter, .. } => ("Diameter", ValueKind::Length, diameter),
             Kind::Stock { margin } => ("Margin", ValueKind::Length, margin),
+            Kind::PlaceOnPlane { offset, .. } => ("Offset", ValueKind::Length, offset),
             Kind::AnglePlane { angle, .. } => ("Angle", ValueKind::Angle, angle),
             Kind::Scale { per_axis: true, .. } => return None,
             Kind::Scale { factor, .. } => ("Scale", ValueKind::Unitless, factor),
@@ -1964,7 +1975,16 @@ impl Dialog {
         if profiles.is_empty() {
             return false;
         }
-        input.items = profiles;
+        if matches!(self.kind, Kind::Emboss { .. }) {
+            // Emboss takes profiles of several sketches: the clicked sketch's profiles join the
+            // others, and a sketch clicked again keeps its place (Distribute's rows follow it).
+            let at = input.items.iter().position(|x| matches!(x, Sel::Profile { sketch, .. } if *sketch == id));
+            input.items.retain(|x| !matches!(x, Sel::Profile { sketch, .. } if *sketch == id));
+            let at = at.unwrap_or(input.items.len());
+            input.items.splice(at..at, profiles);
+        } else {
+            input.items = profiles;
+        }
         self.profile_selection_changed = true;
         self.focus = true;
         self.error = None;
@@ -2052,7 +2072,15 @@ impl Dialog {
         {
             *auto_op = false;
         }
+        // Another group clicked while the Transform box holds a group replaces it: one box, one
+        // drawing. Shift picks one curve, which still joins what is picked.
+        let replaces = matches!(self.kind, Kind::SketchModify(crate::sketch_modify_ui::Mod::Transform { .. }))
+            && self.active == 0
+            && self.inputs.first().is_some_and(|i| crate::viewport::another_group(s, &i.items, &picked));
         let Some(inp) = self.inputs.get_mut(self.active) else { return };
+        if replaces {
+            inp.items.clear();
+        }
         if is_fillet {
             self.chain_applied = chain;
             if picked.iter().all(|p| inp.items.iter().any(|x| selection::same_item(x, p))) {
@@ -2511,7 +2539,7 @@ fn single_hole_point(app: &SolveApp, d: &Dialog, x: &Sel) -> Option<(u64, String
     let st = crate::open_meshing::session_world(&app.session);
     crate::viewport::visible_sketches(app).into_iter().find_map(|sid| {
         let ss = st.sketch(sid)?;
-        let shown = SnapPoints::of(&ss.sketch);
+        let shown = SnapPoints::shown(&app.session, &ss.sketch);
         let p = ss.sketch.points.iter().find(|p| shown.takes(p) && ss.plane.to_world(p.pos).dist(*point) < 1e-9)?;
         Some((sid, p.id.clone()))
     })
@@ -2544,8 +2572,14 @@ pub(crate) struct SnapPoints<'a> {
 }
 
 impl<'a> SnapPoints<'a> {
+    #[cfg(test)]
     pub(crate) fn of(sk: &'a solidcraft_engine::sketch::Sketch) -> Self {
         Self { hide_linked: sk.view.hide_projected, shown: solidcraft_engine::view::SketchPointVisibility::new(sk) }
+    }
+
+    /// As [`Self::of`], with the window's object or nodes mode: object mode leaves out the points of grouped curves.
+    pub(crate) fn shown(s: &solidcraft_engine::Session, sk: &'a solidcraft_engine::sketch::Sketch) -> Self {
+        Self { hide_linked: sk.view.hide_projected, shown: solidcraft_engine::view::SketchPointVisibility::shown(s, sk) }
     }
 
     /// Does a face place snap to point `p` of the sketch?
@@ -5588,10 +5622,17 @@ pub fn start_sketch(app: &mut SolveApp, sel: &Sel) -> Result<(), String> {
     // which left the face filling the view off-centre like a big square.
     if turned
         && let Sel::Face { point, .. } = sel
-        && let Some(mut to) = app.cam_anim.as_ref().map(|a| a.to)
+        && let Some(view) = app.session.sketching_view
     {
-        to.target = *point;
-        app.animate_to(to);
+        let _ = crate::documents::with_sketch_camera(app, view, |app| {
+            let mut to = app.settled_cam();
+            to.target = *point;
+            app.sketch_camera_target = Some(to);
+            app.animate_to(to);
+            if let Some(pre) = &mut app.pre_sketch_cam {
+                pre.facing = to;
+            }
+        });
     }
     Ok(())
 }
@@ -6856,6 +6897,17 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             let mut p = json!({"path_sketch": sketch, "path": path});
             put(&mut p, &[("wall", wall)]);
             ("solid.pipe", p)
+        }
+        Kind::PlaceOnPlane { .. } => {
+            need(0, "bodies")?;
+            let mut p = json!({"bodies": sels(d, 0).body_names()});
+            // A face is followed as it changes; a plane by its name.
+            match sels(d, 1).first() {
+                Some(Sel::Face { point, .. }) => p["plane"] = json!({"face": pt(*point)}),
+                Some(other) => p["plane"] = plane_value(s, Some(other)).ok_or("the plane must be a plane or a planar face")?,
+                None => {}
+            }
+            ("solid.place_on_plane", p)
         }
         Kind::Stock { .. } => {
             let mut p = json!({});
@@ -9109,6 +9161,17 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             let mut d = start("solid.thread")?;
             crate::dialogs_thread::reopen(&mut d, s, &f);
             d.sync_thread(s);
+            d
+        }
+        FeatureKind::PlaceOnPlane { bodies, plane, .. } => {
+            let mut d = start("solid.place_on_plane")?;
+            d.kind = Kind::simple_restore(&f.kind)?;
+            if let Some(inp) = d.inputs.get_mut(0) {
+                inp.items = bodies.iter().map(|n| Sel::Body { name: n.to_string() }).collect();
+            }
+            if let Some(inp) = d.inputs.get_mut(1) {
+                inp.items = plane_sel(s, plane).into_iter().collect();
+            }
             d
         }
         FeatureKind::BoundingSolid { bodies, contents, .. } => {

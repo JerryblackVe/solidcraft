@@ -853,6 +853,9 @@ pub struct Sketch {
     /// Curves drawn from formulas (#8352): the fit point splines they place, with their formulas.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub equations: Vec<crate::equation::EquationCurve>,
+    /// Curves made one object: an imported drawing, or curves grouped by hand.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub object_groups: Vec<crate::object_group::ObjectGroup>,
     /// Next number per id prefix (`l` → l1, l2…).
     #[serde(default)]
     counters: std::collections::BTreeMap<String, u64>,
@@ -886,6 +889,7 @@ impl Sketch {
             wire_constraints: Vec::new(),
             wires_joined: false,
             equations: Vec::new(),
+            object_groups: Vec::new(),
             counters: Default::default(),
             view: SketchView::default(),
         }
@@ -2574,6 +2578,7 @@ impl Sketch {
         self.prune_offsets_for_removed_curves(which);
         let removed: std::collections::BTreeSet<String> = which.iter().filter_map(|i| self.curves.get(*i).map(|c| c.id.clone())).collect();
         self.prune_equations(&removed);
+        self.prune_object_groups(&removed);
         let mut cmap = vec![None; self.curves.len()];
         let mut n = 0;
         for (i, slot) in cmap.iter_mut().enumerate() {

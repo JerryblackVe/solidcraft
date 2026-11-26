@@ -33,6 +33,11 @@ enum Part {
     Move,
     /// A corner, by its signs in the box's own frame.
     Corner(f64, f64),
+    /// The middle of a side, by its axis (0: a left or right side, so the width; 1: a top or bottom
+    /// side, so the height) and its sign: only that size changes, the opposite side stays put.
+    Side(u8, f64),
+    /// The pivot: where the scale and the turn keep fixed. Moving it moves nothing else.
+    Pivot,
     Turn,
 }
 
@@ -45,22 +50,37 @@ pub struct Drag {
 }
 
 /// The box as placed: where its pivot is (the point it scales and turns about), how much it is
-/// scaled, how far turned, its own size before scaling, and where the pivot and the box middle
-/// were before the move.
+/// scaled (`scale` wide, `scale * aspect` high), how far turned, its own size before scaling, and
+/// where the pivot and the box middle were before the move.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Frame {
     x: f64,
     y: f64,
     scale: f64,
+    /// The height's scale over the width's: 1 keeps the shape.
+    aspect: f64,
+    /// The total turn, `base` and the window's Angle together.
     angle: f64,
+    /// The box's own turn before this transform: a turned group's (its width runs this way).
+    base: f64,
     natural: (f64, f64),
     pivot: Vec2,
     middle: Vec2,
 }
 
+/// `v` as the scale makes it: wide by `scale`, high by `scale * aspect`, before the turn.
+fn stretch(f: &Frame, v: Vec2) -> Vec2 {
+    Vec2::new(v.x * f.scale, v.y * f.scale * f.aspect)
+}
+
+/// `v` from the pivot, stretched in the box's own frame (before the total turn).
+fn in_box(f: &Frame, v: Vec2) -> Vec2 {
+    stretch(f, turn(v, -f.base))
+}
+
 /// Where the box's middle is placed.
 fn center(f: &Frame) -> Vec2 {
-    Vec2::new(f.x, f.y) + turn((f.middle - f.pivot) * f.scale, f.angle)
+    Vec2::new(f.x, f.y) + turn(in_box(f, f.middle - f.pivot), f.angle)
 }
 
 fn turn(v: Vec2, degrees: f64) -> Vec2 {
@@ -70,7 +90,7 @@ fn turn(v: Vec2, degrees: f64) -> Vec2 {
 
 /// A spot of the box in its own frame (`u`, `v` in half sizes) on the sketch.
 fn spot(f: &Frame, u: f64, v: f64) -> Vec2 {
-    center(f) + turn(Vec2::new(u * f.natural.0 * f.scale / 2.0, v * f.natural.1 * f.scale / 2.0), f.angle)
+    center(f) + turn(stretch(f, Vec2::new(u * f.natural.0 / 2.0, v * f.natural.1 / 2.0)), f.angle)
 }
 
 fn on_screen(plane: &Plane, proj: &Proj, q: Vec2) -> Option<Pos2> {
@@ -82,43 +102,130 @@ fn pointer_on_sketch(plane: &Plane, proj: &Proj, at: Pos2) -> Option<Vec2> {
     plane.intersect_ray(o, d).map(|w| plane.to_local(w))
 }
 
-/// The picked curves (as polylines on the sketch) and the box around them and the picked points:
-/// its middle and its size. None when nothing usable is picked or the box has no extent.
-fn picked_box(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<(Vec<Vec<Vec2>>, [f64; 2], [f64; 2])> {
+/// The picked curves by index, with an ellipse's axes (they go with it when OK applies,
+/// `sketch.transform`), and the picked points by index.
+fn picked(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<(Vec<usize>, Vec<usize>)> {
     let state = crate::open_meshing::session_world(&app.session);
     let sk = &state.sketch(app.session.active_sketch?)?.sketch;
-    let mut lines: Vec<Vec<Vec2>> = Vec::new();
-    let mut points: Vec<Vec2> = Vec::new();
+    let mut points: Vec<usize> = Vec::new();
     let mut drawn: Vec<usize> = Vec::new();
     for id in crate::sketch_modify_ui::entity_ids(&app.session, &d.inputs, 0) {
         if let Some(i) = sk.curve_index(&id) {
-            // An ellipse's axes go with it when OK applies (`sketch.transform`), so they are
-            // drawn with it.
             let (major, minor) = sk.ellipse_axis_lines(i).unwrap_or((None, None));
             for c in std::iter::once(i).chain(major.map(|(l, _)| l)).chain(minor.map(|(l, ..)| l)) {
                 if !drawn.contains(&c) {
                     drawn.push(c);
-                    lines.push(sk.polyline(c));
                 }
             }
-        } else if let Some(p) = sk.resolve_point(&id).and_then(|i| sk.point(i)) {
-            points.push(p);
+        } else if let Some(i) = sk.resolve_point(&id) {
+            points.push(i);
         }
     }
-    let all: Vec<Vec2> = lines.iter().flatten().copied().chain(points).collect();
+    Some((drawn, points))
+}
+
+/// The open sketch's curves and points Transform draws where OK would put them, by index (a
+/// curve's own points with it). They are not drawn where they are while its window is open: the
+/// shape moves with the handles, as one copy.
+pub(crate) fn moving(app: &SolveApp) -> (Vec<usize>, Vec<usize>) {
+    let Some(d) = app.dialog.as_ref().filter(|d| matches!(d.kind, Kind::SketchModify(Mod::Transform { .. }))) else { return Default::default() };
+    let state = crate::open_meshing::session_world(&app.session);
+    let (Some(sk), Some(_), Some((curves, mut points))) =
+        (app.session.active_sketch.and_then(|sid| state.sketch(sid)).map(|ss| &ss.sketch), picked_box(app, d), picked(app, d))
+    else {
+        return Default::default();
+    };
+    for c in curves.iter().filter_map(|&c| sk.curves.get(c)) {
+        points.extend(c.kind.point_ids());
+    }
+    (curves, points)
+}
+
+/// The picked curves (as polylines on the sketch) and the box around them and the picked points:
+/// its middle, its size and its turn (a turned group's, else 0: along the sketch's axes). None
+/// when nothing usable is picked or the box has no extent.
+fn picked_box(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<(Vec<Vec<Vec2>>, [f64; 2], [f64; 2], f64)> {
+    let state = crate::open_meshing::session_world(&app.session);
+    let sk = &state.sketch(app.session.active_sketch?)?.sketch;
+    let (drawn, points) = picked(app, d)?;
+    let points = points.into_iter().filter_map(|i| sk.point(i));
+    let lines: Vec<Vec<Vec2>> = drawn.iter().map(|c| sk.polyline(*c)).collect();
+    let base = sk.box_angle(&drawn);
+    // Measured in the box's own frame, then its middle back on the sketch.
+    let all: Vec<Vec2> = lines.iter().flatten().copied().chain(points).map(|q| turn(q, -base)).collect();
     let first = *all.first()?;
     let (lo, hi) = all.iter().fold((first, first), |(lo, hi), p| (Vec2::new(lo.x.min(p.x), lo.y.min(p.y)), Vec2::new(hi.x.max(p.x), hi.y.max(p.y))));
     let size = [hi.x - lo.x, hi.y - lo.y];
+    let middle = turn(Vec2::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0), base);
     // A single point or a straight line along an axis has no area to take hold of.
-    (size[0] > 1e-9 && size[1] > 1e-9).then(|| (lines, [(lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0], size))
+    (size[0] > 1e-9 && size[1] > 1e-9).then_some((lines, [middle.x, middle.y], size, base))
 }
 
 /// Keep the Transform window's box up to date with what is picked.
 pub fn refresh(app: &mut SolveApp) {
     let Some(d) = app.dialog.as_ref().filter(|d| matches!(d.kind, Kind::SketchModify(Mod::Transform { .. }))) else { return };
-    let boxed = picked_box(app, d).map(|(_, middle, size)| (middle, size));
-    if let Some(Kind::SketchModify(Mod::Transform { frame, .. })) = app.dialog.as_mut().map(|d| &mut d.kind) {
+    let boxed = picked_box(app, d).map(|(_, middle, size, base)| (middle, size, base));
+    // The pivot a group saves comes into the window when the group does (not while a handle is
+    // dragged: the window's pivot is the newer one then).
+    let group = picked_group(app, d);
+    let seen = d.extra.get("pivot_group").and_then(|v| v.as_str()).map(str::to_owned);
+    let load = group.as_ref().map(|g| g.0.clone()) != seen && app.viewport.transform_drag.is_none();
+    if let Some(Kind::SketchModify(Mod::Transform { frame, pivot, .. })) = app.dialog.as_mut().map(|d| &mut d.kind) {
         *frame = boxed;
+        if load && let Some((_, saved)) = &group {
+            *pivot = saved.map(|p| [p.x, p.y]);
+        }
+    }
+    if load && let Some(d) = app.dialog.as_mut() {
+        match group {
+            Some((id, _)) => d.extra.insert("pivot_group".into(), serde_json::json!(id)),
+            None => d.extra.remove("pivot_group"),
+        };
+    }
+}
+
+/// The group all the picked curves are in (its id) and the pivot it saves; None when a point or a
+/// curve outside a group is picked, or the curves are of several groups.
+fn picked_group(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<(String, Option<Vec2>)> {
+    let state = crate::open_meshing::session_world(&app.session);
+    let sk = &state.sketch(app.session.active_sketch?)?.sketch;
+    let ids = crate::sketch_modify_ui::entity_ids(&app.session, &d.inputs, 0);
+    let g = sk.object_group_of(ids.first()?)?;
+    // One set lookup per curve: a drawing may hold thousands, and this runs every frame.
+    let members: std::collections::HashSet<&str> = g.curves.iter().map(String::as_str).collect();
+    ids.iter().all(|id| members.contains(id.as_str())).then(|| (g.id.clone(), g.pivot))
+}
+
+/// Save the window's pivot with the group the picked curves are (`sketch.group_pivot`), or the
+/// group's middle again with None.
+fn save_pivot(app: &mut SolveApp, pivot: Option<Vec2>) {
+    let Some((group, saved)) = app.dialog.as_ref().and_then(|d| picked_group(app, d)) else { return };
+    if saved == pivot {
+        return;
+    }
+    let params = match pivot {
+        Some(p) => serde_json::json!({"group": group, "pivot": [p.x, p.y]}),
+        None => serde_json::json!({"group": group}),
+    };
+    if let Err(e) = app.run("sketch.group_pivot", params) {
+        app.set_status(e, true);
+    }
+}
+
+/// Under the Transform window's fields: Center Pivot, when the pivot was moved, puts it back at the
+/// middle of the box (and in a group, in the design too).
+pub(crate) fn pivot_row(app: &mut SolveApp, d: &mut crate::dialogs::Dialog, ui: &mut egui::Ui) {
+    let Kind::SketchModify(Mod::Transform { pivot: Some(_), .. }) = &d.kind else { return };
+    if crate::ui_kit::button(ui, solidcraft_ui_text::tr("ui.transform_center_pivot"), crate::ui_kit::Button::Small).clicked() {
+        if let Kind::SketchModify(Mod::Transform { pivot, .. }) = &mut d.kind {
+            *pivot = None;
+        }
+        // `d` is out of the app while the window is drawn, so the group is found through it.
+        if let Some((group, Some(_))) = picked_group(app, d)
+            && let Err(e) = app.run("sketch.group_pivot", serde_json::json!({"group": group}))
+        {
+            app.set_status(e, true);
+        }
     }
 }
 
@@ -132,26 +239,32 @@ fn picked_pivot(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<Vec2> {
 
 /// The placement the window's fields describe, as a frame.
 fn frame_of(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<Frame> {
-    let Kind::SketchModify(Mod::Transform { x, y, factor, angle, frame }) = &d.kind else { return None };
-    let (middle, size) = (*frame)?;
+    let Kind::SketchModify(Mod::Transform { x, y, factor, angle, frame, aspect, pivot: moved_pivot }) = &d.kind else { return None };
+    let (middle, size, base) = (*frame)?;
     let middle = Vec2::new(middle[0], middle[1]);
-    let pivot = picked_pivot(app, d).unwrap_or(middle);
+    // The pivot the box was given by hand wins over a picked Center, which wins over the middle.
+    let pivot = moved_pivot.map(|q| Vec2::new(q[0], q[1])).or_else(|| picked_pivot(app, d)).unwrap_or(middle);
+    let aspect = crate::ui_kit::parse_number(aspect.trim()).filter(|a| a.is_finite() && *a > 0.0).unwrap_or(1.0);
     let (dx, dy) =
         (crate::sketch_modify_ui::value(app, x, ValueKind::Length, "X").ok()?, crate::sketch_modify_ui::value(app, y, ValueKind::Length, "Y").ok()?);
     let scale = crate::sketch_modify_ui::factor(app, factor).ok()?;
     let turned = crate::sketch_modify_ui::value(app, angle, ValueKind::Angle, "Angle").ok()?.to_degrees();
-    Some(Frame { x: pivot.x + dx, y: pivot.y + dy, scale, angle: turned, natural: (size[0], size[1]), pivot, middle })
+    Some(Frame { x: pivot.x + dx, y: pivot.y + dy, scale, aspect, angle: base + turned, base, natural: (size[0], size[1]), pivot, middle })
 }
 
 use solidcraft_engine::doc::expr::Kind as ValueKind;
 
 /// Write a frame back into the window's fields.
-fn store(k: &mut Mod, f: &Frame) {
-    if let Mod::Transform { x, y, factor, angle, .. } = k {
+fn store(k: &mut Mod, f: &Frame, pivot_moved: bool) {
+    if let Mod::Transform { x, y, factor, angle, aspect, pivot, .. } = k {
         *x = format!("{} mm", plain(f.x - f.pivot.x));
         *y = format!("{} mm", plain(f.y - f.pivot.y));
         *factor = format!("{}", (f.scale * 1e6).round() / 1e6);
-        *angle = format!("{} deg", plain(f.angle));
+        *aspect = format!("{}", (f.aspect * 1e6).round() / 1e6);
+        *angle = format!("{} deg", plain(f.angle - f.base));
+        if pivot_moved {
+            *pivot = Some([f.pivot.x, f.pivot.y]);
+        }
     }
 }
 
@@ -170,21 +283,55 @@ fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
             let pivot = Vec2::new(start.x, start.y);
             let (to, from) = (p - pivot, drag.from - pivot);
             if to.len() > 1e-9 && from.len() > 1e-9 {
-                let a = start.angle + (to.angle() - from.angle()).to_degrees();
+                // The window's Angle, from the box's own turn, is what snaps.
+                let a = start.angle - start.base + (to.angle() - from.angle()).to_degrees();
                 let a = if snap { (a / 15.0).round() * 15.0 } else { a };
-                now.angle = (a + 180.0).rem_euclid(360.0) - 180.0;
+                now.angle = start.base + (a + 180.0).rem_euclid(360.0) - 180.0;
             }
+        }
+        Part::Side(axis, sign) => {
+            // One size changes, from the opposite side, which stays: the pointer in the box's own
+            // frame says how big that size is now.
+            let (u, v) = if axis == 0 { (sign, 0.0) } else { (0.0, sign) };
+            let fixed = spot(&start, -u, -v);
+            let local = turn(p - fixed, -start.angle);
+            let high = start.scale * start.aspect;
+            let reach = if axis == 0 {
+                let wide = (local.x.abs() / start.natural.0).clamp(MIN_FACTOR, MAX_FACTOR);
+                now.scale = wide;
+                now.aspect = (high / wide).clamp(MIN_FACTOR, MAX_FACTOR);
+                Vec2::new(sign * wide * start.natural.0 / 2.0, 0.0)
+            } else {
+                let tall = (local.y.abs() / start.natural.1).clamp(MIN_FACTOR, MAX_FACTOR);
+                now.aspect = (tall / start.scale).clamp(MIN_FACTOR, MAX_FACTOR);
+                Vec2::new(0.0, sign * tall * start.natural.1 / 2.0)
+            };
+            let middle = fixed + turn(reach, start.angle);
+            let pivot = middle - turn(in_box(&now, start.middle - start.pivot), start.angle);
+            if pivot.x.is_finite() && pivot.y.is_finite() {
+                now.x = pivot.x;
+                now.y = pivot.y;
+            }
+        }
+        Part::Pivot => {
+            // The pivot goes under the pointer; the entities do not move, so what the pivot is
+            // placed at is where the box has put that spot.
+            now.pivot = p;
+            let at = moved(&start, p);
+            now.x = at.x;
+            now.y = at.y;
         }
         Part::Corner(u, v) => {
             let fixed = spot(&start, -u, -v);
             // The pointer in the box's own frame, measured from the corner that stays.
             let local = turn(p - fixed, -start.angle);
-            let k = (local.x.abs() / start.natural.0).max(local.y.abs() / start.natural.1).clamp(MIN_FACTOR, MAX_FACTOR);
+            let high = start.natural.1 * start.aspect;
+            let k = (local.x.abs() / start.natural.0).max(local.y.abs() / high).clamp(MIN_FACTOR, MAX_FACTOR);
             if k.is_finite() {
-                let reach = turn(Vec2::new(u * k * start.natural.0 / 2.0, v * k * start.natural.1 / 2.0), start.angle);
+                let reach = turn(Vec2::new(u * k * start.natural.0 / 2.0, v * k * high / 2.0), start.angle);
                 now.scale = k;
                 // The pivot goes where it keeps the box middle at `fixed + reach`.
-                let pivot = fixed + reach - turn((start.middle - start.pivot) * k, start.angle);
+                let pivot = fixed + reach - turn(in_box(&now, start.middle - start.pivot), start.angle);
                 now.x = pivot.x;
                 now.y = pivot.y;
             }
@@ -195,7 +342,7 @@ fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
 
 /// Where a point of the original box goes: scaled and turned about the pivot, then moved.
 fn moved(f: &Frame, q: Vec2) -> Vec2 {
-    Vec2::new(f.x, f.y) + turn((q - f.pivot) * f.scale, f.angle)
+    Vec2::new(f.x, f.y) + turn(in_box(f, q - f.pivot), f.angle)
 }
 
 /// The Transform window's picks with their handles; a drag on them edits the window's values.
@@ -204,7 +351,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
         app.viewport.transform_drag = None;
         return;
     };
-    let Some((lines, _, _)) = picked_box(app, d) else { return };
+    let Some((lines, ..)) = picked_box(app, d) else { return };
     let Some(frame) = frame_of(app, d) else { return };
     let Some(plane) = app.session.active_sketch.and_then(|id| crate::canvas::profile_plane(app, id)) else { return };
     let t = solidcraft_theme::Tokens::get();
@@ -225,6 +372,22 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
     painter.add(egui::Shape::closed_line(corners.clone(), stroke));
     painter.line_segment([top, knob], stroke);
     painter.circle(knob, HANDLE, t.overlay, stroke);
+    // The middle of each side takes only that size; the pivot is the dot where the scale and the turn hold.
+    let sides: Vec<(Pos2, Part)> = [(0u8, 1.0), (0, -1.0), (1, 1.0), (1, -1.0)]
+        .into_iter()
+        .filter_map(|(axis, sign)| {
+            let (u, v) = if axis == 0 { (sign, 0.0) } else { (0.0, sign) };
+            on_screen(&plane, proj, spot(&frame, u, v)).map(|at| (at, Part::Side(axis, sign)))
+        })
+        .collect();
+    for (at, _) in &sides {
+        painter.rect(egui::Rect::from_center_size(*at, Screen::splat(HANDLE * 1.4)), 1.0, t.overlay, stroke, egui::StrokeKind::Inside);
+    }
+    let pivot_at = on_screen(&plane, proj, Vec2::new(frame.x, frame.y));
+    if let Some(at) = pivot_at {
+        painter.circle(at, HANDLE * 0.8, t.overlay, stroke);
+        painter.circle_filled(at, 2.0, t.accent);
+    }
 
     // The whole box first, so the corners and the knob above it win where they overlap.
     let mut parts: Vec<(egui::Rect, Part, egui::CursorIcon)> = vec![(egui::Rect::from_points(&corners), Part::Move, egui::CursorIcon::Grab)];
@@ -233,6 +396,14 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
         parts.push((egui::Rect::from_center_size(*c, Screen::splat(HANDLE * 3.0)), Part::Corner(u, v), egui::CursorIcon::ResizeNwSe));
     }
     parts.push((egui::Rect::from_center_size(knob, Screen::splat(HANDLE * 3.0)), Part::Turn, egui::CursorIcon::Crosshair));
+    for (at, part) in sides {
+        let cursor = if matches!(part, Part::Side(0, _)) { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical };
+        parts.push((egui::Rect::from_center_size(at, Screen::splat(HANDLE * 2.4)), part, cursor));
+    }
+    // Last, so the pivot wins over the corner or side it may sit on.
+    if let Some(at) = pivot_at {
+        parts.push((egui::Rect::from_center_size(at, Screen::splat(HANDLE * 2.4)), Part::Pivot, egui::CursorIcon::Move));
+    }
     // While Center waits for its pick, a click goes to the sketch: a rectangle's corner, the
     // point most often picked there, is under a corner handle (#11718). Once it has one, the
     // handles work again; Clear (×) empties it to pick another point there.
@@ -256,11 +427,16 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
         {
             let now = apply(&drag, p, ui.input(|i| i.modifiers.shift));
             if let Some(Kind::SketchModify(k)) = app.dialog.as_mut().map(|d| &mut d.kind) {
-                store(k, &now);
+                store(k, &now, drag.part == Part::Pivot);
             }
         }
-        if response.drag_stopped() {
-            app.viewport.transform_drag = None;
+        if response.drag_stopped()
+            && let Some(drag) = app.viewport.transform_drag.take()
+            && drag.part == Part::Pivot
+            && let Some(Kind::SketchModify(Mod::Transform { pivot: Some(q), .. })) = app.dialog.as_ref().map(|d| &d.kind)
+        {
+            let q = Vec2::new(q[0], q[1]);
+            save_pivot(app, Some(q));
         }
     }
 }
@@ -271,7 +447,7 @@ mod tests {
 
     fn frame() -> Frame {
         let middle = Vec2::new(10.0, 5.0);
-        Frame { x: 10.0, y: 5.0, scale: 1.0, angle: 0.0, natural: (20.0, 10.0), pivot: middle, middle }
+        Frame { x: 10.0, y: 5.0, scale: 1.0, aspect: 1.0, angle: 0.0, base: 0.0, natural: (20.0, 10.0), pivot: middle, middle }
     }
 
     /// The box of `frame()` with its lower left corner (0, 0) as the pivot.
@@ -317,6 +493,43 @@ mod tests {
         }
     }
 
+    /// A side's handle changes that size alone and the opposite side stays, turned or not.
+    #[test]
+    fn a_side_changes_one_size_and_keeps_the_opposite_side() {
+        for angle in [0.0, 30.0] {
+            let f = Frame { angle, ..frame() };
+            let wide_fixed = spot(&f, -1.0, 0.0);
+            let pulled = spot(&f, 1.0, 0.0) + turn(Vec2::new(10.0, 0.0), angle);
+            let now = apply(&drag(Part::Side(0, 1.0), spot(&f, 1.0, 0.0), f), pulled, false);
+            assert!((now.scale - 1.5).abs() < 1e-9, "{}", now.scale);
+            assert!(spot(&now, -1.0, 0.0).dist(wide_fixed) < 1e-9, "the left side stays");
+            assert!((spot(&now, 0.0, 1.0).dist(spot(&now, 0.0, -1.0)) - 10.0).abs() < 1e-9, "the height is as it was");
+            assert!((spot(&now, 1.0, 0.0).dist(spot(&now, -1.0, 0.0)) - 30.0).abs() < 1e-9);
+            // The height: pulled down from the top side, the bottom stays.
+            let tall_fixed = spot(&now, 0.0, -1.0);
+            let up = spot(&now, 0.0, 1.0) + turn(Vec2::new(0.0, 5.0), angle);
+            let taller = apply(&drag(Part::Side(1, 1.0), spot(&now, 0.0, 1.0), now), up, false);
+            assert!(spot(&taller, 0.0, -1.0).dist(tall_fixed) < 1e-9, "the bottom stays");
+            assert!((spot(&taller, 0.0, 1.0).dist(spot(&taller, 0.0, -1.0)) - 15.0).abs() < 1e-9);
+            assert!((spot(&taller, 1.0, 0.0).dist(spot(&taller, -1.0, 0.0)) - 30.0).abs() < 1e-9, "the width is as it was");
+            for q in [Vec2::ZERO, Vec2::new(20.0, 10.0)] {
+                let (u, v) = (if q.x > 0.0 { 1.0 } else { -1.0 }, if q.y > 0.0 { 1.0 } else { -1.0 });
+                assert!(moved(&taller, q).dist(spot(&taller, u, v)) < 1e-9, "a corner of the entities is a corner of the box");
+            }
+        }
+    }
+
+    /// The pivot handle moves where the scale and the turn hold, and nothing else.
+    #[test]
+    fn moving_the_pivot_moves_no_entity() {
+        let f = Frame { angle: 25.0, scale: 2.0, aspect: 0.5, x: 3.0, y: -2.0, ..frame() };
+        let now = apply(&drag(Part::Pivot, center(&f), f), Vec2::new(-7.0, 4.0), false);
+        assert_eq!(now.pivot, Vec2::new(-7.0, 4.0));
+        for q in [Vec2::ZERO, Vec2::new(20.0, 10.0), Vec2::new(3.0, 8.0)] {
+            assert!(moved(&now, q).dist(moved(&f, q)) < 1e-9, "{q:?}");
+        }
+    }
+
     #[test]
     fn the_box_moves_and_the_knob_turns() {
         let f = frame();
@@ -349,7 +562,7 @@ mod tests {
         h.step(&serde_json::json!({"start": "sketch.transform"})).unwrap();
         h.frames(3);
         let d = h.app.dialog.as_ref().expect("the Transform window");
-        let (lines, middle, size) = picked_box(&h.app, d).expect("a box round the ellipse");
+        let (lines, middle, size, _) = picked_box(&h.app, d).expect("a box round the ellipse");
         assert_eq!(lines.len(), 3, "the ellipse and its two axes");
         assert!(
             middle[0].abs() < 1e-6 && middle[1].abs() < 1e-6 && (size[0] - 40.0).abs() < 1e-3 && (size[1] - 16.0).abs() < 1e-3,
@@ -365,8 +578,41 @@ mod tests {
         h.step(&serde_json::json!({"start": "sketch.transform"})).unwrap();
         h.frames(3);
         let d = h.app.dialog.as_ref().expect("the Transform window");
-        let (lines, _, size) = picked_box(&h.app, d).expect("a box round the ellipse");
+        let (lines, _, size, _) = picked_box(&h.app, d).expect("a box round the ellipse");
         assert_eq!(lines.len(), 2, "the ellipse and its major axis");
         assert!((size[0] - 40.0).abs() < 1e-3, "{size:?}");
+    }
+
+    /// While Transform's window is open the picked curves are drawn once, where the handles put
+    /// them: the sketch scene and the selection highlight leave them out where they are.
+    #[test]
+    fn the_picked_curves_are_not_drawn_twice_while_transform_is_open() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("sketch.create", serde_json::json!({"plane": "XY"})).unwrap();
+        h.app.run("sketch.ellipse", serde_json::json!({"center": [0, 0], "major": [20, 0], "minor_radius": 8})).unwrap();
+        h.app.run("sketch.line", serde_json::json!({"points": [[-30, 20], [30, 20]]})).unwrap();
+        h.call("ui.view", serde_json::json!({"view": "top"}));
+        h.settle();
+        h.step(&serde_json::json!({"click": {"sketch": [10.0, 6.928]}})).unwrap();
+        h.frames(2);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let drawn = |app: &SolveApp| {
+            let scene = crate::viewport::build_sketch_scene(app, &crate::viewport::projection(app, rect));
+            let lit = crate::viewport::build_highlight(app).merged();
+            (scene.lines.len() + scene.overlay.len(), lit.lines.len() + lit.overlay.len())
+        };
+        let (scene, lit) = drawn(&h.app);
+        assert!(moving(&h.app).0.is_empty(), "no Transform window");
+        h.step(&serde_json::json!({"start": "sketch.transform"})).unwrap();
+        h.frames(3);
+        assert_eq!(moving(&h.app).0.len(), 3, "the ellipse and its two axes");
+        assert!(!moving(&h.app).1.is_empty(), "with their points");
+        let (moving_scene, moving_lit) = drawn(&h.app);
+        assert!(moving_scene < scene && moving_scene > 0, "the line stays: {moving_scene} of {scene}");
+        assert!(moving_lit < lit, "{moving_lit} of {lit}");
+        h.step(&serde_json::json!({"key": "Escape"})).unwrap();
+        h.frames(2);
+        assert_eq!(moving(&h.app), Default::default());
+        assert_eq!(drawn(&h.app).0, scene, "drawn where they are again");
     }
 }

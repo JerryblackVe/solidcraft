@@ -583,6 +583,7 @@ fn check_form(command: &str, labels: &[&str]) {
         "joint.cam" => &["Other side"],
         "frame.member" => &["All Lines", "Mirror"],
         "construct.plane.at_angle" => &["Use axis direction only"],
+        "solid.place_on_plane" => &["Each body by itself"],
         _ => &[],
     };
     for label in checks {
@@ -846,6 +847,35 @@ fn scale_takes_a_factor_per_axis() {
     }
     assert!(kind(&h).get("factors").is_none(), "{}", kind(&h));
     assert!((size(&h) - Vec3::new(30.0, 30.0, 30.0)).len() < 1e-6, "{:?}", size(&h));
+}
+form_case!(place_on_plane, "solid.place_on_plane", ["Offset"]);
+
+/// Place on Plane from the body's menu: the two bodies picked rest on XY as one set at the
+/// offset typed, and the feature reopens with its bodies, offset and option.
+#[test]
+fn place_on_plane_dialog_rests_the_picked_bodies_and_reopens() {
+    let mut h = Harness::new();
+    for (name, x, z) in [("A", 0, 20), ("B", 20, 35)] {
+        h.app.run("solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [x, 0, z], "operation": "new", "body_name": name})).unwrap();
+    }
+    let menu = crate::context_menu::items(&h.app, &crate::context_menu::Target::Body { name: "A".into() });
+    assert!(menu.iter().any(|i| i.id == "ui.placeOnPlane" && i.enabled), "the body's menu offers Place on Plane");
+    let mut d = Dialog::for_command(&h.app, "solid.place_on_plane").unwrap();
+    d.inputs[0].items = vec![Sel::Body { name: "A".into() }, Sel::Body { name: "B".into() }];
+    let Kind::PlaceOnPlane { offset, each } = &mut d.kind else { panic!("not the Place on Plane dialog") };
+    assert!(!*each, "the bodies move as one set unless asked");
+    *offset = "1 mm".into();
+    for (command, params) in apply_commands(&h.app, &d).unwrap() {
+        assert_eq!(command, "solid.place_on_plane");
+        assert!(params.get("plane").is_none(), "no plane picked: XY, {params}");
+        h.app.run(&command, params).unwrap();
+    }
+    let low = |h: &Harness, n: &str| h.app.session.model.state().body(n).unwrap().body.exact_bounds().unwrap().min.z;
+    assert!((low(&h, "A") - 1.0).abs() < 1e-9 && (low(&h, "B") - 16.0).abs() < 1e-9, "{} {}", low(&h, "A"), low(&h, "B"));
+    let id = h.app.session.doc.features.last().unwrap().id;
+    let d = crate::dialogs::for_feature(&h.app, id, None).unwrap();
+    assert!(matches!(&d.kind, Kind::PlaceOnPlane { offset, each: false } if offset == "1 mm"), "{:?}", d.kind);
+    assert_eq!(d.inputs[0].items.len(), 2);
 }
 form_case!(offset_faces, "solid.offset_face", ["Distance"]);
 form_case!(section, "inspect.section", ["Distance"]);

@@ -160,7 +160,8 @@ pub(crate) fn transport_items(app: &SolveApp) -> Vec<crate::ui_kit::Item> {
 /// as Edit Feature on a face finds it (the hole, not the plate it was cut into), else the feature
 /// that made the body.
 fn geometry_feature(app: &SolveApp, body: &str, face: Option<usize>) -> Option<u64> {
-    let world = crate::open_meshing::session_world(&app.session);
+    // Asked at every frame for a face picked in the view (the timeline follows the pick).
+    let world = crate::open_meshing::still_world(app);
     let model_body = world.body(body)?;
     let owner = app.session.doc.feature(model_body.feature);
     // An imported mesh can only highlight its import feature. Looking up a geometric face
@@ -308,7 +309,7 @@ pub(crate) fn icon_of(k: &FeatureKind) -> &'static str {
         FeatureKind::FrameMemberTurn { .. } => "rotate_member",
         FeatureKind::Emboss { .. } => "emboss",
         FeatureKind::ReplaceFace { .. } => "replace_face",
-        FeatureKind::Align { .. } => "align",
+        FeatureKind::Align { .. } | FeatureKind::PlaceOnPlane { .. } => "align",
         FeatureKind::Coil { .. } => "coil",
         FeatureKind::SheetPerforate { .. } => "perforate",
         FeatureKind::CellGrid { .. } => "perforate",

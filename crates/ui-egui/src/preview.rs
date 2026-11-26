@@ -126,6 +126,8 @@ pub struct Built {
     /// The smallest and largest radius a fillet used when it reduced one too large for its edges
     /// (`fit: reduce`).
     pub applied: Option<(f64, f64)>,
+    /// How a previewed Emboss laid its profiles (wrapped or projected), for its dialog to say.
+    pub emboss_lay: Option<solidcraft_engine::doc::EmbossLay>,
     /// The radius spline of each edge a fillet tapered (`fit: taper`), with a point on the edge.
     pub tapered: Vec<(Vec3, solidcraft_engine::kernel::Taper)>,
     /// The reply of a previewed drive that stopped short of the asked values (the dialog says
@@ -206,6 +208,9 @@ pub struct PreviewState {
     running_tool: bool,
     /// Inputs of a joint or distance preview, excluding only its driven values.
     running_stream_key: Option<u64>,
+    /// The streaming setup of the result shown: its sketch curves stay drawn while the next
+    /// value of the same setup computes.
+    shown_stream: Option<u64>,
     /// The running job is a joint pose (see [`motion_key`]): once obsolete, it gets
     /// [`STALE_MOTION_MS`].
     running_motion: bool,
@@ -232,6 +237,8 @@ pub struct PreviewState {
     started: f64,
     /// The smallest and largest radius the previewed fillet used when it reduced the one asked for.
     pub applied: Option<(f64, f64)>,
+    /// How the previewed Emboss laid its profiles (see [`Built::emboss_lay`]).
+    pub emboss_lay: Option<solidcraft_engine::doc::EmbossLay>,
     /// The reply of a previewed drive that stopped short (see [`Built::stopped`]).
     pub stopped: Option<serde_json::Value>,
     /// The reply of a previewed assembly constraint (see [`Built::placed`]).
@@ -358,10 +365,12 @@ impl PreviewState {
         self.detach();
         self.running_tool = false;
         self.running_stream_key = None;
+        self.shown_stream = None;
         self.shown_key = None;
         self.error = None;
         self.plugin_view = None;
         self.applied = None;
+        self.emboss_lay = None;
         self.stopped = None;
         self.placed = None;
         self.tapered.clear();
@@ -433,6 +442,7 @@ impl PreviewState {
 
     fn apply(&mut self, key: u64, job: Job) {
         self.shown_key = Some(key);
+        self.shown_stream = None;
         self.ms = crate::now_ms() - self.started;
         match job {
             Ok(b) => {
@@ -444,6 +454,7 @@ impl PreviewState {
                 self.active = true;
                 self.error = b.error;
                 self.applied = b.applied;
+                self.emboss_lay = b.emboss_lay;
                 self.stopped = b.stopped;
                 self.placed = b.placed;
                 self.tapered = b.tapered;
@@ -483,6 +494,7 @@ impl PreviewState {
                 self.sketches.clear();
                 self.error = Some(e);
                 self.applied = None;
+                self.emboss_lay = None;
                 self.stopped = None;
                 self.placed = None;
                 self.tapered.clear();
@@ -503,7 +515,9 @@ impl PreviewState {
 
     fn poll_at(&mut self, key: u64, stream_key: Option<u64>, now: f64) {
         if self.shown_key != Some(key) {
-            self.sketches.clear();
+            if stream_key.is_none() || stream_key != self.shown_stream {
+                self.sketches.clear();
+            }
             self.error = None;
             // A constraint's reply says how free its part is with the inputs it was for: with other
             // picks it would describe the wrong rule, so the dialog falls back to the saved design.
@@ -520,7 +534,7 @@ impl PreviewState {
                 self.running = None;
                 let good = matches!(&job, Ok(b) if b.error.is_none());
                 let intermediate = good && (self.running_tool || stream_key.is_some() && self.running_stream_key == stream_key);
-                self.running_stream_key = None;
+                let job_stream = self.running_stream_key.take();
                 self.running_tool = false;
                 self.running_motion = false;
                 // A held slider, a dragged arrow or an animation may advance faster than the
@@ -529,6 +543,7 @@ impl PreviewState {
                 // key.
                 if k == key || intermediate {
                     self.apply(k, job);
+                    self.shown_stream = job_stream;
                 }
             }
         }
@@ -633,6 +648,9 @@ fn stream_key(cmds: &[(String, Value)], revision: u64, colors: Colors) -> Option
             // the preview holding still until the input stops changing.
             "solid.fillet" => &["radius", "radius2", "mid"],
             "solid.chamfer" => &["distance", "distance2", "angle"],
+            // A drawing dragged, scaled or turned in Insert SVG / DXF: its curves follow the
+            // pointer instead of vanishing until it stops.
+            "sketch.insert_svg" | "sketch.insert_dxf" => &["at", "scale", "angle"],
             _ => return None,
         };
         let params = params.as_object_mut()?;
@@ -857,6 +875,7 @@ pub fn compute(s: &Session, cmds: &[(String, Value)], colors: Colors) -> Job {
             // fillet or an edited one: the feature the replies name).
             let features = || p.replies.iter().filter_map(|r| r.get("feature").and_then(Value::as_u64));
             b.applied = features().find_map(|id| p.after.fitted_range(id));
+            b.emboss_lay = features().find_map(|id| p.after.emboss_lay(id));
             b.tapered = features().find_map(|id| p.after.tapered(id)).map(<[_]>::to_vec).unwrap_or_default();
             b.centrelines = crate::dialogs_frame::centrelines(&p);
             Ok(b)
@@ -1043,6 +1062,7 @@ fn build_copies(before: &ModelState, after: &ModelState, sources: &[String], c: 
         error: None,
         bounds: Aabb3::EMPTY,
         applied: None,
+        emboss_lay: None,
         tapered: Vec::new(),
         stopped: None,
         mirror_meets: None,
@@ -1098,6 +1118,7 @@ fn build_tool(before: &ModelState, after: &ModelState, c: Colors, op: &str) -> B
         error: None,
         bounds: Aabb3::EMPTY,
         applied: None,
+        emboss_lay: None,
         tapered: Vec::new(),
         stopped: None,
         mirror_meets: None,
@@ -1377,6 +1398,7 @@ fn build_as(before: &ModelState, after: &ModelState, c: Colors, combine: Option<
         error: None,
         bounds: Aabb3::EMPTY,
         applied: None,
+        emboss_lay: None,
         tapered: Vec::new(),
         stopped: None,
         mirror_meets: None,
@@ -1815,6 +1837,7 @@ mod tests {
             error: None,
             bounds: Aabb3::EMPTY,
             applied: None,
+            emboss_lay: None,
             tapered: Vec::new(),
             stopped: None,
             mirror_meets: None,
@@ -1974,6 +1997,40 @@ mod tests {
         pv.poll(4, Some(42));
         assert_eq!(pv.shown_key, Some(4), "release catches up to the exact final pose");
         assert!(pv.running.is_none());
+    }
+
+    /// A drawing dragged in Insert SVG: the curves of the last finished value stay drawn while the
+    /// next computes (#BUG-19), and go when the setup changes (another file) or the inputs stop.
+    #[test]
+    fn an_inserted_drawing_stays_drawn_while_it_is_dragged() {
+        let mut s = Session::default();
+        s.execute("sketch.create", &json!({"plane":"XY"})).unwrap();
+        let sketch = s.model.state().sketches[0].clone();
+        let curves = |n: usize| {
+            let mut b = pose();
+            b.sketches = vec![SketchPreview { sketch: sketch.clone(), curves: vec![0; n], points: Vec::new() }];
+            b
+        };
+        let mut pv = PreviewState::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        pv.running = Some((1, rx));
+        pv.running_stream_key = Some(7);
+        tx.send(Ok(curves(3))).unwrap();
+        // The pointer has moved on: key 2 is wanted, key 1 finishes.
+        pv.poll(2, Some(7));
+        assert_eq!(pv.sketches.len(), 1, "the finished value is drawn");
+        pv.poll(3, Some(7));
+        assert_eq!(pv.sketches.len(), 1, "and stays while the next computes");
+        pv.poll(4, Some(8));
+        assert!(pv.sketches.is_empty(), "another setup does not borrow it");
+        // What the preview asks for: moving, sizing or turning the drawing is one setup, another file is not.
+        let insert = |path: &str, at: [f64; 2], scale: f64, angle: f64| {
+            vec![("sketch.insert_svg".to_string(), json!({"path": path, "at": at, "scale": scale, "angle": angle, "align": "center"}))]
+        };
+        let key = |cmds: Vec<(String, Value)>| stream_key(&cmds, 1, colors());
+        assert!(key(insert("a.svg", [0.0, 0.0], 1.0, 0.0)).is_some());
+        assert_eq!(key(insert("a.svg", [0.0, 0.0], 1.0, 0.0)), key(insert("a.svg", [5.0, -3.0], 2.0, 15.0)));
+        assert_ne!(key(insert("a.svg", [0.0, 0.0], 1.0, 0.0)), key(insert("b.svg", [0.0, 0.0], 1.0, 0.0)));
     }
 
     /// A constraint's reply belongs to the inputs it was computed for: when they change (other picks
@@ -2290,6 +2347,26 @@ mod tests {
                 scene.palette.get(crate::gpu::PaletteIndex(i)) == Some(col)
             })
             .count()
+    }
+
+    /// MEJ-7: an Emboss's preview says how it lays its profiles, for its dialog: round a whole
+    /// tube from a sketch tangent to it they wrap; on its top cap they are projected.
+    #[test]
+    fn an_emboss_preview_says_whether_it_wraps_or_projects() {
+        use solidcraft_engine::doc::EmbossLay;
+        let mut s = Session::default();
+        s.execute("solid.cylinder", &json!({"radius": 20, "height": 30, "body_name": "Tube"})).unwrap();
+        s.execute("solid.cylinder", &json!({"radius": 16, "height": 30, "operation": "cut", "targets": ["Tube"]})).unwrap();
+        s.execute("sketch.create", &json!({"plane": {"origin": [0, 20, 0], "x_dir": [-1, 0, 0], "y_dir": [0, 0, 1]}, "name": "Mark"})).unwrap();
+        s.execute("sketch.rectangle.two_point", &json!({"p0": [-4, 10], "p1": [4, 16]})).unwrap();
+        s.execute("sketch.finish", &json!({})).unwrap();
+        let emboss = |face: [f64; 3]| ("solid.emboss".to_string(), json!({"sketch": "Mark", "face": face, "depth": 1}));
+        assert_eq!(compute(&s, &[emboss([0.0, 20.0, 13.0])], colors()).unwrap().emboss_lay, Some(EmbossLay::Wrapped));
+        s.execute("sketch.create", &json!({"plane": {"origin": [0, 0, 30], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Top"})).unwrap();
+        s.execute("sketch.rectangle.two_point", &json!({"p0": [-2, 17], "p1": [2, 19]})).unwrap();
+        s.execute("sketch.finish", &json!({})).unwrap();
+        let top = ("solid.emboss".to_string(), json!({"sketch": "Top", "face": [0, 18, 30], "depth": 1}));
+        assert_eq!(compute(&s, &[top], colors()).unwrap().emboss_lay, Some(EmbossLay::Projected));
     }
 
     /// A Mirror of bodies previews its copy as a green see-through ghost, joined or not, never a

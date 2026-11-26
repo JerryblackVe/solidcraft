@@ -144,6 +144,10 @@ pub(super) fn fixtures() -> Vec<(&'static str, Value)> {
         ("replace_face", json!({"type": "replace_face", "faces": [o], "target": plane("replace_face")})),
         ("align", json!({"type": "align", "bodies": ["B"], "from": o, "to": o})),
         (
+            "place_on_plane",
+            json!({"type": "place_on_plane", "bodies": ["B"], "plane": plane("place_plane"), "offset": "place_on_plane.offset", "each": true}),
+        ),
+        (
             "coil",
             json!({"type": "coil", "base": ["coil.x", "coil.y", "coil.z"], "diameter": "coil.diameter", "pitch": "coil.pitch", "turns": "coil.turns", "section_size": "coil.section_size", "start_angle": "coil.start_angle"}),
         ),

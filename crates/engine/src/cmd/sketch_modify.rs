@@ -152,7 +152,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("sketch_move")
         .key("G")
         .enabled(in_sketch)
-        .params("entities: [curve/point ids], factor?: number (scale), angle?: degrees (turn), center?: [x,y] or point ref (what scales and turns stay put; default [0,0]), translate?: [dx,dy] (applied last); scales, turns and moves in one step; a free point held only to the picked geometry (a rounded rectangle's centre) goes with it; returns `released`: the constraints tying the picked geometry to what stays that the change let go, as {id, kind}"),
+        .params("entities: [curve/point ids] (one curve of a group takes the whole group), factor?: number (scale), scale_x?, scale_y?: width and height factors apart (default factor, along the sketch's axes or a turned group's own; an arc becomes an exact rational spline and a circle an ellipse; refused with texts, or dimensions on what moves); angle?: degrees (turn), center?: [x,y] or point ref (what scales and turns stay put; default [0,0]), translate?: [dx,dy] (applied last); scales, turns and moves in one step; a free point held only to the picked geometry (a rounded rectangle's centre) goes with it; returns `released`: the constraints tying the picked geometry to what stays that the change let go, as {id, kind}"),
     CommandSpec::new("sketch.move", "Move/Copy Sketch Entities", crate::checked!("sketch.move", move_copy))
         .in_sketch_part()
         .contract(&MOVE_CONTRACT)
@@ -160,7 +160,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SKETCH", "MODIFY")
         .icon("sketch_move")
         .enabled(in_sketch)
-        .params(concat!("entities: [ids], translate?: [dx,dy], angle?: deg, center?: [x,y], copy?: bool, z?: mm along the sketch's normal (3D sketches: the moved lines and fit-point splines become drawn 3D curves that far off the plane, and drawn picks move that far along it); rotate_constraints?: bool (default true; false keeps constraints unchanged); a rotation turns the constraints tied to the sketch axes when all their geometry moves (horizontal and vertical relations and dimensions swap at odd quarter turns and stay at half turns, line angles turn with the line) and removes the horizontal and vertical ones that cannot hold at other angles; picking a text outline or linked point transforms its whole text source once, and copies remain editable text; copy also accepts drawn 3D curves, preserving exact arcs and height above the sketch plane; a turned rectangle keeps its shape: parallel and perpendicular relations replace the horizontal and vertical ones lost; `wire@index` picks a drawn 3D point, a drawn curve's id the whole curve: they move with the rest, along the plane and by `z` along its normal; returns `released`: the constraints tying the moved geometry to what stays that the move let go, as {id, kind}, and `added`: the relations put in their place, as {id, kind}", created_doc!())),
+        .params(concat!("entities: [ids] (one curve of a group takes the whole group), translate?: [dx,dy], angle?: deg, center?: [x,y], copy?: bool, z?: mm along the sketch's normal (3D sketches: the moved lines and fit-point splines become drawn 3D curves that far off the plane, and drawn picks move that far along it); rotate_constraints?: bool (default true; false keeps constraints unchanged); a rotation turns the constraints tied to the sketch axes when all their geometry moves (horizontal and vertical relations and dimensions swap at odd quarter turns and stay at half turns, line angles turn with the line) and removes the horizontal and vertical ones that cannot hold at other angles; picking a text outline or linked point transforms its whole text source once, and copies remain editable text; copy also accepts drawn 3D curves, preserving exact arcs and height above the sketch plane; a turned rectangle keeps its shape: parallel and perpendicular relations replace the horizontal and vertical ones lost; `wire@index` picks a drawn 3D point, a drawn curve's id the whole curve: they move with the rest, along the plane and by `z` along its normal; returns `released`: the constraints tying the moved geometry to what stays that the move let go, as {id, kind}, and `added`: the relations put in their place, as {id, kind}", created_doc!())),
     CommandSpec::new("sketch.mirror", "Mirror", crate::checked!("sketch.mirror", mirror))
         .in_sketch_part()
         .contract(&MIRROR_CONTRACT)
@@ -168,21 +168,21 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SKETCH", "PATTERN")
         .icon("sketch_mirror")
         .enabled(in_sketch)
-        .params(concat!("entities: [curve/point ids], line: straight curve id, x / y for a sketch axis, or {axis: X|Y|Z} for an origin axis (the mirror line is the axis's projection into the sketch plane; an axis perpendicular to the plane is refused) (symmetry constraints are added)", created_doc!())),
+        .params(concat!("entities: [curve/point ids], line: straight curve id, x / y for a sketch axis, or {axis: X|Y|Z} for an origin axis (the mirror line is the axis's projection into the sketch plane; an axis perpendicular to the plane is refused) (symmetry constraints are added; a star is mirrored as a whole into a star that follows it: its points, size, depth and roundings stay the original's when that is edited, and it moves with it; edit the original, not the copy)", created_doc!())),
     CommandSpec::new("sketch.pattern.circular", "Circular Pattern", crate::checked!("sketch.pattern.circular", pattern_circular))
         .contract(&CIRCULAR_PATTERN_CONTRACT)
         .output(output_schema_for::<PatternResult>)
         .at("SKETCH", "PATTERN")
         .icon("sketch_circ_pattern")
         .enabled(in_sketch)
-        .params(concat!("entities: [ids], center: [x,y] or point ref, count: 2…500 (number or unitless expression, retained through edits), angle?: total deg, number or expression (default 360); alignment?: left|center|right (default right); reversed?: bool (default false). Quantity includes the original. Center balances copies around it; reversed flips the direction and extra side for even totals. Partial arcs span angle with angle/(count-1) spacing; full turns use angle/count. Adds associative pattern constraints; a coordinate center creates a constrainable point. Returns pattern and center ids. pattern?: existing pattern id to edit (omitted values retained; surviving instance ids retained)", created_doc!())),
+        .params(concat!("entities: [ids], center: [x,y] or point ref, count: 2…500 (number or unitless expression, retained through edits; a star is copied as a whole into stars that follow it: their points, size, depth and roundings stay the original's when that is edited, and they move with it; edit the original, not a copy), angle?: total deg, number or expression (default 360); alignment?: left|center|right (default right); reversed?: bool (default false). Quantity includes the original. Center balances copies around it; reversed flips the direction and extra side for even totals. Partial arcs span angle with angle/(count-1) spacing; full turns use angle/count. Adds associative pattern constraints; a coordinate center creates a constrainable point. Returns pattern and center ids. pattern?: existing pattern id to edit (omitted values retained; surviving instance ids retained)", created_doc!())),
     CommandSpec::new("sketch.pattern.rectangular", "Rectangular Pattern", crate::checked!("sketch.pattern.rectangular", pattern_rect))
         .contract(&RECTANGULAR_PATTERN_CONTRACT)
         .output(output_schema_for::<PatternResult>)
         .at("SKETCH", "PATTERN")
         .icon("sketch_rect_pattern")
         .enabled(in_sketch)
-        .params(concat!("entities: [ids], count, spacing; count2?, spacing2?; counts: positive integer numbers or expressions, at most 500 instances total; spacings: length numbers or expressions; direction?, direction2?: sketch line ids (live references); dir?, dir2?: [x,y] vectors (defaults: sketch x, perpendicular to direction 1); alignment?, alignment2?: left|center|right (default right). Signed spacings reverse each direction. reversed?, reversed2?: bool (default false); reverses placement and the extra side of even centered totals. Quantities include the original. Adds associative pattern constraints. Returns pattern id. pattern?: existing pattern id to edit (omitted values retained; surviving instance ids retained)", created_doc!())),
+        .params(concat!("entities: [ids] (a star is copied as a whole into stars that follow it, as by sketch.pattern.circular), count, spacing; count2?, spacing2?; counts: positive integer numbers or expressions, at most 500 instances total; spacings: length numbers or expressions; direction?, direction2?: sketch line ids (live references); dir?, dir2?: [x,y] vectors (defaults: sketch x, perpendicular to direction 1); alignment?, alignment2?: left|center|right (default right). Signed spacings reverse each direction. reversed?, reversed2?: bool (default false); reverses placement and the extra side of even centered totals. Quantities include the original. Adds associative pattern constraints. Returns pattern id. pattern?: existing pattern id to edit (omitted values retained; surviving instance ids retained)", created_doc!())),
 ];
 
 /// A reply built from its typed value, which is what the command's output schema describes.
@@ -382,6 +382,10 @@ fn split_at(sk: &mut Sketch, ci: usize, ts: &[f64], cmd: &str) -> Result<(Vec<us
             }
         }
         _ => return Err(bad(cmd, "not supported yet for ellipses, splines and conics")),
+    }
+    if let Some(of) = sk.curves.get(ci).map(|c| c.id.clone()) {
+        let new: Vec<String> = pieces.iter().skip(1).filter_map(|i| sk.curves.get(*i).map(|c| c.id.clone())).collect();
+        sk.join_object_group_of(&of, &new);
     }
     Ok((pieces, pts))
 }
@@ -1680,38 +1684,58 @@ fn extend(s: &mut Session, p: &Value) -> Result<Value> {
     let pair = pair_request(p, cmd)?;
     let at = if pair.is_none() { req_vec2(cmd, p, "at")? } else { Vec2::default() };
     let (out, info) = edit(s, p, cmd, true, |sk, doc| {
-        // The sheet receiver has already solved the exact paper-owned sketch.
-        // Model-only parameter evaluation would discard sheet expressions.
-        if !on_sheet {
-            let rep = solve_current(sk, doc)?;
-            if !rep.keeps_orientation() {
-                return Err(bad(cmd, rep.failure(|_| "solve the existing sketch constraints before extending".into())));
-            }
-        }
-        if let Some((ids, ats)) = &pair {
-            return extend_pair(sk, ids, *ats, cmd);
-        }
-        let ci = curve_arg(sk, p, cmd)?;
-        refuse_offset_ends(sk, ci, "extend", cmd)?;
-        // An infinite line already reaches across the view: moving one of its two points would
-        // move the whole line instead of extending it.
-        if sk.curves.get(ci).is_some_and(|c| c.infinite) {
-            return Err(bad(cmd, "an infinite line has no end to extend: make it a normal line first"));
-        }
-        // An arc grows along its own circle, either way round: in place when its end is free, as
-        // a new arc when the end already carries geometry.
-        if matches!(sk.curves.get(ci).map(|c| &c.kind), Some(CurveKind::Arc { .. })) {
-            return extend_arc(sk, ci, at);
-        }
-        // The line grows past one end, out to the first geometry on the way, or the reach the
-        // preview draws when nothing is in the way. A stop where the sketch already has a point
-        // (another curve's end) joins that point instead of doubling it.
-        let Some(aim) = line_aim(sk, ci, at)? else {
-            return Err(bad(cmd, "only lines and arcs can be extended"));
+        let before = curve_ids(sk);
+        let from = match &pair {
+            Some((ids, _)) => ids.clone(),
+            None => vec![curve_arg(sk, p, cmd).ok().and_then(|ci| sk.curves.get(ci)).map(|c| c.id.clone()).unwrap_or_default()],
         };
-        grow_line(sk, ci, aim)
+        let moved = extend_in(sk, doc, p, &pair, at, on_sheet, cmd)?;
+        keep_new_in_groups(sk, &before, &from);
+        Ok(moved)
     })?;
     reply(cmd, ExtendResult { moved: out, sketch: info, param_warnings: Vec::new() })
+}
+
+/// The body of [`extend`]: the id of the point the curve now stops at.
+fn extend_in(
+    sk: &mut Sketch,
+    doc: &solidcraft_doc::Document,
+    p: &Value,
+    pair: &Option<(Vec<String>, Option<[Vec2; 2]>)>,
+    at: Vec2,
+    on_sheet: bool,
+    cmd: &str,
+) -> Result<String> {
+    // The sheet receiver has already solved the exact paper-owned sketch.
+    // Model-only parameter evaluation would discard sheet expressions.
+    if !on_sheet {
+        let rep = solve_current(sk, doc)?;
+        if !rep.keeps_orientation() {
+            return Err(bad(cmd, rep.failure(|_| "solve the existing sketch constraints before extending".into())));
+        }
+    }
+    if let Some((ids, ats)) = pair {
+        return extend_pair(sk, ids, *ats, cmd);
+    }
+    let ci = curve_arg(sk, p, cmd)?;
+    refuse_offset_ends(sk, ci, "extend", cmd)?;
+    // An infinite line already reaches across the view: moving one of its two points would
+    // move the whole line instead of extending it.
+    if sk.curves.get(ci).is_some_and(|c| c.infinite) {
+        return Err(bad(cmd, "an infinite line has no end to extend: make it a normal line first"));
+    }
+    // An arc grows along its own circle, either way round: in place when its end is free, as
+    // a new arc when the end already carries geometry.
+    if matches!(sk.curves.get(ci).map(|c| &c.kind), Some(CurveKind::Arc { .. })) {
+        return extend_arc(sk, ci, at);
+    }
+    // The line grows past one end, out to the first geometry on the way, or the reach the
+    // preview draws when nothing is in the way. A stop where the sketch already has a point
+    // (another curve's end) joins that point instead of doubling it.
+    let Some(aim) = line_aim(sk, ci, at)? else {
+        return Err(bad(cmd, "only lines and arcs can be extended"));
+    };
+    grow_line(sk, ci, aim)
 }
 
 /// Grow line `ci` past the end `aim` names, to `aim.hit`: a new line when that end is joined to
@@ -2013,6 +2037,34 @@ fn extend_pair(sk: &mut Sketch, ids: &[String], ats: Option<[Vec2; 2]>, cmd: &st
 
 fn uses(c: &Curve, p: usize) -> bool {
     c.kind.uses(p)
+}
+
+fn curve_ids(sk: &Sketch) -> std::collections::BTreeSet<String> {
+    sk.curves.iter().map(|c| c.id.clone()).collect()
+}
+
+/// Curves an edit added (not in `before`) join the group of the curve they grew from, as trimmed
+/// and broken pieces do: the first grouped curve of `from` when the edit names them, else the
+/// first older curve sharing an end with the new one (a fillet arc or a chamfer line).
+fn keep_new_in_groups(sk: &mut Sketch, before: &std::collections::BTreeSet<String>, from: &[String]) {
+    if sk.object_groups.is_empty() {
+        return;
+    }
+    let new: Vec<(String, Option<(usize, usize)>)> =
+        sk.curves.iter().filter(|c| !before.contains(&c.id)).map(|c| (c.id.clone(), c.kind.ends())).collect();
+    for (id, ends) in new {
+        let touching: Vec<String> = sk
+            .curves
+            .iter()
+            .filter(|c| before.contains(&c.id) && ends.is_some_and(|(a, b)| uses(c, a) || uses(c, b)))
+            .map(|c| c.id.clone())
+            .collect();
+        let grouped = |o: &String| sk.object_group_of(o).is_some();
+        let of = if from.is_empty() { touching.into_iter().find(grouped) } else { from.iter().find(|o| grouped(o)).cloned() };
+        if let Some(of) = of {
+            sk.join_object_group_of(&of, &[id]);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2588,6 +2640,7 @@ fn fillet(s: &mut Session, p: &Value) -> Result<Value> {
         // A corner symmetric to another is rounded with it (#18075).
         let corners = symmetric_corners(sk, &corners, cmd);
         let released = release_corner_offsets(sk, doc, &corners, cmd)?;
+        let before = curve_ids(sk);
         let pname = if on_sheet { r_expr.to_string() } else { doc.new_model_param(&r_expr, "mm") };
         // The arcs by id: a fillet that takes a whole line removes it, which renumbers the curves.
         let (mut arcs, mut cons, mut kept): (Vec<String>, _, _) = (Vec::new(), Vec::new(), Vec::new());
@@ -2602,6 +2655,7 @@ fn fillet(s: &mut Session, p: &Value) -> Result<Value> {
             cons.extend(c);
             arcs.push(sk.curves.get(arc).map(|c| c.id.clone()).unwrap_or_default());
         }
+        keep_new_in_groups(sk, &before, &[]);
         Ok((arcs, cons, pname, kept_json(kept), released))
     })?;
     let (curves, constraints, param, (virtual_corners, moved_to_virtual_corner), offset_released) = out;
@@ -2828,12 +2882,13 @@ fn chamfer(s: &mut Session, p: &Value, cmd: &str, dists: impl Fn(f64) -> Result<
                 return Err(bad(cmd, "a corner is listed twice"));
             }
         }
-        let (mut lines, mut kept) = (Vec::new(), Vec::new());
+        let (mut lines, mut kept, before) = (Vec::new(), Vec::new(), curve_ids(sk));
         for q in &corners {
             let (l, k) = chamfer_corner(sk, q, cmd, &dists)?;
             lines.push(l);
             kept.push(k);
         }
+        keep_new_in_groups(sk, &before, &[]);
         Ok((ids_of(sk, &lines), kept_json(kept), released))
     })?;
     let (curves, (virtual_corners, moved_to_virtual_corner), offset_released) = out;
@@ -4001,6 +4056,25 @@ fn freeze_offset_profiles(doc: &mut solidcraft_doc::Document, sketch: u64, bound
 // Copies: mirror, patterns, move, scale
 
 /// Curves and lone points named in `entities`.
+/// The stars among the selected curves, for a mirror or a pattern: their links in order, and the
+/// curves left once the stars' own are taken out. A star's points alone can't be copied.
+fn take_stars(sk: &Sketch, cs: Vec<usize>, ps: &[usize], cmd: &str) -> Result<(Vec<usize>, Vec<String>)> {
+    let star_link = |l: Option<&str>| l.filter(|l| sk.link(l).is_some_and(|l| l.kind == solidcraft_sketch::LinkKind::Star)).map(str::to_owned);
+    if ps.iter().any(|q| star_link(sk.points.get(*q).and_then(|x| x.link.as_deref())).is_some()) {
+        return Err(bad(cmd, "a point of a star can't be copied alone: pick the star's outline to copy the whole star"));
+    }
+    let mut stars: Vec<String> = Vec::new();
+    let mut rest = Vec::new();
+    for c in cs {
+        match star_link(sk.curves.get(c).and_then(|c| c.link.as_deref())) {
+            Some(link) if stars.contains(&link) => {}
+            Some(link) => stars.push(link),
+            None => rest.push(c),
+        }
+    }
+    Ok((rest, stars))
+}
+
 fn entities(sk: &Sketch, p: &Value, cmd: &str) -> Result<(Vec<usize>, Vec<usize>)> {
     let ids = string_list(cmd, p, "entities")?;
     if ids.is_empty() {
@@ -4042,7 +4116,7 @@ fn with_ellipse_axes(sk: &Sketch, cs: &mut Vec<usize>) {
 }
 
 /// Points used by curves plus lone points, in a stable order.
-fn involved_points(sk: &Sketch, cs: &[usize], ps: &[usize]) -> Vec<usize> {
+pub(super) fn involved_points(sk: &Sketch, cs: &[usize], ps: &[usize]) -> Vec<usize> {
     let mut v: Vec<usize> = Vec::new();
     for c in cs {
         if let Some(k) = sk.curves.get(*c).map(|c| &c.kind) {
@@ -4171,6 +4245,7 @@ fn mirror(s: &mut Session, p: &Value) -> Result<Value> {
         p.get("line").filter(|line| line.is_object()).map(|line| super::sketch_project::origin_axis_line(s, p, line, cmd)).transpose()?;
     let (out, info) = edit(s, p, cmd, false, |sk, _| {
         let (cs, ps) = entities(sk, p, cmd)?;
+        let (cs, stars) = take_stars(sk, cs, &ps, cmd)?;
         let l = if let Some((source, geom)) = origin_axis {
             let link =
                 sk.links.iter().find(|link| link.kind == solidcraft_sketch::LinkKind::Project && link.source == source).map(|link| link.id.clone());
@@ -4220,7 +4295,20 @@ fn mirror(s: &mut Session, p: &Value) -> Result<Value> {
         let mut selected = std::collections::BTreeSet::new();
         let selected_count = cs.iter().filter(|source| selected.insert(**source)).count();
         let reported = made.get(..selected_count).ok_or_else(|| bad(cmd, "copied curves changed while mirroring"))?;
-        Ok((ids_of(sk, reported), cons))
+        let mut curves = ids_of(sk, reported);
+        // A star is mirrored as a whole into a star that follows it: its points, depth and the rest
+        // stay the source's when the source is edited.
+        for link in stars {
+            let Some(solidcraft_sketch::LinkSource::Star(spec)) = sk.link(&link).map(|l| l.source.clone()) else { continue };
+            let follow = solidcraft_sketch::StarFollow::mirror(&link, sk.curves.get(l).map(|c| c.id.as_str()), a, u);
+            let mut copy = spec.clone();
+            follow.apply(&spec, &mut copy);
+            copy.follows = Some(follow);
+            let geom = solidcraft_sketch::star_geometry(&copy).map_err(|e| bad(cmd, e.to_string()))?;
+            let made = sk.add_link(solidcraft_sketch::LinkKind::Star, solidcraft_sketch::LinkSource::Star(copy), &geom)?;
+            curves.extend(sk.link_curves(&made).into_iter().filter_map(|i| sk.curves.get(i).map(|c| c.id.clone())));
+        }
+        Ok((curves, cons))
     })?;
     reply(cmd, MirrorResult { curves: out.0, constraints: out.1, sketch: info, created: None, param_warnings: Vec::new() })
 }
@@ -4250,6 +4338,14 @@ fn pattern_rect(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Move the points of the entities (in place) through `f`; circle radii scale by `k`.
+/// Move every curve of a group by `by`: the points before the move, for a drag's report.
+pub(super) fn move_group(sk: &mut Sketch, members: &[String], by: Vec2, cmd: &str) -> Result<Vec<(usize, Vec2)>> {
+    let cs: Vec<usize> = members.iter().filter_map(|c| sk.curve_index(c)).collect();
+    let moving: Vec<(usize, Vec2)> = involved_points(sk, &cs, &[]).into_iter().filter_map(|i| sk.point(i).map(|p| (i, p))).collect();
+    transform_in_place(sk, &cs, &[], &move |q| q + by, 1.0, cmd)?;
+    Ok(moving)
+}
+
 fn transform_in_place(sk: &mut Sketch, cs: &[usize], ps: &[usize], f: &dyn Fn(Vec2) -> Vec2, k: f64, cmd: &str) -> Result<()> {
     let pts = involved_points(sk, cs, ps);
     // A point the sketch holds fixed, or one it projects from a body or another sketch, follows
@@ -4283,6 +4379,7 @@ fn transform_in_place(sk: &mut Sketch, cs: &[usize], ps: &[usize], f: &dyn Fn(Ve
         }
     }
     sk.follow_pattern_seeds();
+    sk.follow_group_pivots(cs, f);
     Ok(())
 }
 
@@ -4496,6 +4593,8 @@ fn move_copy(s: &mut Session, p: &Value) -> Result<Value> {
     let mut released = Vec::new();
     let mut added = Vec::new();
     let (out, info) = edit(s, p, cmd, false, |sk, doc| {
+        // One curve of a group takes the whole group.
+        let planar = super::sketch_object::group_ids(sk, &planar);
         let (mut cs, mut ps) =
             if planar.is_empty() && !drawn.is_empty() { (Vec::new(), Vec::new()) } else { entities(sk, &json!({"entities": planar}), cmd)? };
         let c = if p.get("center").is_some() { point_or_ref(sk, p, "center", cmd)? } else { Vec2::ZERO };
@@ -4542,6 +4641,8 @@ fn move_copy(s: &mut Session, p: &Value) -> Result<Value> {
         ps.extend(riding);
         let held = holding(sk, &involved_points(sk, &cs, &ps));
         transform_in_place(sk, &cs, &ps, &f, 1.0, cmd)?;
+        // A group turned whole keeps its box turned with it (MEJ-19), as Transform does.
+        sk.turn_object_groups(&cs, ang.to_degrees());
         // Broken external holds must not make the rectangle's replacement relations look redundant.
         released = release_broken(sk, &held);
         if rotate_constraints {
@@ -4578,13 +4679,31 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => v.as_f64().filter(|a| a.is_finite()).ok_or_else(|| bad(cmd, "`angle` must be a number (degrees)"))?.to_radians(),
         None => 0.0,
     };
+    // Width and height on their own: scaled along the sketch's own axes, before the turn.
+    let axis = |key: &str| -> Result<f64> {
+        match p.get(key) {
+            Some(v) => v.as_f64().filter(|k| *k > 1e-9 && *k < 1e6).ok_or_else(|| bad(cmd, format!("`{key}` must be a positive number"))),
+            None => Ok(k),
+        }
+    };
+    let (sx, sy) = (axis("scale_x")?, axis("scale_y")?);
+    let stretched = (sx - sy).abs() > 1e-12;
     let t = if p.get("translate").is_some() { req_vec2(cmd, p, "translate")? } else { Vec2::ZERO };
     let mut released = Vec::new();
     let (out, info) = edit(s, p, cmd, false, |sk, doc| {
+        // One curve of a group takes the whole group.
+        let grouped = super::sketch_object::with_group_members(sk, p, cmd)?;
+        let p = &grouped;
         let (mut cs, mut ps) = entities(sk, p, cmd)?;
         let c = if p.get("center").is_some() { point_or_ref(sk, p, "center", cmd)? } else { Vec2::ZERO };
         let rot = rotate(c, ang);
-        let f = move |q: Vec2| rot(c + (q - c) * k) + t;
+        // Width and height go along the box's own axes: a turned group's, else the sketch's.
+        let axes = if stretched { sk.box_angle(&cs).to_radians() } else { 0.0 };
+        let (to_box, from_box) = (rotate(Vec2::ZERO, -axes), rotate(Vec2::ZERO, axes));
+        let f = move |q: Vec2| {
+            let d = to_box(q - c);
+            rot(c + from_box(Vec2::new(d.x * sx, d.y * sy))) + t
+        };
         // A text's outline points follow its source: the text turns, scales and moves as a
         // unit, as Move turns it, instead of its points being refused as projected (#17315).
         let mut links = Vec::new();
@@ -4597,6 +4716,25 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         }
         cs.retain(|&i| !sk.curves.get(i).and_then(|c| c.link.as_ref()).is_some_and(|link| links.contains(link)));
         ps.retain(|&i| !sk.points.get(i).and_then(|p| p.link.as_ref()).is_some_and(|link| links.contains(link)));
+        // Arcs, circles and ellipses stretched: their stretched shapes, put in place after the points move.
+        let mut ellipses = Vec::new();
+        let mut centres = Vec::new();
+        if stretched {
+            // Texts, and dimensions on what moves, would no longer measure what they say. Nothing
+            // is changed. A dimension elsewhere in the sketch is not in the way.
+            let mut moving = involved_points(sk, &cs, &ps);
+            moving.extend(riders(sk, &moving));
+            let measured = |c: &solidcraft_sketch::Constraint| sk.constraint_points(&c.kind).iter().any(|q| moving.contains(q));
+            if !links.is_empty() || sk.constraints.iter().any(|c| !c.driven && c.kind.is_dimension() && measured(c)) {
+                return Err(bad(
+                    cmd,
+                    "a different width and height cannot keep texts or dimensions: the selection has some. Scale it proportionally with `factor`",
+                ));
+            }
+            with_ellipse_axes(sk, &mut cs);
+            (ellipses, centres) = stretch_round_curves(sk, &cs, &mut released)?;
+            ps.extend(centres.iter().copied());
+        }
         let mut text_curves = Vec::new();
         for link in links {
             text_curves.extend(super::sketch_create::transform_text(sk, cmd, &link, &f, ang, k, false)?);
@@ -4608,15 +4746,134 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         // after the turn is let go, else the solve drags the shape back and bends it (#15697).
         let held = holding(sk, &involved_points(sk, &cs, &ps));
         transform_in_place(sk, &cs, &ps, &f, k, cmd)?;
+        place_stretched_ellipses(sk, &ellipses, &f);
         let moved = involved_points(sk, &cs, &ps);
         let _ = rotate_axis_constraints(sk, doc, &moved, ang)?;
         scale_dimensions(sk, doc, &cs, &moved, k)?;
-        released = release_broken(sk, &held);
+        released.extend(release_broken(sk, &held));
+        sk.turn_object_groups(&cs, ang.to_degrees());
+        // An arc's centre that nothing else uses goes with the arc it was the centre of.
+        let used: std::collections::BTreeSet<usize> =
+            sk.curves.iter().flat_map(|c| c.kind.point_ids()).chain(sk.constraints.iter().flat_map(|c| sk.constraint_points(&c.kind))).collect();
+        let lone: Vec<usize> = centres.into_iter().filter(|q| !used.contains(q)).collect();
+        sk.remove_points(&lone);
         cs.extend(text_curves);
         Ok(ids_of(sk, &cs))
     })?;
     s.doc_mut().prune_model_params();
     reply(cmd, TransformResult { curves: out, released, sketch: info, param_warnings: Vec::new() })
+}
+
+/// Before a stretch (a different width and height): every arc of `cs` becomes the exact rational
+/// spline it is, which the stretch then keeps exact, and every circle an ellipse. Constraints that
+/// name those arcs or circles as curves (a tangency, an equal radius) are let go into `released`.
+/// Returns each ellipse with its centre and two conjugate half axes before the stretch (for
+/// [`place_stretched_ellipses`]), and the arcs' former centres.
+fn stretch_round_curves(sk: &mut Sketch, cs: &[usize], released: &mut Vec<Value>) -> Result<(Vec<(usize, Vec2, Vec2, Vec2)>, Vec<usize>)> {
+    let (mut ellipses, mut centres, mut changed) = (Vec::new(), Vec::new(), std::collections::BTreeSet::new());
+    for &i in cs {
+        let Some(kind) = sk.curves.get(i).map(|c| c.kind.clone()) else { continue };
+        let pos = |sk: &Sketch, q: usize| sk.point(q).unwrap_or_default();
+        match kind {
+            CurveKind::Arc { c, a, b } => {
+                let (o, from, to) = (pos(sk, c), pos(sk, a), pos(sk, b));
+                let r = (from - o).len();
+                let start = (from.y - o.y).atan2(from.x - o.x);
+                let mut sweep = ((to.y - o.y).atan2(to.x - o.x) - start).rem_euclid(TAU);
+                if sweep < 1e-12 {
+                    sweep = TAU;
+                }
+                // Spans of a quarter turn at most, each a rational quadratic Bézier.
+                let spans = (sweep / FRAC_PI_2).ceil().max(1.0) as usize;
+                let half = sweep / spans as f64 / 2.0;
+                let (mut pts, mut weights, mut knots) = (vec![a], vec![1.0], vec![0.0; 3]);
+                for n in 0..spans {
+                    let mid = start + half * (2 * n + 1) as f64;
+                    let apex = o + Vec2::new(mid.cos(), mid.sin()) * (r / half.cos());
+                    let end = start + half * (2 * n + 2) as f64;
+                    let last = if n + 1 == spans { b } else { sk.add_point(o + Vec2::new(end.cos(), end.sin()) * r, None)? };
+                    pts.extend([sk.add_point(apex, None)?, last]);
+                    weights.extend([half.cos(), 1.0]);
+                    let knot = (n + 1) as f64;
+                    knots.extend(if n + 1 == spans { vec![knot; 3] } else { vec![knot; 2] });
+                }
+                if let Some(curve) = sk.curves.get_mut(i) {
+                    curve.kind = CurveKind::Spline {
+                        pts,
+                        control: true,
+                        degree: 2,
+                        periodic: false,
+                        nurbs: Some(solidcraft_sketch::Nurbs { knots, weights }),
+                        handles: Vec::new(),
+                    };
+                }
+                centres.push(c);
+                changed.insert(i);
+            }
+            CurveKind::Circle { c, r } => {
+                let o = pos(sk, c);
+                let m = sk.add_point(o + Vec2::new(r, 0.0), None)?;
+                if let Some(curve) = sk.curves.get_mut(i) {
+                    curve.kind = CurveKind::Ellipse { c, m, r };
+                }
+                ellipses.push((i, o, Vec2::new(r, 0.0), Vec2::new(0.0, r)));
+                changed.insert(i);
+            }
+            // An ellipse stays one: its constraints keep their meaning.
+            CurveKind::Ellipse { c, m, r } => {
+                let major = pos(sk, m) - pos(sk, c);
+                let len = major.len().max(1e-12);
+                ellipses.push((i, pos(sk, c), major, Vec2::new(-major.y, major.x) * (r / len)));
+            }
+            _ => {}
+        }
+    }
+    sk.constraints.retain(|k| {
+        let names = k.kind.indices().1.iter().any(|l| changed.contains(l));
+        if names {
+            released.push(json!({"id": k.id, "kind": k.kind.name()}));
+        }
+        !names
+    });
+    Ok((ellipses, centres))
+}
+
+/// After a stretch: each ellipse of `ellipses` (centre and conjugate half axes before it) gets the
+/// major axis end and minor radius of its image through `f`, and its axis lines follow.
+fn place_stretched_ellipses(sk: &mut Sketch, ellipses: &[(usize, Vec2, Vec2, Vec2)], f: &dyn Fn(Vec2) -> Vec2) {
+    for &(i, o, u, v) in ellipses {
+        let c = f(o);
+        let (u, v) = (f(o + u) - c, f(o + v) - c);
+        // The principal axes of the ellipse c + u cos t + v sin t: the eigenvectors of [u v][u v]^T.
+        let (p, s, q) = (u.x * u.x + v.x * v.x, u.y * u.y + v.y * v.y, u.x * u.y + v.x * v.y);
+        let spread = (((p - s) / 2.0).powi(2) + q * q).sqrt();
+        let (big, small) = ((p + s) / 2.0 + spread, ((p + s) / 2.0 - spread).max(0.0));
+        let phi = 0.5 * (2.0 * q).atan2(p - s);
+        let mut major = Vec2::new(phi.cos(), phi.sin()) * big.sqrt();
+        if major.dot(u) < 0.0 {
+            major = major * -1.0;
+        }
+        let minor = Vec2::new(-major.y, major.x) * (small.sqrt() / major.len().max(1e-12));
+        let axes = sk.ellipse_axis_lines(i);
+        let Some(CurveKind::Ellipse { m, r, .. }) = sk.curves.get_mut(i).map(|x| &mut x.kind) else { continue };
+        *r = small.sqrt();
+        let mut at = vec![(*m, c + major)];
+        if let Some((major_line, minor_line)) = axes {
+            if let Some((_, other)) = major_line {
+                at.push((other, c - major));
+            }
+            if let Some((_, a, b)) = minor_line {
+                // Each end of the minor axis keeps its side.
+                let side = if sk.point(a).is_some_and(|q| (q - c).dot(minor) < 0.0) { -1.0 } else { 1.0 };
+                at.extend([(a, c + minor * side), (b, c - minor * side)]);
+            }
+        }
+        for (q, to) in at {
+            if let Some(x) = sk.points.get_mut(q) {
+                x.pos = to;
+            }
+        }
+    }
 }
 
 /// The driving lengths wholly inside a transformed selection scale with it. Keep formulas

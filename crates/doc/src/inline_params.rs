@@ -151,13 +151,56 @@ impl Document {
                     }
                 }
                 for link in &mut sketch.links {
-                    if let solidcraft_sketch::LinkSource::Text { exprs, .. } = &mut link.source {
-                        for e in [&mut exprs.x, &mut exprs.y, &mut exprs.height].into_iter().flatten() {
-                            found.take(e, Reads::Typed(Kind::Length));
+                    match &mut link.source {
+                        solidcraft_sketch::LinkSource::Text { exprs, .. } => {
+                            for e in [&mut exprs.x, &mut exprs.y, &mut exprs.height].into_iter().flatten() {
+                                found.take(e, Reads::Typed(Kind::Length));
+                            }
+                            if let Some(e) = exprs.angle.as_mut() {
+                                found.take(e, Reads::Typed(Kind::Angle));
+                            }
                         }
-                        if let Some(e) = exprs.angle.as_mut() {
-                            found.take(e, Reads::Typed(Kind::Angle));
+                        solidcraft_sketch::LinkSource::Star(spec) => {
+                            let e = &mut spec.exprs;
+                            let fields = [
+                                (&mut e.x, Kind::Length),
+                                (&mut e.y, Kind::Length),
+                                (&mut e.points, Kind::Unitless),
+                                (&mut e.outer, Kind::Length),
+                                (&mut e.inner_percent, Kind::Unitless),
+                                (&mut e.skip, Kind::Unitless),
+                                (&mut e.tip_round, Kind::Length),
+                                (&mut e.valley_round, Kind::Length),
+                                (&mut e.angle, Kind::Angle),
+                            ];
+                            for (e, kind) in fields {
+                                if let Some(e) = e.as_mut() {
+                                    found.take(e, Reads::Typed(kind));
+                                }
+                            }
                         }
+                        _ => {}
+                    }
+                }
+                // Points placed by parameters and 3D points are lengths.
+                for e in sketch.points.iter_mut().filter_map(|p| p.exprs.as_deref_mut()).flat_map(solidcraft_sketch::PointExprs::list_mut) {
+                    found.take(e, Reads::Typed(Kind::Length));
+                }
+                for e in sketch.wire_point_exprs_mut() {
+                    found.take(e, Reads::Typed(Kind::Length));
+                }
+                // An equation curve's formulas give lengths; its range is a number, a length or an angle.
+                for eq in &mut sketch.equations {
+                    let var = eq.variable();
+                    for e in eq.x.iter_mut().chain([&mut eq.y]) {
+                        // `y = x / 2` is the formula written out, not a parameter: it reads the curve's variable.
+                        if expr::definition(e).is_some_and(|(_, rhs)| expr::references(rhs).iter().any(|n| n == var)) {
+                            continue;
+                        }
+                        found.take(e, Reads::Typed(Kind::Length));
+                    }
+                    for e in [&mut eq.start, &mut eq.end] {
+                        found.take(e, Reads::Inferred);
                     }
                 }
             }

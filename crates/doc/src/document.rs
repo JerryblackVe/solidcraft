@@ -1561,6 +1561,11 @@ pub enum FeatureKind {
         /// Raise or sink toward the sketch's back rather than its front (no face selected).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         flip: bool,
+        /// Distribute: for each profile, in order (the first sketch's, then `more_profiles`'), the
+        /// selected face it goes on (0: `face`, 1 on: `more_faces`), centred on the face's picked
+        /// point. Empty: each profile goes onto the face it lies over.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        distribute: Vec<u32>,
     },
     /// A thin wall from open sketch curves: `thickness` across the sketch plane, filling from
     /// the curves toward the body (to the next face, or `depth`), or with `normal` along the
@@ -1636,6 +1641,19 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[walk(angle = "Angle")]
         angle: Option<Expr>,
+    },
+    /// Rest bodies on a plane: move them along its normal, without turning, until the point of
+    /// the set nearest the plane (with `each`, of each body) lies `offset` from it, on the side
+    /// the normal points to. Measured on the bodies' exact geometry.
+    PlaceOnPlane {
+        bodies: Vec<BodyName>,
+        plane: PlaneRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[walk(length = "Offset")]
+        offset: Option<Expr>,
+        /// Each body rests on the plane by itself, instead of the set moving as one.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        each: bool,
     },
     /// A cell grid (#14044): the cells of one shape that fill the closed profiles of a sketch (an
     /// outer loop is the field, a loop inside it a keep-out), cut from the targets `depth` deep
@@ -3296,6 +3314,7 @@ impl FeatureKind {
             FeatureKind::Rib { .. } => "WebFeature",
             FeatureKind::ReplaceFace { .. } => "ReplaceFaceFeature",
             FeatureKind::Align { .. } => "AlignFeature",
+            FeatureKind::PlaceOnPlane { .. } => "PlaceOnPlaneFeature",
             FeatureKind::Remove { .. } => "RemoveFeature",
             FeatureKind::Patch { .. } => "PatchFeature",
             FeatureKind::SurfaceExtrude { .. } => "SurfaceExtrudeFeature",
@@ -3362,6 +3381,7 @@ impl FeatureKind {
             FeatureKind::Rib { .. } => "rib",
             FeatureKind::ReplaceFace { .. } => "replace_face",
             FeatureKind::Align { .. } => "align",
+            FeatureKind::PlaceOnPlane { .. } => "place_on_plane",
             FeatureKind::Coil { .. } => "coil",
             FeatureKind::CellGrid { .. } => "cell_grid",
             FeatureKind::SheetBase { .. } => "sheet_base",
@@ -3469,6 +3489,7 @@ impl FeatureKind {
             "RibFeature" | "WebFeature" => "rib",
             "ReplaceFaceFeature" => "replace_face",
             "AlignFeature" => "align",
+            "PlaceOnPlaneFeature" => "place_on_plane",
             "RemoveFeature" => "remove",
             "PatchFeature" => "patch",
             "SurfaceExtrudeFeature" => "surface_extrude",
@@ -3559,6 +3580,7 @@ impl FeatureKind {
             FeatureKind::Rib { .. } => "Web",
             FeatureKind::ReplaceFace { .. } => "ReplaceFace",
             FeatureKind::Align { .. } => "Align",
+            FeatureKind::PlaceOnPlane { .. } => "PlaceOnPlane",
             FeatureKind::Remove { .. } => "Remove",
             FeatureKind::Patch { .. } => "Patch",
             FeatureKind::SurfaceExtrude { .. } => "SurfaceExtrude",
@@ -5612,10 +5634,15 @@ impl Document {
     /// Give the texts of a sketch the numbers and words their expressions come to (in place): a
     /// text's height, place and angle that were typed as expressions, and its words built from
     /// text parameters. A text's outlines are rebuilt from them when the sketch's links are
-    /// refreshed, so this comes before that. What was typed as such is left as it is.
+    /// refreshed, so this comes before that. What was typed as such is left as it is. A star's
+    /// numbers typed as expressions are given theirs the same way ([`Self::apply_star_values`]).
     pub fn apply_text_values(&self, vals: &std::collections::BTreeMap<String, expr::Value>, sk: &mut Sketch) -> Result<()> {
         use crate::eval::val;
         for link in &mut sk.links {
+            if let solidcraft_sketch::LinkSource::Star(spec) = &mut link.source {
+                Self::apply_star_values(vals, spec)?;
+                continue;
+            }
             let solidcraft_sketch::LinkSource::Text { text, at, height, angle, exprs, .. } = &mut link.source else { continue };
             let number = |e: &Option<String>, kind: Kind, what: &str| -> Result<Option<f64>> {
                 match e {
@@ -5646,7 +5673,64 @@ impl Document {
                 *text = words;
             }
         }
+        // A star that follows another takes the numbers its source has just been given.
+        sk.resolve_star_follows();
         Ok(())
+    }
+
+    /// Give a star the numbers its expressions come to (in place), checked as a star drawn with
+    /// them would be: a parameter that makes no star (a radius of 0, a skip that does not fit) is
+    /// an error, not a broken outline.
+    fn apply_star_values(vals: &std::collections::BTreeMap<String, expr::Value>, spec: &mut solidcraft_sketch::StarSpec) -> Result<()> {
+        use crate::eval::val;
+        if spec.exprs.is_empty() {
+            return Ok(());
+        }
+        let e = spec.exprs.clone();
+        let number = |e: &Option<String>, kind: Kind, what: &str| -> Result<Option<f64>> {
+            match e {
+                None => Ok(None),
+                Some(e) => val(vals, e, kind).map(Some).map_err(|error| DocError::Expr(format!("star {what}: {error}"))),
+            }
+        };
+        // A count: a whole number, 0 or more.
+        let count = |e: &Option<String>, what: &str| -> Result<Option<u32>> {
+            let Some(x) = number(e, Kind::Unitless, what)? else { return Ok(None) };
+            let n = x.round();
+            if (x - n).abs() > 1e-9 || !(0.0..=f64::from(u32::MAX)).contains(&n) {
+                return Err(DocError::Invalid(format!("star {what}: `{}` gives {x}, not a whole number", e.as_deref().unwrap_or_default())));
+            }
+            Ok(Some(n as u32))
+        };
+        if let Some(v) = number(&e.x, Kind::Length, "centre x")? {
+            spec.center.x = v;
+        }
+        if let Some(v) = number(&e.y, Kind::Length, "centre y")? {
+            spec.center.y = v;
+        }
+        if let Some(v) = count(&e.points, "points")? {
+            spec.points = v;
+        }
+        if let Some(v) = number(&e.outer, Kind::Length, "outer radius")? {
+            spec.outer = v;
+        }
+        if let Some(v) = number(&e.inner_percent, Kind::Unitless, "valley depth")? {
+            spec.inner_percent = v;
+        }
+        if let Some(v) = count(&e.skip, "skip")? {
+            spec.skip = v;
+        }
+        if let Some(v) = number(&e.tip_round, Kind::Length, "tip rounding")? {
+            spec.tip_round = v;
+        }
+        if let Some(v) = number(&e.valley_round, Kind::Length, "valley rounding")? {
+            spec.valley_round = v;
+        }
+        // Angles evaluate in radians; a star keeps degrees.
+        if let Some(v) = number(&e.angle, Kind::Angle, "angle")? {
+            spec.angle = v.to_degrees();
+        }
+        spec.check().map_err(|error| DocError::Invalid(error.to_string()))
     }
 
     /// Apply parameter values to a sketch's dimensions and solve it. `stored` are the values
@@ -5756,6 +5840,8 @@ impl Document {
         if sk.wires.iter().any(|w| w.link.is_none() && !w.fit.is_empty()) {
             report.wires = Some(sk.solve_wires_with(None, analysis != solidcraft_sketch::Analysis::StatusOnly));
         }
+        // A mirror copy of a star follows its mirror line to where the solve left it.
+        sk.refresh_star_followers()?;
         Ok(report)
     }
 }

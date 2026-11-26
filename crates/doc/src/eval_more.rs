@@ -11,20 +11,24 @@ use solidcraft_geom::{Aabb3, ArcMap, Ring};
 
 pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st: &mut ModelState, warning: &mut Option<String>) -> Result<()> {
     match &f.kind {
-        FeatureKind::Emboss { sketch, profiles, depth, deboss, targets, face, more_profiles, more_faces, dx, dy, angle, flip } => {
+        FeatureKind::Emboss { sketch, profiles, depth, deboss, targets, face, more_profiles, more_faces, dx, dy, angle, flip, distribute } => {
             let d = val(vals, depth, Kind::Length)?;
             if !(d > 0.0) {
                 return Err(DocError::Invalid("the emboss depth must be positive".into()));
             }
             let opt = |e: &Option<crate::Expr>, kind| e.as_ref().map(|e| val(vals, e, kind)).transpose();
             let shift = (opt(dx, Kind::Length)?.unwrap_or(0.0), opt(dy, Kind::Length)?.unwrap_or(0.0), opt(angle, Kind::Angle)?.unwrap_or(0.0));
-            // Each source: its sketch's feature, its plane moved by the shift, its profiles.
+            // Each source: its sketch's feature, its plane moved by the shift, its profiles, and
+            // its plane unmoved (distributed profiles are shifted each on its own face).
             let mut sources = Vec::with_capacity(1 + more_profiles.len());
             for (sk, sel) in std::iter::once((sketch, profiles)).chain(more_profiles.iter().map(|m| (&m.sketch, &m.profiles))) {
                 let ss = st.sketch(sk.0).ok_or_else(|| DocError::Unknown(format!("sketch {sk}")))?;
                 let regions = select_profiles(ss, sel)?;
                 let plane = emboss_shifted_plane(&ss.plane, &regions, shift)?;
-                sources.push((ss.feature, plane, regions));
+                sources.push((ss.feature, plane, regions, ss.plane));
+            }
+            if !distribute.is_empty() && face.is_none() {
+                return Err(DocError::Invalid("an emboss distributes its profiles onto selected faces: select the faces".into()));
             }
             if let Some(first) = face {
                 if *flip {
@@ -39,9 +43,14 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                     return Err(DocError::Invalid("an emboss on selected faces must keep their bodies as its targets".into()));
                 }
                 let signed = if *deboss { -d } else { d };
+                if !distribute.is_empty() {
+                    let curved = emboss_distribute(doc, f, st, &faces, &sources, distribute, shift, signed)?;
+                    emboss_laid(f, st, warning, if curved { EmbossLay::ProjectedOnCurve } else { EmbossLay::Projected });
+                    return Ok(());
+                }
                 // One face and one sketch tangent to a complete cylinder wall, outside or a bore:
                 // the wrap, whose refusals stand.
-                if let ([face], [(feature, plane, regions)]) = (faces.as_slice(), sources.as_slice()) {
+                if let ([face], [(feature, plane, regions, _)]) = (faces.as_slice(), sources.as_slice()) {
                     let (i, mb, hit, plane, _) = emboss_face_hit(doc, f, st, face, 0, *feature, plane)?;
                     if let Ok(at) = kernel::cylinder_emboss_anchor(&mb.body, hit.face, hit.point)
                         && kernel::infer_cylinder_emboss(&mb.body, &plane, regions, signed)?.is_some()
@@ -50,6 +59,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                         if let Some(slot) = st.bodies.get_mut(i) {
                             *slot = ModelBody::new(mb.name, result, mb.feature);
                         }
+                        emboss_laid(f, st, warning, EmbossLay::Wrapped);
                         return Ok(());
                     }
                 }
@@ -63,13 +73,14 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                     frame: crate::Mat,
                     plane: Plane,
                     near: f64,
+                    curved: bool,
                     pieces: Vec<(usize, usize, Body)>,
                 }
                 let mut laid = Vec::with_capacity(faces.len());
                 let mut bodies: BTreeMap<usize, ModelBody> = BTreeMap::new();
                 for (slot, face) in faces.iter().enumerate() {
                     let mut here: Option<Laid> = None;
-                    for (k, (feature, plane, regions)) in sources.iter().enumerate() {
+                    for (k, (feature, plane, regions, _)) in sources.iter().enumerate() {
                         let (i, mb, hit, plane, frame) = emboss_face_hit(doc, f, st, face, slot, *feature, plane)?;
                         let at = kernel::emboss_anchor(&mb.body, hit.face, hit.point)?;
                         let pieces = kernel::emboss_face_pieces(&mb.body, hit.face, at, &plane, regions, signed, true)?;
@@ -78,6 +89,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                             face: hit.face,
                             frame,
                             near: (at - plane.origin).dot(plane.normal()).abs(),
+                            curved: mb.body.planar_face(hit.face).is_none(),
                             plane,
                             pieces: Vec::new(),
                         });
@@ -93,8 +105,9 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                     shadows.push(kernel::emboss_face_shadow(&mb.body, l.face, &l.plane, reach)?.map(|(s, up)| (l.near, l.frame, up, s)));
                 }
                 shadows.resize_with(laid.len(), || None);
-                let mut placed: Vec<Vec<bool>> = sources.iter().map(|(_, _, r)| vec![false; r.len()]).collect();
+                let mut placed: Vec<Vec<bool>> = sources.iter().map(|(_, _, r, _)| vec![false; r.len()]).collect();
                 let mut per_body: BTreeMap<usize, Vec<Body>> = BTreeMap::new();
+                let mut curved = false;
                 for (l, own) in laid.into_iter().zip(shadows.iter().map(|s| s.as_ref().map(|(_, _, up, _)| *up))) {
                     let into = crate::mat_inverse(&l.frame).ok_or_else(|| DocError::Invalid("invalid emboss body frame".into()))?;
                     let mut covers = Vec::new();
@@ -113,6 +126,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                         if let Some(done) = placed.get_mut(k).and_then(|p| p.get_mut(r)) {
                             *done = true;
                         }
+                        curved |= l.curved;
                         per_body.entry(l.body).or_default().push(piece);
                     }
                 }
@@ -143,11 +157,12 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                         *slot = ModelBody::new(mb.name, result, mb.feature);
                     }
                 }
+                emboss_laid(f, st, warning, if curved { EmbossLay::ProjectedOnCurve } else { EmbossLay::Projected });
                 return Ok(());
             }
             let (a, b) = if *deboss != *flip { (-d, 0.0) } else { (0.0, d) };
             let mut tools = Vec::new();
-            for (_, plane, regions) in &sources {
+            for (_, plane, regions, _) in &sources {
                 tools.extend(kernel::extrude(plane, regions, a, b)?);
             }
             if st.bodies.is_empty() {
@@ -166,6 +181,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                     format!("the {what} changed nothing; check where its profile lies, which side of the face the sketch is on, and the depth"),
                 );
             }
+            emboss_laid(f, st, warning, EmbossLay::Projected);
             Ok(())
         }
         FeatureKind::Rib { .. } => {
@@ -291,6 +307,40 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
             }
             Ok(())
         }
+        FeatureKind::PlaceOnPlane { bodies, plane, offset, each } => {
+            if bodies.is_empty() {
+                return Err(DocError::Invalid("no bodies to place on the plane".into()));
+            }
+            let pl = doc.resolve_plane_in(vals, plane, 0, f.component, Some(&*st))?;
+            let n = pl.normal().normalized().ok_or_else(|| DocError::Invalid("the plane has no direction".into()))?;
+            let gap = match offset {
+                Some(e) => val(vals, e, Kind::Length)?,
+                None => 0.0,
+            };
+            if !gap.is_finite() {
+                return Err(DocError::Invalid("the Place on Plane offset is not a finite number".into()));
+            }
+            let mut moved = Vec::with_capacity(bodies.len());
+            for name in bodies {
+                let i = st.bodies.iter().position(|b| &b.name == name).ok_or_else(|| DocError::Unknown(format!("body `{name}`")))?;
+                // A body named twice moves once.
+                if moved.iter().any(|(j, _)| *j == i) {
+                    continue;
+                }
+                let b = st.bodies.get(i).ok_or_else(|| DocError::Unknown(format!("body `{name}`")))?;
+                moved.push((i, lowest_above(&b.body, pl.origin, n)?));
+            }
+            let set_low = moved.iter().map(|(_, h)| *h).fold(f64::INFINITY, f64::min);
+            for (i, low) in moved {
+                let d = gap - if *each { low } else { set_low };
+                if let Some(mb) = st.bodies.get_mut(i) {
+                    let nb = kernel::transform_matrix(&mb.body, translation(n * d))?;
+                    // A rigid move keeps each face's identity, as Align's does (#20288).
+                    *mb = mb.remade(Traced::step(nb, &[&mb.traced()]));
+                }
+            }
+            Ok(())
+        }
         FeatureKind::Remove { bodies } => {
             if bodies.is_empty() {
                 return Err(DocError::Invalid("no bodies to remove".into()));
@@ -305,6 +355,27 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
         }
         _ => Err(DocError::Invalid(format!("{} is not evaluated here", f.name))),
     }
+}
+
+/// How far the point of `b` nearest the plane through `o` with unit normal `n` lies above it
+/// (negative: below), from the exact box: of the body itself when `n` is a world axis, else of a
+/// copy turned so that `n` points up.
+fn lowest_above(b: &Body, o: Vec3, n: Vec3) -> Result<f64> {
+    let low = match [Vec3::X, Vec3::Y, Vec3::Z].into_iter().find(|a| n.dot(*a).abs() > 1.0 - 1e-12) {
+        Some(a) => {
+            let bb = b.exact_bounds()?;
+            if n.dot(a) > 0.0 { bb.min.dot(a) } else { -bb.max.dot(a) }
+        }
+        None => {
+            let axis = n.cross(Vec3::Z);
+            let turn = rotation(Vec3::ZERO, axis, axis.len().atan2(n.dot(Vec3::Z)));
+            kernel::transform_matrix(b, turn)?.exact_bounds()?.min.z
+        }
+    };
+    if !low.is_finite() {
+        return Err(DocError::Invalid("a body to place on the plane has no extent".into()));
+    }
+    Ok(low - o.dot(n))
 }
 
 /// The walls of rib `f` (one per curve for a web), each run until it meets the bodies. `at`
@@ -1082,32 +1153,53 @@ fn no_free_edge(st: &ModelState, body: &Option<crate::BodyName>, pick: Option<Ve
     }
 }
 
-/// The sheet made from surfaces a fold is on, and its line's ends where they are now: the sketch
-/// line's, or the points given. The named body's sheet, or the first whose flat panel the line
-/// lies on.
+fn relative_transform(doc: &Document, from: u64, to: u64) -> Option<crate::Mat> {
+    if from == to {
+        return Some(crate::IDENTITY);
+    }
+    let m_from = doc.component_transform(from);
+    let m_to = doc.component_transform(to);
+    let inv_to = crate::mat_inverse(&m_to)?;
+    Some(crate::mat_mul(&inv_to, &m_from))
+}
+
+/// The sheet made from surfaces a fold is on, and its line's ends in that sheet's component frame.
+/// The named body's sheet, or the first whose flat panel the line lies on.
 fn surface_fold_sheet(
+    doc: &Document,
     st: &ModelState,
     body: &Option<crate::BodyName>,
     sketch: &Option<crate::SketchId>,
     curve: &Option<String>,
     a: &crate::Position,
     b: &crate::Position,
+    author_comp: u64,
 ) -> Option<(usize, Vec3, Vec3)> {
-    let (a, b) = match (sketch, curve) {
+    let (source_a, source_b, source_comp) = match (sketch, curve) {
         (Some(sk), Some(c)) => {
             let ss = st.sketch(sk.0)?;
             let ci = ss.sketch.curve_index(c)?;
+            let comp = doc.feature(sk.0).map(|f| f.component).unwrap_or(author_comp);
             match ss.sketch.segs(ci).as_slice() {
-                [Seg2::Line { a, b }] => (ss.plane.to_world(*a), ss.plane.to_world(*b)),
+                [Seg2::Line { a, b }] => (ss.plane.to_world(*a), ss.plane.to_world(*b), comp),
                 _ => return None,
             }
         }
-        _ => (a.0, b.0),
+        _ => (a.0, b.0, author_comp),
     };
     if let Some(n) = body {
-        return st.surface_sheets.iter().position(|s| &s.body == n).map(|i| (i, a, b));
+        let i = st.surface_sheets.iter().position(|s| &s.body == n)?;
+        let s = &st.surface_sheets[i];
+        let sheet_comp = st.body(&s.body).map(|b| doc.model_body_component(b)).unwrap_or(author_comp);
+        let m = relative_transform(doc, source_comp, sheet_comp).unwrap_or(crate::IDENTITY);
+        return Some((i, apply_point(&m, source_a), apply_point(&m, source_b)));
     }
-    st.surface_sheets.iter().position(|s| s.fold_panel_at(a, b)).map(|i| (i, a, b))
+    st.surface_sheets.iter().enumerate().find_map(|(i, s)| {
+        let sheet_comp = st.body(&s.body).map(|b| doc.model_body_component(b)).unwrap_or(author_comp);
+        let m = relative_transform(doc, source_comp, sheet_comp).unwrap_or(crate::IDENTITY);
+        let (sheet_a, sheet_b) = (apply_point(&m, source_a), apply_point(&m, source_b));
+        if s.fold_panel_at(sheet_a, sheet_b) { Some((i, sheet_a, sheet_b)) } else { None }
+    })
 }
 
 impl Document {
@@ -1115,9 +1207,9 @@ impl Document {
     /// sheet as `st` has it before the fold: by its `fixed` point, else as the sheet joins on
     /// either side ([`crate::SurfaceSheet::fold_side`]). None for a feature that is no fold on a
     /// sheet made from surfaces.
-    pub fn fold_side_at(&self, st: &ModelState, kind: &FeatureKind) -> Result<Option<crate::FoldSide>> {
+    pub fn fold_side_at(&self, st: &ModelState, kind: &FeatureKind, component: u64) -> Result<Option<crate::FoldSide>> {
         let FeatureKind::SheetFold { sketch, curve, a, b, angle, radius, position, flip, fixed, body, .. } = kind else { return Ok(None) };
-        let Some((i, a, b)) = surface_fold_sheet(st, body, sketch, curve, a, b) else { return Ok(None) };
+        let Some((i, a, b)) = surface_fold_sheet(self, st, body, sketch, curve, a, b, component) else { return Ok(None) };
         let Some(sk) = st.surface_sheets.get(i).filter(|sk| !sk.unfolded) else { return Ok(None) };
         let vals = self.evaluation_values();
         let ang = val(&vals, angle, Kind::Angle)?;
@@ -1125,18 +1217,24 @@ impl Document {
             Some(e) => val(&vals, e, Kind::Length)?,
             None => self.rule_values_at(&vals, &self.sheet_rule(Some(&sk.rule)), Some(sk.thickness))?.bend_radius,
         };
-        sk.fold_side(a, b, ang, rr, position, *flip, fixed.map(Vec3::from)).map(Some)
+        let sheet_comp = st.body(&sk.body).map(|b| self.model_body_component(b)).unwrap_or(component);
+        let m = relative_transform(self, component, sheet_comp).unwrap_or(crate::IDENTITY);
+        let fixed_sheet = fixed.map(|p| apply_point(&m, p.0));
+        sk.fold_side(a, b, ang, rr, position, *flip, fixed_sheet).map(Some)
     }
 
     /// Whether a fold's `fixed` point touches no material of the sheet made from surfaces the
     /// fold is on, as `st` has it before the fold (see `SurfaceSheet::touches`): such a
     /// point picks no side, and the `sheet.fold` command refuses it (#263). False for a fold with
     /// no fixed point, or one on no folded sheet (which fails as it is evaluated).
-    pub fn fold_fixed_off_sheet(&self, st: &ModelState, kind: &FeatureKind) -> bool {
+    pub fn fold_fixed_off_sheet(&self, st: &ModelState, kind: &FeatureKind, component: u64) -> bool {
         let FeatureKind::SheetFold { sketch, curve, a, b, fixed: Some(p), body, .. } = kind else { return false };
-        let Some((i, _, _)) = surface_fold_sheet(st, body, sketch, curve, a, b) else { return false };
+        let Some((i, _, _)) = surface_fold_sheet(self, st, body, sketch, curve, a, b, component) else { return false };
         let Some(sk) = st.surface_sheets.get(i).filter(|sk| !sk.unfolded) else { return false };
-        !sk.touches(p.0, (sk.thickness * 1e-3).max(1e-6))
+        let sheet_comp = st.body(&sk.body).map(|b| self.model_body_component(b)).unwrap_or(component);
+        let m = relative_transform(self, component, sheet_comp).unwrap_or(crate::IDENTITY);
+        let p_sheet = apply_point(&m, p.0);
+        !sk.touches(p_sheet, (sk.thickness * 1e-3).max(1e-6))
     }
 
     /// This design with each fold that keeps no side that stays (a design saved before folds
@@ -1147,7 +1245,7 @@ impl Document {
         let mut out: Option<Document> = None;
         for f in &self.features {
             let FeatureKind::SheetFold { stays: None, .. } = &f.kind else { continue };
-            let Ok(Some(side)) = self.fold_side_at(&model.state_before(f.id), &f.kind) else { continue };
+            let Ok(Some(side)) = self.fold_side_at(&model.state_before(f.id), &f.kind, f.component) else { continue };
             let doc = out.get_or_insert_with(|| self.clone());
             if let Some(FeatureKind::SheetFold { stays, .. }) = doc.feature_mut(f.id).map(|x| &mut x.kind) {
                 *stays = Some(side);
@@ -1503,9 +1601,9 @@ pub(super) fn sheet_eval(
         }
         FeatureKind::SheetHem { edges, body, .. } => Err(no_free_edge(st, body, edges.first().map(|p| p.0))),
         FeatureKind::SheetFold { sketch, curve, a, b, angle, radius, position, flip, fixed, stays, body }
-            if surface_fold_sheet(st, body, sketch, curve, a, b).is_some() =>
+            if surface_fold_sheet(doc, st, body, sketch, curve, a, b, f.component).is_some() =>
         {
-            let (i, a, b) = surface_fold_sheet(st, body, sketch, curve, a, b).ok_or_else(|| DocError::Invalid("sheet".into()))?;
+            let (i, a, b) = surface_fold_sheet(doc, st, body, sketch, curve, a, b, f.component).ok_or_else(|| DocError::Invalid("sheet".into()))?;
             let sk = st.surface_sheets.get(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
             if sk.unfolded {
                 return Err(DocError::Invalid("refold the sheet before folding it".into()));
@@ -1520,7 +1618,12 @@ pub(super) fn sheet_eval(
             // fixed point where it has one, wherever that point lies now.
             let stays = match stays {
                 Some(side) => *side,
-                None => sk.fold_side(a, b, ang, rr, position, *flip, fixed.map(Vec3::from))?,
+                None => {
+                    let sheet_comp = st.body(&sk.body).map(|b| doc.model_body_component(b)).unwrap_or(f.component);
+                    let m = relative_transform(doc, f.component, sheet_comp).unwrap_or(crate::IDENTITY);
+                    let fixed_sheet = fixed.map(|p| apply_point(&m, p.0));
+                    sk.fold_side(a, b, ang, rr, position, *flip, fixed_sheet)?
+                }
             };
             if let Some(sk) = st.surface_sheets.get_mut(i) {
                 let before = sk.clone();
@@ -3034,6 +3137,20 @@ fn tag_panels(sk: &mut crate::SurfaceSheet, before: Option<&crate::SurfaceSheet>
     }
 }
 
+/// Record how Emboss `f` laid its profiles, for its dialog. Projected onto a curved face, they
+/// keep their flat shape instead of bending to it: the feature says so.
+fn emboss_laid(f: &Feature, st: &mut ModelState, warning: &mut Option<String>, lay: EmbossLay) {
+    st.emboss_lay.insert(f.id, lay);
+    if lay == EmbossLay::ProjectedOnCurve {
+        append_warning(
+            warning,
+            "the profiles are projected onto the curved face, not wrapped round it: only the profiles of one sketch tangent to a \
+             complete cylinder wall wrap"
+                .into(),
+        );
+    }
+}
+
 /// `plane` moved by an Emboss's shift `(dx, dy, angle)`: the profiles turn by `angle` (radians,
 /// about the centre of their box) and then move `dx` along the sketch's x and `dy` along its y.
 /// No shift leaves the plane as it is.
@@ -3044,17 +3161,100 @@ fn emboss_shifted_plane(plane: &Plane, regions: &[Region2], (dx, dy, angle): (f6
     if !(dx.is_finite() && dy.is_finite() && angle.is_finite()) || dx.abs().max(dy.abs()) > 1e9 {
         return Err(DocError::Invalid("the emboss shift must be finite".into()));
     }
-    let (mut lo, mut hi) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
-    for p in regions.iter().flat_map(|r| r.outer.polyline(1e-4)) {
-        (lo, hi) = (Vec2::new(lo.x.min(p.x), lo.y.min(p.y)), Vec2::new(hi.x.max(p.x), hi.y.max(p.y)));
-    }
-    let c = if lo.x <= hi.x { Vec2::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0) } else { Vec2::new(0.0, 0.0) };
+    let c = regions_centre(regions);
     let (sin, cos) = angle.sin_cos();
     // A sketch point p lands where the plane put c + R(p - c) + (dx, dy): the new axes are the
     // old ones turned, and the new origin is the old one at c + (dx, dy) - R c.
     let t = Vec2::new(c.x + dx - (cos * c.x - sin * c.y), c.y + dy - (sin * c.x + cos * c.y));
     Plane::new(plane.origin + plane.x * t.x + plane.y * t.y, plane.x * cos + plane.y * sin, plane.y * cos - plane.x * sin)
         .ok_or_else(|| DocError::Invalid("the emboss shift makes no sketch frame".into()))
+}
+
+/// The centre of the box round `regions`' outlines, in sketch coordinates (0, 0 for none).
+fn regions_centre(regions: &[Region2]) -> Vec2 {
+    let (mut lo, mut hi) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
+    for p in regions.iter().flat_map(|r| r.outer.polyline(1e-4)) {
+        (lo, hi) = (Vec2::new(lo.x.min(p.x), lo.y.min(p.y)), Vec2::new(hi.x.max(p.x), hi.y.max(p.y)));
+    }
+    if lo.x <= hi.x { Vec2::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0) } else { Vec2::new(0.0, 0.0) }
+}
+
+/// An Emboss's sources: each sketch's feature, its shifted plane, its profiles and its plane.
+type EmbossSources = [(u64, Plane, Vec<Region2>, Plane)];
+
+/// Distribute: profile `n` (in source order) goes on selected face `distribute[n]`, the centre of
+/// its box on the face's picked point and the sketch laid square to the face's outward normal
+/// (along the sketch's normal on a surface with none), then shifted and turned on its own. All
+/// pieces of a body go on in one step; a profile that runs off its face refuses the emboss.
+#[allow(clippy::too_many_arguments)]
+fn emboss_distribute(
+    doc: &Document,
+    f: &Feature,
+    st: &mut ModelState,
+    faces: &[&EmbossFace],
+    sources: &EmbossSources,
+    distribute: &[u32],
+    shift: (f64, f64, f64),
+    signed: f64,
+) -> Result<bool> {
+    let total: usize = sources.iter().map(|(_, _, r, _)| r.len()).sum();
+    if distribute.len() != total {
+        return Err(DocError::Invalid(format!(
+            "emboss: the distribution names a face for {} profiles but there are {total}; give one face for each profile",
+            distribute.len()
+        )));
+    }
+    // Each profile sits centred on its face's point, so two on one face would lie on each other.
+    for (n, slot) in distribute.iter().enumerate() {
+        if let Some(m) = distribute.iter().take(n).position(|other| other == slot) {
+            return Err(DocError::Invalid(format!(
+                "emboss: profiles {} and {} both go on face {}, centred on the same point; give each its own face (pick a face again at another point for a second profile on it)",
+                m + 1,
+                n + 1,
+                u64::from(*slot) + 1
+            )));
+        }
+    }
+    let mut per_body: BTreeMap<usize, (ModelBody, Vec<Body>)> = BTreeMap::new();
+    let mut curved = false;
+    let profiles = sources.iter().flat_map(|(feature, _, regions, plane)| regions.iter().map(move |r| (*feature, plane, r)));
+    for (n, ((feature, plane, region), slot)) in profiles.zip(distribute).enumerate() {
+        let slot = usize::try_from(*slot).unwrap_or(usize::MAX);
+        let face = faces.get(slot).ok_or_else(|| {
+            DocError::Invalid(format!("emboss: profile {} goes on face {} but {} faces are selected", n + 1, slot.saturating_add(1), faces.len()))
+        })?;
+        let (i, mb, hit, plane, _) = emboss_face_hit(doc, f, st, face, slot, feature, plane)?;
+        let at = kernel::emboss_anchor(&mb.body, hit.face, hit.point)?;
+        let normal = kernel::emboss_face_normal(&mb.body, hit.face, at)?.unwrap_or_else(|| plane.normal());
+        // The sketch's x laid on the face; on a face square to it (a side wall under a sketch
+        // above), the sketch's normal is the profile's up, so it stands upright. y completes it.
+        let along = |v: Vec3| (v - normal * v.dot(normal)).normalized();
+        let x = along(plane.x)
+            .or_else(|| along(plane.normal()).map(|up| up.cross(normal)))
+            .ok_or_else(|| DocError::Invalid("emboss face frame".into()))?;
+        let c = regions_centre(std::slice::from_ref(region));
+        let y = normal.cross(x);
+        let place = Plane::new(at - x * c.x - y * c.y, x, y).ok_or_else(|| DocError::Invalid("emboss face frame".into()))?;
+        let place = emboss_shifted_plane(&place, std::slice::from_ref(region), shift)?;
+        let piece =
+            kernel::emboss_face_pieces(&mb.body, hit.face, at, &place, std::slice::from_ref(region), signed, false)?.into_iter().next().flatten();
+        let piece = piece.ok_or_else(|| {
+            DocError::Invalid(format!(
+                "emboss: profile {} runs off face {}: make it smaller or pick a bigger face, or a point nearer the face's middle",
+                n + 1,
+                slot + 1
+            ))
+        })?;
+        curved |= mb.body.planar_face(hit.face).is_none();
+        per_body.entry(i).or_insert_with(|| (mb, Vec::new())).1.push(piece);
+    }
+    for (i, (mb, pieces)) in per_body {
+        let result = kernel::emboss_apply(&mb.body, pieces, signed)?;
+        if let Some(slot) = st.bodies.get_mut(i) {
+            *slot = ModelBody::new(mb.name, result, mb.feature);
+        }
+    }
+    Ok(curved)
 }
 
 /// Selected face `slot` of Emboss `f` (`face_names[slot]` names it), found on its body as built so

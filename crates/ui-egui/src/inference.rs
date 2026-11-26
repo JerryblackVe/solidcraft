@@ -299,8 +299,7 @@ impl Tracking {
 
     /// The sketch points a guide may start from: shown points other than the origin (the sketch
     /// axes already run through it) that are free or belong to at least one shown curve.
-    fn point_references(sk: &Sketch) -> Vec<bool> {
-        let visible = solidcraft_engine::view::SketchPointVisibility::new(sk);
+    fn point_references(sk: &Sketch, visible: &solidcraft_engine::view::SketchPointVisibility) -> Vec<bool> {
         let mut used = vec![false; sk.points.len()];
         let mut shown = vec![false; sk.points.len()];
         for (index, curve) in sk.curves.iter().enumerate() {
@@ -321,12 +320,12 @@ impl Tracking {
             .collect()
     }
 
-    fn point_of(sk: &Sketch, reference: &TrackRef) -> Option<Vec2> {
+    fn point_of(sk: &Sketch, visible: &solidcraft_engine::view::SketchPointVisibility, reference: &TrackRef) -> Option<Vec2> {
         match reference {
             TrackRef::Curve(id) => Self::reference(sk, sk.curve_index(id)?),
             TrackRef::Point(id) => {
                 let index = sk.point_index(id)?;
-                Self::point_references(sk).get(index).copied().unwrap_or(false).then(|| sk.point(index)).flatten()
+                Self::point_references(sk, visible).get(index).copied().unwrap_or(false).then(|| sk.point(index)).flatten()
             }
         }
     }
@@ -361,9 +360,16 @@ impl Tracking {
 
     /// Where the horizontal through one reference meets the vertical through the other, when
     /// that point is within a few pixels of the cursor and is not either reference itself.
-    pub(crate) fn meeting(&self, sk: &Sketch, plane: &solidcore_record::Plane, proj: &Proj, cursor: egui::Pos2) -> Option<Vec2> {
-        let a = self.anchor.as_ref().and_then(|r| Self::point_of(sk, r))?;
-        let b = self.previous.as_ref().and_then(|r| Self::point_of(sk, r))?;
+    pub(crate) fn meeting(
+        &self,
+        sk: &Sketch,
+        visible: &solidcraft_engine::view::SketchPointVisibility,
+        plane: &solidcore_record::Plane,
+        proj: &Proj,
+        cursor: egui::Pos2,
+    ) -> Option<Vec2> {
+        let a = self.anchor.as_ref().and_then(|r| Self::point_of(sk, visible, r))?;
+        let b = self.previous.as_ref().and_then(|r| Self::point_of(sk, visible, r))?;
         if a.dist(b) < 1e-6 {
             return None;
         }
@@ -400,7 +406,15 @@ impl Tracking {
     /// Follow the cursor: remember the reference under it and lay out the guides. With
     /// `points`, sketch points are references too (a drawing tool waits for a point);
     /// without, remembered points are let go.
-    fn update(&mut self, sk: &Sketch, plane: &solidcore_record::Plane, proj: &Proj, cursor: egui::Pos2, points: bool) {
+    fn update(
+        &mut self,
+        sk: &Sketch,
+        visible: &solidcraft_engine::view::SketchPointVisibility,
+        plane: &solidcore_record::Plane,
+        proj: &Proj,
+        cursor: egui::Pos2,
+        points: bool,
+    ) {
         self.guide = None;
         self.remembered_guide = None;
         if !points {
@@ -427,7 +441,7 @@ impl Tracking {
             }
         }
         if points {
-            for (point, usable) in sk.points.iter().zip(Self::point_references(sk)) {
+            for (point, usable) in sk.points.iter().zip(Self::point_references(sk, visible)) {
                 let Some(p) = usable.then_some(point.pos).and_then(to).filter(|p| proj.rect.contains(*p)) else { continue };
                 let distance = cursor.distance(p);
                 if distance < nearest {
@@ -439,15 +453,15 @@ impl Tracking {
         if let Some(reference) = nearest_ref {
             self.remember(reference);
         }
-        let Some(anchor) = self.anchor.as_ref().and_then(|r| Self::point_of(sk, r)).or_else(|| {
+        let Some(anchor) = self.anchor.as_ref().and_then(|r| Self::point_of(sk, visible, r)).or_else(|| {
             self.anchor = self.previous.take();
-            self.anchor.as_ref().and_then(|r| Self::point_of(sk, r))
+            self.anchor.as_ref().and_then(|r| Self::point_of(sk, visible, r))
         }) else {
             self.anchor = None;
             self.previous = None;
             return;
         };
-        if self.previous.as_ref().and_then(|r| Self::point_of(sk, r)).is_none() {
+        if self.previous.as_ref().and_then(|r| Self::point_of(sk, visible, r)).is_none() {
             self.previous = None;
         }
         let Some(origin) = to(anchor) else { return };
@@ -462,10 +476,10 @@ impl Tracking {
         }
         // Near the crossing, both guides end on that point. Otherwise each reference keeps
         // its own axis, and a single guide stays visual (it does not move the cursor).
-        if let Some(meet) = self.meeting(sk, plane, proj, cursor) {
+        if let Some(meet) = self.meeting(sk, visible, plane, proj, cursor) {
             let span = |from: Vec2| to(from).zip(to(meet)).filter(|(a, b)| a.distance(*b) > 8.0).map(|_| (from, meet));
             self.guide = span(anchor);
-            if let Some(previous) = self.previous.as_ref().and_then(|r| Self::point_of(sk, r)) {
+            if let Some(previous) = self.previous.as_ref().and_then(|r| Self::point_of(sk, visible, r)) {
                 self.remembered_guide = span(previous);
             }
             return;
@@ -473,7 +487,7 @@ impl Tracking {
         // Finite guides connect the reference to the cursor's projection onto its axis.
         // No model-space length cap: the viewport clips them, as it does other sketch guides.
         self.guide = Self::axis_guide(anchor, at, cursor, &to);
-        if let Some(previous) = self.previous.as_ref().and_then(|r| Self::point_of(sk, r)) {
+        if let Some(previous) = self.previous.as_ref().and_then(|r| Self::point_of(sk, visible, r)) {
             self.remembered_guide = Self::axis_guide(previous, at, cursor, &to);
         }
     }
@@ -493,16 +507,17 @@ pub(crate) fn track_and_show(app: &mut SolveApp, painter: &egui::Painter, proj: 
     if tracking.sketch != active || !tracking.document.ptr_eq(&document) {
         *tracking = Tracking { sketch: active, document, ..Default::default() };
     }
-    let state = crate::open_meshing::session_world(&app.session);
-    let Some((ss, cursor)) = active
-        .and_then(|id| state.sketch(id))
-        .zip(cursor)
-        .filter(|_| app.preferences.sketch_tracking_guides && !crate::drag_snap::suppressed() && app.viewport.point_drag.is_none())
-    else {
+    // The world is asked for only with a sketch to track in: outside a sketch, placing it every
+    // frame placed every moved body again in each frame of a joint drag (#6325).
+    let wanted =
+        active.zip(cursor).filter(|_| app.preferences.sketch_tracking_guides && !crate::drag_snap::suppressed() && app.viewport.point_drag.is_none());
+    let state = wanted.map(|_| crate::open_meshing::session_world(&app.session));
+    let Some((ss, cursor)) = wanted.zip(state.as_deref()).and_then(|((id, cursor), state)| state.sketch(id).map(|ss| (ss, cursor))) else {
         *tracking = Tracking::default();
         return;
     };
-    tracking.update(&ss.sketch, &ss.plane, proj, cursor, points);
+    let visible = solidcraft_engine::view::SketchPointVisibility::shown(&app.session, &ss.sketch);
+    tracking.update(&ss.sketch, &visible, &ss.plane, proj, cursor, points);
     let shown = tracking.guide.is_some() || tracking.remembered_guide.is_some();
     crate::scenario::publish_count("sketch_tracking_guides", usize::from(shown) as f64);
     let tk = Tokens::get();
@@ -546,24 +561,24 @@ mod tests {
             let to = |p: Vec2| proj.to_screen(Plane::XY.to_world(p)).unwrap();
             let mut tracking = Tracking::default();
             let centre = Vec2::new(-10.0, 3.0);
-            tracking.update(&sk, &Plane::XY, &proj, to(centre), false);
+            tracking.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(centre), false);
             assert!(tracking.guide.is_none(), "no zero-length guide at the centre");
             for end in [Vec2::new(35.0, 3.0), Vec2::new(-35.0, 3.0), Vec2::new(-10.0, 38.0), Vec2::new(-10.0, -38.0)] {
-                tracking.update(&sk, &Plane::XY, &proj, to(end), false);
+                tracking.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(end), false);
                 let (a, b) = tracking.guide.expect("all four directions");
                 assert!(a.dist(centre) < 1e-4 && b.dist(end) < 1e-4);
             }
             let end = Vec2::new(35.0, 3.0);
-            tracking.update(&sk, &Plane::XY, &proj, to(end) + egui::vec2(0.0, 5.0), false);
+            tracking.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(end) + egui::vec2(0.0, 5.0), false);
             assert!(tracking.guide.is_some(), "5 screen points from the axis");
-            tracking.update(&sk, &Plane::XY, &proj, to(end) + egui::vec2(0.0, 7.0), false);
+            tracking.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(end) + egui::vec2(0.0, 7.0), false);
             assert!(tracking.guide.is_none(), "7 screen points from the axis");
             let mid = Vec2::new(20.0, -20.0);
-            tracking.update(&sk, &Plane::XY, &proj, to(mid), false);
-            tracking.update(&sk, &Plane::XY, &proj, to(Vec2::new(20.0, 20.0)), false);
+            tracking.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(mid), false);
+            tracking.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(Vec2::new(20.0, 20.0)), false);
             assert!(tracking.guide.unwrap().0.dist(mid) < 1e-8, "new MID replaces centre");
             sk.curves.iter_mut().find(|c| c.id == "l").unwrap().id = "renamed".into();
-            tracking.update(&sk, &Plane::XY, &proj, to(Vec2::new(20.0, 20.0)), false);
+            tracking.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(Vec2::new(20.0, 20.0)), false);
             assert!(tracking.guide.is_none(), "removed references cannot leave a stale guide");
             sk.curves.iter_mut().find(|c| c.id == "renamed").unwrap().id = "l".into();
         }
@@ -594,33 +609,36 @@ mod tests {
             (Vec2::new(15.0, -25.0), Vec2::new(15.0, 45.0)),   // a free point
         ] {
             let mut drawing = Tracking::default();
-            drawing.update(&sk, &Plane::XY, &proj, to(point), true);
-            drawing.update(&sk, &Plane::XY, &proj, to(end), true);
+            drawing.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(point), true);
+            drawing.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(end), true);
             let (a, b) = drawing.guide.unwrap_or_else(|| panic!("a guide from {point:?}"));
             assert!(a.dist(point) < 1e-9 && b.dist(end) < 1e-4, "{a:?} {b:?}");
             let mut idle = Tracking::default();
-            idle.update(&sk, &Plane::XY, &proj, to(point), false);
-            idle.update(&sk, &Plane::XY, &proj, to(end), false);
+            idle.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(point), false);
+            idle.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(end), false);
             assert!(idle.guide.is_none(), "idle hovering takes no point {point:?}");
         }
         // The origin (the axes run through it) and the ends of a hidden curve start nothing.
         for point in [Vec2::ZERO, Vec2::new(45.0, 35.0)] {
             let mut tracking = Tracking::default();
-            tracking.update(&sk, &Plane::XY, &proj, to(point), true);
+            tracking.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(point), true);
             assert!(tracking.anchor.is_none(), "{point:?}");
         }
         // A centre or midpoint still names its curve; a point and a midpoint meet as two
         // centres do, and leaving the drawing tool lets the point go but keeps the midpoint.
         let mut tracking = Tracking::default();
-        tracking.update(&sk, &Plane::XY, &proj, to(Vec2::new(-20.0, -10.0)), true);
+        tracking.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(Vec2::new(-20.0, -10.0)), true);
         assert_eq!(tracking.anchor, Some(TrackRef::Curve("arc".into())));
-        tracking.update(&sk, &Plane::XY, &proj, to(Vec2::new(30.0, 0.0)), true);
-        tracking.update(&sk, &Plane::XY, &proj, to(Vec2::new(15.0, -25.0)), true);
+        tracking.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(Vec2::new(30.0, 0.0)), true);
+        tracking.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(Vec2::new(15.0, -25.0)), true);
         assert_eq!(tracking.anchor, Some(TrackRef::Point("free".into())));
         assert_eq!(tracking.previous, Some(TrackRef::Curve("right".into())));
         let cross = Vec2::new(15.0, 0.0);
-        assert!(tracking.meeting(&sk, &Plane::XY, &proj, to(cross)).unwrap().dist(cross) < 1e-9);
-        tracking.update(&sk, &Plane::XY, &proj, to(Vec2::new(60.0, 0.0)), false);
+        assert!(
+            tracking.meeting(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(cross)).unwrap().dist(cross)
+                < 1e-9
+        );
+        tracking.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(Vec2::new(60.0, 0.0)), false);
         assert_eq!(tracking.anchor, Some(TrackRef::Curve("right".into())));
         assert!(tracking.previous.is_none());
     }
@@ -640,18 +658,26 @@ mod tests {
         let proj = crate::viewport::projection(&app, egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0)));
         let to = |p: Vec2| proj.to_screen(Plane::XY.to_world(p)).unwrap();
         let mut tracking = Tracking::default();
-        let hover = |tracking: &mut Tracking, p: Vec2| tracking.update(&sk, &Plane::XY, &proj, to(p), false);
+        let hover = |tracking: &mut Tracking, p: Vec2| {
+            tracking.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(p), false)
+        };
         hover(&mut tracking, Vec2::new(0.0, 20.0));
         hover(&mut tracking, Vec2::new(30.0, 0.0));
         let centre = Vec2::ZERO;
         let near = to(centre) + egui::vec2(4.0, 3.0);
-        assert!(tracking.meeting(&sk, &Plane::XY, &proj, near).unwrap().dist(centre) < 1e-6);
-        tracking.update(&sk, &Plane::XY, &proj, near, false);
+        assert!(
+            tracking.meeting(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, near).unwrap().dist(centre) < 1e-6
+        );
+        tracking.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, near, false);
         let (a, b) = tracking.guide.unwrap();
         let (c, d) = tracking.remembered_guide.unwrap();
         assert!(b.dist(centre) < 1e-6 && d.dist(centre) < 1e-6, "both guides end on the crossing");
         assert!(a.dist(Vec2::new(30.0, 0.0)) < 1e-6 && c.dist(Vec2::new(0.0, 20.0)) < 1e-6);
-        assert!(tracking.meeting(&sk, &Plane::XY, &proj, to(centre) + egui::vec2(20.0, 0.0)).is_none());
+        assert!(
+            tracking
+                .meeting(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(centre) + egui::vec2(20.0, 0.0))
+                .is_none()
+        );
         // Back to the first reference: both stay, in swapped order.
         hover(&mut tracking, Vec2::new(0.0, 20.0));
         assert_eq!(tracking.anchor, Some(TrackRef::Curve("top".into())));
@@ -659,16 +685,19 @@ mod tests {
         // A circle centre and a midpoint meet the same way.
         hover(&mut tracking, Vec2::new(-10.0, 3.0));
         let cross = Vec2::new(0.0, 3.0);
-        assert!(tracking.meeting(&sk, &Plane::XY, &proj, to(cross)).unwrap().dist(cross) < 1e-6);
+        assert!(
+            tracking.meeting(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(cross)).unwrap().dist(cross)
+                < 1e-6
+        );
         // A third reference drops the oldest. The far edge shares a horizontal with the right edge,
         // so their axes do not invent the rectangle centre.
         hover(&mut tracking, Vec2::new(30.0, 0.0));
         hover(&mut tracking, Vec2::new(50.0, 0.0));
         assert_eq!(tracking.anchor, Some(TrackRef::Curve("far".into())));
         assert_eq!(tracking.previous, Some(TrackRef::Curve("right".into())));
-        assert!(tracking.meeting(&sk, &Plane::XY, &proj, to(centre)).is_none());
+        assert!(tracking.meeting(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(centre)).is_none());
         sk.curves.iter_mut().find(|c| c.id == "far").unwrap().id = "gone".into();
-        tracking.update(&sk, &Plane::XY, &proj, to(Vec2::new(40.0, 40.0)), false);
+        tracking.update(&sk, &solidcraft_engine::view::SketchPointVisibility::new(&sk), &Plane::XY, &proj, to(Vec2::new(40.0, 40.0)), false);
         assert_eq!(tracking.anchor, Some(TrackRef::Curve("right".into())));
         assert!(tracking.previous.is_none());
         assert!(tracking.guide.is_none(), "a removed reference leaves no guide");

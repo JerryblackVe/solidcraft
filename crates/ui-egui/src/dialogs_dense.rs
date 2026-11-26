@@ -489,7 +489,10 @@ pub(super) fn rows(app: &mut SolveApp, ctx: &egui::Context, d: &mut Dialog, ui: 
             }
             ui_kit::row(ui, tr("ui.sketch_intersect_projection_link"), |ui| ui_kit::checkbox(ui, "", projection_link));
         }
-        Kind::SketchModify(k) => enter |= crate::sketch_modify_ui::rows(ui, k, &app.session.doc),
+        Kind::SketchModify(k) => {
+            enter |= crate::sketch_modify_ui::rows(ui, k, &app.session.doc);
+            crate::sketch_transform_ui::pivot_row(app, d, ui);
+        }
         Kind::Text(k) => enter |= crate::sketch_text::rows(ui, k, &mut d.inputs, &mut d.active),
         Kind::TextMove(k) => enter |= crate::sketch_text_move::rows(ui, k),
         Kind::EditParam { name, expr } => {
@@ -1042,7 +1045,7 @@ fn additional_rows(app: &mut SolveApp, d: &mut Dialog, ui: &mut egui::Ui) -> boo
                 ui_kit::options(ui, "feature_options", &mut [("Flip", flip), (extend_label, extend)]);
             }
         }
-        Kind::Emboss { depth, deboss, dx, dy, angle, flip } => {
+        Kind::Emboss { depth, deboss, dx, dy, angle, flip, distribute } => {
             // How many profiles and faces the one emboss takes.
             let profiles = d.inputs.first().map_or(0, |i| i.items.len()).to_string();
             let faces = d.inputs.get(1).map_or(0, |i| i.items.len());
@@ -1064,7 +1067,19 @@ fn additional_rows(app: &mut SolveApp, d: &mut Dialog, ui: &mut egui::Ui) -> boo
             if faces > 0 {
                 ui.add(egui::Label::new(solidcraft_ui_text::tr("ui.emboss_flip_on_face")).wrap());
             }
-            ui.add(egui::Label::new(solidcraft_ui_text::tr("ui.emboss_wrap_note")).wrap());
+            let profiles = emboss_profile_order(d.inputs.first().map_or(&[][..], |i| i.items.as_slice()));
+            emboss_distribute_rows(ui, distribute, &profiles, faces, &mut d.list_hover);
+            // What the preview did with the profiles: wrapped round a cylinder or projected (MEJ-7).
+            use solidcraft_engine::doc::EmbossLay;
+            let lay = match app.preview.emboss_lay {
+                Some(EmbossLay::Wrapped) => RichText::new(solidcraft_ui_text::tr("ui.emboss_lay_wrapped")),
+                Some(EmbossLay::Projected) => RichText::new(solidcraft_ui_text::tr("ui.emboss_lay_projected")),
+                Some(EmbossLay::ProjectedOnCurve) => {
+                    RichText::new(solidcraft_ui_text::tr("ui.emboss_lay_projected_on_curve")).color(Tokens::get().warning)
+                }
+                None => RichText::new(solidcraft_ui_text::tr("ui.emboss_wrap_note")),
+            };
+            ui.add(egui::Label::new(lay).wrap());
         }
         Kind::Align { flip, components, axes: [ax, ay, az], angle } => {
             // Where on the picked face or edge to snap: as picked (a face turns to meet
@@ -1125,6 +1140,10 @@ fn additional_rows(app: &mut SolveApp, d: &mut Dialog, ui: &mut egui::Ui) -> boo
         }
         Kind::Stock { margin } => {
             enter |= expr_row(ui, "Margin", margin);
+        }
+        Kind::PlaceOnPlane { offset, each } => {
+            enter |= expr_row(ui, "Offset", offset);
+            ui_kit::options(ui, "place_on_plane_options", &mut [("Each body by itself", each)]);
         }
         Kind::Scale { factor, per_axis, factor_y, factor_z } => {
             form_row(ui, "Type", |ui| {
@@ -2100,3 +2119,82 @@ mod all_tests;
 #[cfg(test)]
 #[path = "dialogs_sketch_tests.rs"]
 mod sketch_tests;
+
+/// `list_hover`'s input for Distribute's rows: not an input, so the picked-items lists never
+/// take it for theirs.
+const DISTRIBUTE_ROWS: usize = usize::MAX;
+
+/// The profiles in the order the emboss takes them: the first sketch's, then each other
+/// sketch's, as the dialog sends them (`sketch`, then `more_profiles`).
+fn emboss_profile_order(items: &[Sel]) -> Vec<Sel> {
+    let picked = items.profiles();
+    let mut sketches: Vec<u64> = Vec::new();
+    for (sketch, _) in &picked {
+        if !sketches.contains(sketch) {
+            sketches.push(*sketch);
+        }
+    }
+    sketches.iter().flat_map(|s| picked.iter().filter(move |(x, _)| x == s)).map(|&(sketch, index)| Sel::Profile { sketch, index }).collect()
+}
+
+/// Emboss's Distribute: off, each profile goes on the face it lies over; on, a row per profile
+/// (in the order the emboss takes them) chooses its face, and the row under the pointer lights
+/// its profile in the view. Greyed, with why, until faces are picked.
+fn emboss_distribute_rows(ui: &mut egui::Ui, distribute: &mut Vec<u32>, profiles: &[Sel], faces: usize, hover: &mut Option<(usize, Sel)>) {
+    let mut hovered: Option<Sel> = None;
+    emboss_distribute_rows_inner(ui, distribute, profiles, faces, &mut hovered);
+    // As a picked-items row does (`viewport::list_hover`); other lists' rows keep theirs.
+    let hovered = hovered.map(|sel| (DISTRIBUTE_ROWS, sel));
+    if hovered.is_some() || hover.as_ref().is_some_and(|(i, _)| *i == DISTRIBUTE_ROWS) {
+        if *hover != hovered {
+            ui.ctx().request_repaint();
+        }
+        *hover = hovered;
+    }
+}
+
+fn emboss_distribute_rows_inner(ui: &mut egui::Ui, distribute: &mut Vec<u32>, picked: &[Sel], faces: usize, hovered: &mut Option<Sel>) {
+    let profiles = picked.len();
+    let mut on = !distribute.is_empty() && faces > 0;
+    ui.add_enabled_ui(faces > 0, |ui| {
+        if ui_kit::checkbox_row(ui, "emboss_distribute", solidcraft_ui_text::tr_label("Distribute"), on) {
+            on = !on;
+        }
+    });
+    if !on || profiles == 0 {
+        distribute.clear();
+        if faces == 0 {
+            ui.add(egui::Label::new(solidcraft_ui_text::tr("ui.emboss_distribute_needs_faces")).wrap());
+        }
+        return;
+    }
+    // A new profile goes on the next face round; a face taken out moves its profiles to the last.
+    let last = u32::try_from(faces - 1).unwrap_or(u32::MAX);
+    let next = distribute.len();
+    distribute.extend((next..profiles).map(|n| u32::try_from(n % faces).unwrap_or(0)));
+    distribute.truncate(profiles);
+    for slot in distribute.iter_mut() {
+        *slot = (*slot).min(last);
+    }
+    ui.add(egui::Label::new(solidcraft_ui_text::tr("ui.emboss_distribute_note")).wrap());
+    let names: Vec<String> = (1..=faces).map(|n| solidcraft_ui_text::format("ui.emboss_face_n", &[("n", &n.to_string())])).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    for (n, slot) in distribute.iter_mut().enumerate() {
+        let label = solidcraft_ui_text::format("ui.emboss_profile_n", &[("n", &(n + 1).to_string())]);
+        let mut chosen = usize::try_from(*slot).unwrap_or(0);
+        let row = ui.scope(|ui| form_row(ui, &label, |ui| ui_kit::dropdown(ui, &format!("emboss_face_{n}"), &mut chosen, &names))).response;
+        if row.contains_pointer() {
+            *hovered = picked.get(n).cloned();
+        }
+        *slot = u32::try_from(chosen).unwrap_or(0);
+    }
+    // Two profiles on one face would lie on each other and OK refuses them: say so now.
+    if let Some((m, n, face)) =
+        distribute.iter().enumerate().find_map(|(n, slot)| distribute.iter().take(n).position(|x| x == slot).map(|m| (m, n, *slot)))
+    {
+        let t = Tokens::get();
+        let (a, b, face) = ((m + 1).to_string(), (n + 1).to_string(), (u64::from(face) + 1).to_string());
+        let text = solidcraft_ui_text::format("ui.emboss_distribute_shared_face", &[("a", &a), ("b", &b), ("face", &face)]);
+        ui.add(egui::Label::new(RichText::new(text).color(t.warning).size(t.font_small)).wrap());
+    }
+}

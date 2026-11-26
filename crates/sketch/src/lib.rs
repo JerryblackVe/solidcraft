@@ -31,6 +31,7 @@ mod link;
 mod loci;
 mod model;
 mod nurbs;
+mod object_group;
 mod offset;
 mod offset_topology;
 mod paper_text;
@@ -44,6 +45,7 @@ pub mod profiling;
 mod shape;
 mod solver;
 mod spline_points;
+mod star;
 mod text;
 mod thin;
 mod union_find;
@@ -74,6 +76,7 @@ pub use model::{
     MAX_POINTS, PointExprs, SPoint, Sketch, SketchBatch, SketchError, SketchView, TwoCircles,
 };
 pub use nurbs::Nurbs;
+pub use object_group::{GroupLock, LockSnapshot, MAX_GROUP_CURVES, ObjectGroup};
 pub use offset::OffsetChain;
 pub use offset_topology::{OffsetCreated, OffsetRole, OffsetRoleFlags, OffsetRoleKind, OffsetTopology};
 pub use paper_text::{
@@ -95,6 +98,7 @@ pub use solver::{
     flips_from_stored, keep_point_order, keep_sides_at_zero, measure_dimension, move_line_towards, move_point_towards, point_along, solve,
     solve_after_edit, solve_after_link_move, solve_after_value_edit, solve_holding, solve_with,
 };
+pub use star::{MAX_POINTS as MAX_STAR_POINTS, MIN_POINTS as MIN_STAR_POINTS, StarExprs, StarFollow, StarSpec, star_geometry};
 pub use text::{
     MAX_TEXT_CHARS, TextAlign, TextMetrics, TextStyle, TextVerticalAlign, saved_text_geometry, text_geometry, text_geometry_in, text_geometry_styled,
 };

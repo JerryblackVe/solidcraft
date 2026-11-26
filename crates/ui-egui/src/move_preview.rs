@@ -329,6 +329,7 @@ impl MovePreview {
             scene,
             sketches: Vec::new(),
             applied: None,
+            emboss_lay: None,
             stopped: None,
             mirror_meets: None,
             points: Vec::new(),

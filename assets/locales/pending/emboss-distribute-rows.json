@@ -1,0 +1,23 @@
+{
+  "en": {
+    "ui.emboss_distribute_shared_face": "Profiles {a} and {b} are both on Face {face} and would lie on each other. Give each profile its own face, or pick that face again at another point."
+  },
+  "es": {
+    "ui.emboss_distribute_shared_face": "Los perfiles {a} y {b} están los dos en la Cara {face} y quedarían uno encima del otro. Elige una cara para cada perfil o vuelve a elegir esa cara en otro punto."
+  },
+  "ar": {
+    "ui.emboss_distribute_shared_face": "المقطعان {a} و{b} كلاهما على الوجه {face} وسيقع أحدهما فوق الآخر. اختر لكل مقطع وجهًا خاصًا به، أو اختر ذلك الوجه مرة أخرى عند نقطة أخرى."
+  },
+  "he": {
+    "ui.emboss_distribute_shared_face": "הפרופילים {a} ו־{b} נמצאים שניהם על פאה {face} ויונחו זה על זה. תן לכל פרופיל פאה משלו, או בחר שוב את הפאה הזו בנקודה אחרת."
+  },
+  "ja": {
+    "ui.emboss_distribute_shared_face": "プロファイル {a} と {b} はどちらも面 {face} 上にあり、重なってしまいます。各プロファイルに別の面を選ぶか、その面を別の点でもう一度選んでください。"
+  },
+  "vi": {
+    "ui.emboss_distribute_shared_face": "Biên dạng {a} và {b} cùng nằm trên Mặt {face} và sẽ chồng lên nhau. Hãy chọn cho mỗi biên dạng một mặt riêng, hoặc chọn lại mặt đó tại một điểm khác."
+  },
+  "zh": {
+    "ui.emboss_distribute_shared_face": "轮廓 {a} 和 {b} 都在面 {face} 上，会彼此重叠。请为每个轮廓选择各自的面，或在另一个点再次选择该面。"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "en": {
+    "Select Letter": "Select Letter",
+    "Select Whole Text": "Select Whole Text"
+  },
+  "es": {
+    "Select Letter": "Seleccionar letra",
+    "Select Whole Text": "Seleccionar texto entero"
+  },
+  "de": {
+    "Select Letter": "Buchstaben auswählen",
+    "Select Whole Text": "Ganzen Text auswählen"
+  },
+  "ko": {
+    "Select Letter": "글자 선택",
+    "Select Whole Text": "텍스트 전체 선택"
+  },
+  "ar": {
+    "Select Letter": "تحديد الحرف",
+    "Select Whole Text": "تحديد النص بالكامل"
+  },
+  "he": {
+    "Select Letter": "בחירת אות",
+    "Select Whole Text": "בחירת הטקסט כולו"
+  },
+  "ja": {
+    "Select Letter": "文字を選択",
+    "Select Whole Text": "テキスト全体を選択"
+  },
+  "vi": {
+    "Select Letter": "Chọn chữ cái",
+    "Select Whole Text": "Chọn toàn bộ văn bản"
+  },
+  "zh": {
+    "Select Letter": "选择字母",
+    "Select Whole Text": "选择整个文本"
+  }
+}

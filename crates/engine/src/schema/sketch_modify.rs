@@ -990,6 +990,18 @@ pub struct TransformParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "factor_schema")]
     pub factor: Option<f64>,
+    /// The width factor, a number above 1e-9 and below 1e6, along the sketch's X axis, or a turned
+    /// group's own width when the entities are groups turned alike. Default: `factor`. With
+    /// `scale_x` and `scale_y` apart, an arc becomes the exact rational spline the stretch makes of
+    /// it and a circle an ellipse (constraints naming them as curves are let go); a selection with
+    /// a text, or with a dimension on what moves, is refused and nothing changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "factor_schema")]
+    pub scale_x: Option<f64>,
+    /// The height factor, along the sketch's Y axis or a turned group's own height. Default: `factor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "factor_schema")]
+    pub scale_y: Option<f64>,
     /// The turn, in degrees (a number). Default: 0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "angle_schema")]
@@ -1018,12 +1030,19 @@ impl TransformParams {
             None => None,
             Some(_) => Some(num(p, "factor").filter(|k| *k > 1e-9 && *k < 1e6).ok_or_else(|| "`factor` must be a positive number".to_string())?),
         };
+        let axis = |key: &str| -> Read<Option<f64>> {
+            match p.get(key) {
+                None => Ok(None),
+                Some(_) => num(p, key).filter(|k| *k > 1e-9 && *k < 1e6).map(Some).ok_or_else(|| format!("`{key}` must be a positive number")),
+            }
+        };
+        let (scale_x, scale_y) = (axis("scale_x")?, axis("scale_y")?);
         let angle = number(p, "angle", "`angle` must be a number (degrees)")?;
         let translate = point(p, "translate", "`translate` must be a point [x, y]")?;
         let entities = names(p, "entities")?;
         let center = point_or_id(p, "center")?;
         let sketch = sketch_of(p)?;
-        Ok(TransformParams { entities, factor, angle, center, translate, sketch })
+        Ok(TransformParams { entities, factor, scale_x, scale_y, angle, center, translate, sketch })
     }
 }
 

@@ -71,6 +71,9 @@ pub struct PatternInstance {
     /// Seed point id and instance point id, in the order used to create the copy.
     pub points: Vec<(String, String)>,
     pub constraints: Vec<String>,
+    /// The stars made for this copy, one for each star the pattern copies, in the pattern's order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stars: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -84,6 +87,9 @@ pub struct SketchPattern {
     pub instances: Vec<PatternInstance>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub expressions: std::collections::BTreeMap<String, String>,
+    /// The link ids of the stars it copies: each copy is a star that follows its source's shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stars: Vec<String>,
 }
 
 impl SketchPattern {
@@ -154,14 +160,9 @@ impl Sketch {
         self.patterns.remove(index);
         let entity_ids = old.entities.clone();
         let (center, slots) = match &kind {
-            SketchPatternKind::Circular { center, count, angle, alignment, reversed } => {
+            SketchPatternKind::Circular { center, count, .. } => {
                 let center = self.resolve_point(center).ok_or_else(|| SketchError::Invalid("missing pattern center".into()))?;
-                let full = (angle.abs() - 360.0).abs() < 1e-9;
-                let step = angle / if full { *count as f64 } else { (count.max(&2) - 1) as f64 };
-                (
-                    Some(center),
-                    (1..*count).map(|i| ([i, 0], (step * alignment.multiplier(i, *reversed)).to_radians(), Vec2::ZERO)).collect::<Vec<_>>(),
-                )
+                (Some(center), (1..*count).map(|i| ([i, 0], copy_angle(&kind, [i, 0]), Vec2::ZERO)).collect::<Vec<_>>())
             }
             SketchPatternKind::Rectangular { count, count2, .. } => {
                 (None, (0..*count).flat_map(|i| (0..*count2).filter_map(move |j| (i != 0 || j != 0).then_some(([i, j], 0.0, Vec2::ZERO)))).collect())
@@ -176,6 +177,7 @@ impl Sketch {
             self.remove_curves(&curves);
             let points: Vec<_> = instance.points.iter().filter_map(|(_, id)| self.resolve_point(id)).collect();
             self.remove_points(&points);
+            self.remove_star_copies(&instance.stars);
         }
         if let SketchPatternKind::Rectangular { direction, direction2, .. } = &kind {
             for id in direction.iter().chain(direction2) {
@@ -191,18 +193,13 @@ impl Sketch {
         }
         for (index, angle, offset) in slots {
             let (base_offset, directions) = linear_displacement(self, &kind, index, offset);
-            let c = center.and_then(|i| self.point(i)).unwrap_or(Vec2::ZERO);
-            let mut displacement = base_offset;
-            for (line, distance) in directions.into_iter().flatten() {
-                if let Some(crate::Shape::Line { a, b }) = self.shape(line)
-                    && let Some(u) = (b - a).normalized()
-                {
-                    displacement += u * distance.x + u.perp() * distance.y;
-                }
-            }
-            let transform = |p| rotate(c, angle)(p) + displacement;
+            let transform = copy_transform(self, center, angle, base_offset, directions);
+            let follow = |source: &String| star_follow(source, angle, &transform);
             let instance = if let Some(i) = existing.iter().position(|instance| instance.index == index) {
                 let instance = existing.remove(i);
+                for (seed, copy) in old.stars.iter().zip(&instance.stars) {
+                    self.place_star_copy(follow(seed), Some(copy))?;
+                }
                 for cid in &instance.constraints {
                     if let Some(constraint) = self.constraints.iter_mut().find(|constraint| constraint.id == *cid)
                         && let ConstraintKind::PatternPoint { center: slot, angle: a, offset: off, directions: dirs, .. } = &mut constraint.kind
@@ -252,7 +249,12 @@ impl Sketch {
                         cons.push(self.add_constraint(ConstraintKind::PatternRadius { a: *a, b: *b }, None)?);
                     }
                 }
+                let mut stars = Vec::with_capacity(old.stars.len());
+                for seed in &old.stars {
+                    stars.push(self.place_star_copy(follow(seed), None)?);
+                }
                 PatternInstance {
+                    stars,
                     index,
                     curves: made.iter().filter_map(|i| self.curves.get(*i).map(|c| c.id.clone())).collect(),
                     points: map.iter().filter_map(|(p, q)| Some((self.points.get(*p)?.id.clone(), self.points.get(*q)?.id.clone()))).collect(),
@@ -265,6 +267,70 @@ impl Sketch {
         self.patterns.insert(index.min(self.patterns.len()), SketchPattern { kind, instances, ..old });
         self.follow_pattern_seeds();
         Ok(())
+    }
+
+    /// Make the star that copies `follow.source` for one pattern copy, or move the one it has
+    /// (`copy`): a star that takes the source's shape and sits where `follow` puts it. A copy that
+    /// is gone, or was moved by hand and so follows nothing, is left as it is.
+    fn place_star_copy(&mut self, follow: crate::StarFollow, copy: Option<&String>) -> Result<String, SketchError> {
+        let source = match self.link(&follow.source).map(|l| &l.source) {
+            Some(crate::LinkSource::Star(source)) => source.clone(),
+            _ => return copy.cloned().ok_or_else(|| SketchError::Invalid("the star the pattern copies is gone".into())),
+        };
+        let mut spec = match copy {
+            None => source.clone(),
+            Some(id) => match self.link(id).map(|l| &l.source) {
+                Some(crate::LinkSource::Star(spec)) if spec.follows.as_ref().is_some_and(|f| f.source == follow.source) => spec.clone(),
+                _ => return Ok(id.clone()),
+            },
+        };
+        follow.apply(&source, &mut spec);
+        spec.follows = Some(follow);
+        let geom = crate::star_geometry(&spec)?;
+        match copy {
+            None => self.add_link(crate::LinkKind::Star, crate::LinkSource::Star(spec), &geom),
+            Some(id) => {
+                self.set_link_source(id, crate::LinkSource::Star(spec));
+                self.update_link(id, &geom)?;
+                Ok(id.clone())
+            }
+        }
+    }
+
+    /// Where each pattern puts its star copies now, by the copy's link id: worked out from where the
+    /// pattern's centre and direction lines are, so the copies follow them when the solver moves them.
+    pub(crate) fn pattern_star_follows(&self) -> std::collections::HashMap<String, crate::StarFollow> {
+        let mut out = std::collections::HashMap::new();
+        for pattern in self.patterns.iter().filter(|p| !p.stars.is_empty()) {
+            let center = match &pattern.kind {
+                SketchPatternKind::Circular { center, .. } => match self.resolve_point(center) {
+                    Some(i) => Some(i),
+                    None => continue,
+                },
+                SketchPatternKind::Rectangular { .. } => None,
+            };
+            for instance in &pattern.instances {
+                let angle = copy_angle(&pattern.kind, instance.index);
+                let (offset, directions) = linear_displacement(self, &pattern.kind, instance.index, Vec2::ZERO);
+                let transform = copy_transform(self, center, angle, offset, directions);
+                for (seed, copy) in pattern.stars.iter().zip(&instance.stars) {
+                    out.insert(copy.clone(), star_follow(seed, angle, &transform));
+                }
+            }
+        }
+        out
+    }
+
+    /// Remove the stars a pattern made for its copies, outline and all; one moved by hand is the
+    /// user's own star and stays.
+    pub fn remove_star_copies(&mut self, links: &[String]) {
+        for link in links {
+            if !self.link(link).is_some_and(|l| matches!(&l.source, crate::LinkSource::Star(s) if s.follows.is_some())) {
+                continue;
+            }
+            let curves = self.link_curves(link);
+            self.remove_curves(&curves);
+        }
     }
 
     /// Start an explicit Move/Scale of seed geometry with its copies already transformed.
@@ -322,6 +388,8 @@ impl Sketch {
         let curves: std::collections::HashSet<_> = self.curves.iter().map(|c| c.id.as_str()).collect();
         let points: std::collections::HashSet<_> = self.points.iter().map(|p| p.id.as_str()).collect();
         let constraint_ids: std::collections::HashSet<_> = self.constraints.iter().map(|c| c.id.as_str()).collect();
+        let stars: std::collections::HashSet<_> =
+            self.links.iter().filter(|l| matches!(l.source, crate::LinkSource::Star(_))).map(|l| l.id.as_str()).collect();
         let retired: Vec<_> = self
             .patterns
             .iter()
@@ -330,8 +398,10 @@ impl Sketch {
                     || matches!(&pattern.kind, SketchPatternKind::Circular { center, .. } if !points.contains(center.as_str()))
                     || matches!(&pattern.kind, SketchPatternKind::Rectangular { direction, direction2, .. }
                         if direction.iter().chain(direction2).any(|id| !curves.contains(id.as_str())))
+                    || pattern.stars.iter().any(|id| !stars.contains(id.as_str()))
                     || pattern.instances.iter().any(|instance| {
                         instance.curves.iter().any(|id| !curves.contains(id.as_str()))
+                            || instance.stars.iter().any(|id| !stars.contains(id.as_str()))
                             || instance.points.iter().any(|(p, q)| !points.contains(p.as_str()) || !points.contains(q.as_str()))
                             || instance.constraints.iter().any(|id| !constraint_ids.contains(id.as_str()))
                     })
@@ -421,8 +491,9 @@ impl Sketch {
             if pattern.id.is_empty()
                 || pattern.id.len() > 512
                 || !ids.insert(&pattern.id)
-                || pattern.entities.is_empty()
+                || (pattern.entities.is_empty() && pattern.stars.is_empty())
                 || pattern.entities.len() > crate::CEILING_CURVES + crate::CEILING_POINTS
+                || pattern.stars.len() > crate::CEILING_CURVES
                 || pattern.instances.len() >= 500
             {
                 return Err(SketchError::Invalid("invalid sketch pattern".into()));
@@ -469,6 +540,7 @@ impl Sketch {
                     || instance.points.len() > crate::CEILING_POINTS
                     || instance.curves.len() > crate::CEILING_CURVES
                     || instance.constraints.len() > crate::CEILING_CONSTRAINTS
+                    || instance.stars.len() > pattern.stars.len()
                     || instance.curves.iter().any(|id| !valid_id(id) || self.curve_index(id).is_none())
                     || instance
                         .points
@@ -493,6 +565,40 @@ impl Sketch {
         }
         Ok(())
     }
+}
+
+/// The turn, in radians, of a circular pattern's copy at `index`; 0 for a rectangular one.
+fn copy_angle(kind: &SketchPatternKind, [i, _]: [usize; 2]) -> f64 {
+    let SketchPatternKind::Circular { count, angle, alignment, reversed, .. } = kind else { return 0.0 };
+    let full = (angle.abs() - 360.0).abs() < 1e-9;
+    let step = angle / if full { *count as f64 } else { (count.max(&2) - 1) as f64 };
+    (step * alignment.multiplier(i, *reversed)).to_radians()
+}
+
+/// Where a pattern copy takes a point: turned `angle` about the centre, then moved by `offset` and
+/// by each direction line's share along the line as it is now.
+fn copy_transform(
+    sk: &Sketch,
+    center: Option<usize>,
+    angle: f64,
+    offset: Vec2,
+    directions: [Option<(usize, Vec2)>; 2],
+) -> impl Fn(Vec2) -> Vec2 + use<> {
+    let c = center.and_then(|i| sk.point(i)).unwrap_or(Vec2::ZERO);
+    let mut displacement = offset;
+    for (line, distance) in directions.into_iter().flatten() {
+        if let Some(crate::Shape::Line { a, b }) = sk.shape(line)
+            && let Some(u) = (b - a).normalized()
+        {
+            displacement += u * distance.x + u.perp() * distance.y;
+        }
+    }
+    move |p| rotate(c, angle)(p) + displacement
+}
+
+/// The star a pattern copy makes of `source`, placed the way `transform` (a turn of `angle`) takes it.
+fn star_follow(source: &str, angle: f64, transform: &impl Fn(Vec2) -> Vec2) -> crate::StarFollow {
+    crate::StarFollow { source: source.to_owned(), flip: false, turn: angle.to_degrees(), shift: transform(Vec2::ZERO), line: None }
 }
 
 /// Keep sampled vector directions compatible with older designs, while picked lines are

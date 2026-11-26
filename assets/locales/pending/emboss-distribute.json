@@ -1,0 +1,54 @@
+{
+  "en": {
+    "Distribute": "Distribute",
+    "ui.emboss_distribute_needs_faces": "Distribute: not available until target faces are picked: each profile needs a face to go on.",
+    "ui.emboss_distribute_note": "Each profile goes on the face chosen for it, centered on the point picked on that face.",
+    "ui.emboss_face_n": "Face {n}",
+    "ui.emboss_profile_n": "Profile {n}"
+  },
+  "en-GB": {
+    "ui.emboss_distribute_note": "Each profile goes on the face chosen for it, centred on the point picked on that face."
+  },
+  "es": {
+    "Distribute": "Distribuir",
+    "ui.emboss_distribute_needs_faces": "Distribuir: no disponible hasta elegir caras de destino: cada perfil necesita una cara donde ir.",
+    "ui.emboss_distribute_note": "Cada perfil va en la cara elegida para él, centrado en el punto marcado en esa cara.",
+    "ui.emboss_face_n": "Cara {n}",
+    "ui.emboss_profile_n": "Perfil {n}"
+  },
+  "ar": {
+    "Distribute": "توزيع",
+    "ui.emboss_distribute_needs_faces": "توزيع: غير متاح حتى تُحدد الأوجه الهدف: كل مقطع يحتاج وجهًا يوضع عليه.",
+    "ui.emboss_distribute_note": "يوضع كل مقطع على الوجه المختار له، متمركزًا على النقطة المحددة على ذلك الوجه.",
+    "ui.emboss_face_n": "الوجه {n}",
+    "ui.emboss_profile_n": "المقطع {n}"
+  },
+  "he": {
+    "Distribute": "פיזור",
+    "ui.emboss_distribute_needs_faces": "פיזור: לא זמין עד שנבחרות פאות יעד: כל פרופיל צריך פאה שעליה יונח.",
+    "ui.emboss_distribute_note": "כל פרופיל מונח על הפאה שנבחרה עבורו, ממורכז בנקודה שנבחרה על אותה פאה.",
+    "ui.emboss_face_n": "פאה {n}",
+    "ui.emboss_profile_n": "פרופיל {n}"
+  },
+  "ja": {
+    "Distribute": "振り分け",
+    "ui.emboss_distribute_needs_faces": "振り分け: 対象面を選ぶまで使えません。各プロファイルには置く面が必要です。",
+    "ui.emboss_distribute_note": "各プロファイルは選んだ面に、その面で選んだ点を中心に置かれます。",
+    "ui.emboss_face_n": "面 {n}",
+    "ui.emboss_profile_n": "プロファイル {n}"
+  },
+  "vi": {
+    "Distribute": "Phân bổ",
+    "ui.emboss_distribute_needs_faces": "Phân bổ: chưa dùng được cho đến khi chọn mặt đích: mỗi biên dạng cần một mặt để đặt lên.",
+    "ui.emboss_distribute_note": "Mỗi biên dạng được đặt lên mặt đã chọn cho nó, căn giữa tại điểm đã chọn trên mặt đó.",
+    "ui.emboss_face_n": "Mặt {n}",
+    "ui.emboss_profile_n": "Biên dạng {n}"
+  },
+  "zh": {
+    "Distribute": "分配",
+    "ui.emboss_distribute_needs_faces": "分配：选择目标面之前不可用：每个轮廓都需要一个放置的面。",
+    "ui.emboss_distribute_note": "每个轮廓放在为其选择的面上，以该面上选取的点为中心。",
+    "ui.emboss_face_n": "面 {n}",
+    "ui.emboss_profile_n": "轮廓 {n}"
+  }
+}

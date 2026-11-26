@@ -33,7 +33,7 @@ use solidcraft_engine::Sel;
 use solidcraft_engine::doc::Document;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
 use solidcraft_engine::geom::prelude::*;
-use solidcraft_engine::sketch::{PatternAlignment, VariableUnit};
+use solidcraft_engine::sketch::{LinkSource, PatternAlignment, VariableUnit};
 
 use crate::SolveApp;
 use crate::dialogs::{CHAMFER_TYPES, Dialog, Kind};
@@ -64,7 +64,15 @@ pub const MODIFIERS: &[ToolModifiers] = &[
     ToolModifiers { tool: "sketch.equation_curve", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
     // Divide Curve: curves and a count; no viewport modifier chords.
     ToolModifiers { tool: "sketch.point.divide", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
+    // Group and Ungroup: curves and a name; no viewport modifier chords.
+    ToolModifiers { tool: "sketch.group", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
+    ToolModifiers { tool: "sketch.ungroup", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
+    // Lock Group: one group and a choice in the dialog; no viewport modifier chords.
+    ToolModifiers { tool: "sketch.group_lock", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
 ];
+
+/// The three locks of a group, in `sketch.group_lock`'s order of strength.
+pub(crate) const GROUP_LOCKS: [&str; 3] = ["Free", "Protect", "Total"];
 
 /// The equation curve's two forms: x(t) and y(t), or y = f(x).
 pub(crate) const EQUATION_FORMS: [&str; 2] = ["Parametric", "Explicit"];
@@ -125,9 +133,21 @@ pub enum Mod {
     /// `sketch.transform`: the picked entities scaled, turned and moved as one, about the picked
     /// Center point or else the middle of their box. `x` and `y` move that point, `factor` scales
     /// and `angle` turns about it.
-    /// `frame` is the box (middle and size in the sketch, kept up to date from the picks by
+    /// `frame` is the box (middle, size and turn in the sketch, kept up to date from the picks by
     /// `sketch_transform_ui`) the window's size rows and the handles work on.
-    Transform { x: String, y: String, factor: String, angle: String, frame: Option<([f64; 2], [f64; 2])> },
+    ///
+    /// `aspect` is the height's scale over the width's (1: the shape is kept; a side handle or the
+    /// Height row changes it), and `pivot` the point the scale and the turn hold when the pivot
+    /// handle has been moved (else a picked Center, else the box middle).
+    Transform {
+        x: String,
+        y: String,
+        factor: String,
+        angle: String,
+        frame: Option<([f64; 2], [f64; 2], f64)>,
+        aspect: String,
+        pivot: Option<[f64; 2]>,
+    },
     /// `sketch.pattern.rectangular`: how many instances along the picked direction and how far
     /// apart, then the same along a second picked direction (perpendicular by default).
     PatternRect {
@@ -157,6 +177,28 @@ pub enum Mod {
     /// `sketch.point.divide` (#8969): the curves picked are each divided into `count` pieces of equal
     /// length by points held at their shares of it.
     Divide { count: String },
+    /// `sketch.star` (or `sketch.edit_star` on the star the window's `link` extra names): the
+    /// centre, the number of points, the tip radius, how deep the valleys go (a percentage of it),
+    /// a skip for a regular star, the rounding of tips and valleys, the turn and whether the
+    /// construction circles are drawn.
+    Star {
+        x: String,
+        y: String,
+        points: String,
+        outer: String,
+        inner: String,
+        skip: String,
+        tip_round: String,
+        valley_round: String,
+        angle: String,
+        circles: bool,
+    },
+    /// `sketch.group`: the curves picked become one object with this name.
+    Group { name: String },
+    /// `sketch.ungroup`: the group the picked curve is in is taken apart.
+    Ungroup,
+    /// `sketch.group_lock`: the group the picked curve is in gets a lock (an index into [`GROUP_LOCKS`]).
+    GroupLock { lock: usize },
 }
 
 impl Mod {
@@ -180,6 +222,10 @@ impl Mod {
             Mod::Corner { .. } => "CHAMFER",
             Mod::Equation { .. } => "EQUATION CURVE",
             Mod::Divide { .. } => "DIVIDE CURVE",
+            Mod::Star { .. } => "STAR",
+            Mod::Group { .. } => "GROUP",
+            Mod::Ungroup => "UNGROUP",
+            Mod::GroupLock { .. } => "LOCK GROUP",
         }
     }
 
@@ -196,7 +242,7 @@ impl Mod {
             Mod::PatternCirc { angle, .. } => Some(("Angle", ValueKind::Angle, angle)),
             Mod::Corner { chamfer: false, size, .. } => Some(("Radius", ValueKind::Length, size)),
             Mod::Corner { size, .. } => Some(("Distance", ValueKind::Length, size)),
-            Mod::Equation { .. } | Mod::Divide { .. } => None,
+            Mod::Equation { .. } | Mod::Divide { .. } | Mod::Star { .. } | Mod::Group { .. } | Mod::Ungroup | Mod::GroupLock { .. } => None,
         }
     }
 }
@@ -229,8 +275,10 @@ fn inputs(k: &Mod) -> Vec<SelInput> {
         // alike (`points`). Two lines name the corner between them where more lines meet at its
         // point (#1824), for both.
         Mod::Corner { .. } => vec![SelInput::new("Corners", SKETCH_POINTS | CURVES, true)],
-        Mod::Equation { .. } => Vec::new(),
+        Mod::Equation { .. } | Mod::Star { .. } => Vec::new(),
         Mod::Divide { .. } => vec![SelInput::new("Curves", CURVES, true)],
+        Mod::Group { .. } => vec![SelInput::new("Curves", CURVES, true)],
+        Mod::Ungroup | Mod::GroupLock { .. } => vec![SelInput::new("Group", CURVES, false)],
     }
 }
 
@@ -261,6 +309,8 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
             factor: "1".into(),
             angle: "0 deg".into(),
             frame: None,
+            aspect: "1".into(),
+            pivot: None,
         },
         "sketch.move" => Mod::Move {
             x: crate::dialogs::length_default(&app.session, "0"),
@@ -296,6 +346,10 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
             range_unit: false,
         },
         "sketch.point.divide" => Mod::Divide { count: "4".into() },
+        "sketch.group" => Mod::Group { name: "Group".into() },
+        "sketch.ungroup" => Mod::Ungroup,
+        // Protect first: the lock a drawing that must keep its shape asks for.
+        "sketch.group_lock" => Mod::GroupLock { lock: 1 },
         _ => return None,
     };
     let i = inputs(&k);
@@ -322,6 +376,61 @@ pub fn edit_equation(app: &mut SolveApp, id: &str) -> bool {
     app.tool = None;
     app.dialog = Some(dialog);
     true
+}
+
+/// Reopen the star window on the star that curve `id` belongs to, with the star's numbers.
+/// OK runs `sketch.edit_star` on it: the star is changed, not drawn again.
+pub fn edit_star(app: &mut SolveApp, id: &str) -> bool {
+    let Some(sid) = app.session.active_sketch else { return false };
+    let state = crate::open_meshing::session_world(&app.session);
+    let Some(sk) = state.sketch(sid).map(|s| &s.sketch) else { return false };
+    let Some(link) = sk.curve_index(id).and_then(|i| sk.curves.get(i)).and_then(|c| c.link.clone()) else { return false };
+    let Some(LinkSource::Star(star)) = sk.link(&link).map(|l| l.source.clone()) else { return false };
+    // A number typed as an expression over the parameters shows that expression again.
+    let e = &star.exprs;
+    let shown = |expr: &Option<String>, number: String| expr.clone().unwrap_or(number);
+    let mm = |v: f64| format!("{v} mm");
+    let kind = Mod::Star {
+        x: shown(&e.x, mm(star.center.x)),
+        y: shown(&e.y, mm(star.center.y)),
+        points: shown(&e.points, star.points.to_string()),
+        outer: shown(&e.outer, mm(star.outer)),
+        inner: shown(&e.inner_percent, star.inner_percent.to_string()),
+        skip: shown(&e.skip, star.skip.to_string()),
+        tip_round: shown(&e.tip_round, mm(star.tip_round)),
+        valley_round: shown(&e.valley_round, mm(star.valley_round)),
+        angle: shown(&e.angle, format!("{} deg", star.angle)),
+        circles: star.circles,
+    };
+    let mut dialog = Dialog::new(Kind::SketchModify(kind), Vec::new());
+    dialog.extra.insert("link".into(), json!(link));
+    app.tool = None;
+    app.dialog = Some(dialog);
+    true
+}
+
+/// The star the selection is part of: the id of one of its curves, when one star outline or the
+/// region it bounds (its fill) is picked.
+pub(crate) fn selected_star(app: &SolveApp) -> Option<String> {
+    let [sel] = app.session.selection.as_slice() else { return None };
+    star_of(app, sel)
+}
+
+/// The star `sel` belongs to (one of its curves, or a profile bounded by that star alone): the id
+/// of one of its curves.
+pub(crate) fn star_of(app: &SolveApp, sel: &Sel) -> Option<String> {
+    let sid = app.session.active_sketch?;
+    let state = crate::open_meshing::session_world(&app.session);
+    let ss = state.sketch(sid)?;
+    let ids = match sel {
+        Sel::SketchCurve { id, .. } => vec![id.clone()],
+        Sel::Profile { sketch, index } if *sketch == sid => ss.profiles.get(*index)?.curve_ids(),
+        _ => return None,
+    };
+    let sk = &ss.sketch;
+    let link_of = |id: &String| sk.curve_index(id).and_then(|i| sk.curves.get(i)).and_then(|c| c.link.as_deref());
+    let link = link_of(ids.first()?)?;
+    (matches!(sk.link(link)?.source, LinkSource::Star(_)) && ids.iter().all(|id| link_of(id) == Some(link))).then(|| ids[0].clone())
 }
 
 /// The equation curve the selection is, when it is one curve that has formulas.
@@ -554,6 +663,10 @@ pub(crate) fn command(k: &Mod) -> &'static str {
         Mod::Corner { .. } => "sketch.chamfer.equal_distance",
         Mod::Equation { .. } => "sketch.equation_curve",
         Mod::Divide { .. } => "sketch.point.divide",
+        Mod::Star { .. } => "sketch.star",
+        Mod::Group { .. } => "sketch.group",
+        Mod::Ungroup => "sketch.ungroup",
+        Mod::GroupLock { .. } => "sketch.group_lock",
     }
 }
 
@@ -638,19 +751,28 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Mod, doc: &Document) -> bool {
             enter |= number(ui, "Angle", angle);
             ui_kit::options(ui, "move_options", &mut [("Create Copy", copy)]);
         }
-        Mod::Transform { x, y, factor, angle, frame } => {
+        Mod::Transform { x, y, factor, angle, frame, aspect, .. } => {
             enter |= ui_kit::value_pair(ui, "Position", [x, y], ["X", "Y"], Some(["X Distance", "Y Distance"]));
-            // The size in millimetres follows the factor and the other way round; the aspect is kept.
-            if let Some((_, size)) = frame {
-                for (label, natural) in [("Width", size[0]), ("Height", size[1])] {
+            // The size in millimetres follows the scale and the other way round: the width sets the
+            // scale, the height the aspect, so each can be typed on its own.
+            if let Some((_, size, _)) = frame {
+                for (label, natural, high) in [("Width", size[0], false), ("Height", size[1], true)] {
                     let k = crate::ui_kit::parse_number(factor.trim()).filter(|k| *k > 0.0).unwrap_or(1.0);
-                    let mut shown = format!("{} mm", crate::sketch_transform_ui::plain(natural * k));
+                    let a = crate::ui_kit::parse_number(aspect.trim()).filter(|a| *a > 0.0).unwrap_or(1.0);
+                    let mut shown = format!("{} mm", crate::sketch_transform_ui::plain(natural * k * if high { a } else { 1.0 }));
                     if number(ui, label, &mut shown)
                         && let Some(mm) = crate::ui_kit::parse_number(shown.trim_end_matches("mm").trim())
                         && mm > 0.0
                         && natural > 1e-9
                     {
-                        *factor = format!("{}", ((mm / natural) * 1e6).round() / 1e6);
+                        if high {
+                            *aspect = format!("{}", ((mm / natural / k) * 1e6).round() / 1e6);
+                        } else {
+                            // The height keeps its own size while the width changes.
+                            let new = mm / natural;
+                            *aspect = format!("{}", ((k * a / new) * 1e6).round() / 1e6);
+                            *factor = format!("{}", (new * 1e6).round() / 1e6);
+                        }
                     }
                 }
             }
@@ -677,6 +799,14 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Mod, doc: &Document) -> bool {
             alignment(ui, "Alignment", a, reversed);
             pattern_hint(ui);
         }
+        Mod::Group { name } => {
+            enter |= number(ui, "Name", name);
+        }
+        Mod::Ungroup => {}
+        Mod::GroupLock { lock } => {
+            ui_kit::choice_row(ui, "Lock", "group_lock", lock, &GROUP_LOCKS);
+            ui_kit::text(ui, solidcraft_ui_text::tr("sketch.group_lock_hint"), ui_kit::Text::Note("group_lock"));
+        }
         Mod::Divide { count } => {
             enter |= quantity(ui, doc, "Segments", count, 2, DIVIDE_MAX);
             ui_kit::text(ui, solidcraft_ui_text::tr("sketch.divide_hint"), ui_kit::Text::Note("divide"));
@@ -695,6 +825,18 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Mod, doc: &Document) -> bool {
             ui_kit::checkbox_grid(ui, &mut [(solidcraft_ui_text::tr("ui.equation_variable_unit"), range_unit)], 1);
             let note = if *range_unit { "ui.equation_note_range" } else { "ui.equation_note" };
             ui_kit::text(ui, solidcraft_ui_text::tr(note), ui_kit::Text::Note("equation"));
+        }
+        Mod::Star { x, y, points, outer, inner, skip, tip_round, valley_round, angle, circles } => {
+            enter |= number(ui, "X", x);
+            enter |= number(ui, "Y", y);
+            enter |= number(ui, "Points", points);
+            enter |= number(ui, "Outer Radius", outer);
+            enter |= number(ui, "Valley Depth %", inner);
+            enter |= number(ui, "Skip", skip);
+            enter |= number(ui, "Tip Rounding", tip_round);
+            enter |= number(ui, "Valley Rounding", valley_round);
+            enter |= number(ui, "Angle", angle);
+            ui_kit::options(ui, "star_options", &mut [("Construction Circles", circles)]);
         }
         Mod::Corner { chamfer, ctype, size, distance2, angle, flip } => {
             if *chamfer {
@@ -999,17 +1141,30 @@ pub fn commands(app: &SolveApp, k: &Mod, inputs: &[SelInput], extra: &Map<String
             }
             ("sketch.scale", p)
         }
-        Mod::Transform { x, y, factor: text, angle, frame } => {
+        Mod::Transform { x, y, factor: text, angle, frame, aspect, pivot } => {
             let entities = entity_ids(&app.session, inputs, 0);
             if entities.is_empty() {
                 return Err("Select the sketch curves or points to transform first".into());
             }
-            let Some((middle, _)) = frame else { return Err("Select the sketch curves or points to transform first".into()) };
+            let Some((middle, ..)) = frame else { return Err("Select the sketch curves or points to transform first".into()) };
             let f = factor(app, text)?;
             let turn = value(app, angle, ValueKind::Angle, "Angle")?.to_degrees();
             let (dx, dy) = (value(app, x, ValueKind::Length, "X")?, value(app, y, ValueKind::Length, "Y")?);
-            let center = items(inputs, 1).first().and_then(|sel| point_id(&app.session, sel)).map_or_else(|| json!(middle), |id| json!(id));
-            ("sketch.transform", json!({"entities": entities, "factor": f, "angle": turn, "center": center, "translate": [dx, dy]}))
+            let center = match pivot {
+                Some(q) => json!(q),
+                None => items(inputs, 1).first().and_then(|sel| point_id(&app.session, sel)).map_or_else(|| json!(middle), |id| json!(id)),
+            };
+            let a = crate::ui_kit::parse_number(aspect.trim()).filter(|a| a.is_finite() && *a > 0.0).unwrap_or(1.0);
+            if (a - 1.0).abs() > 1e-9 {
+                // Width and height apart: the engine stretches lines and splines this way and says so
+                // when the picks hold an arc, a circle, a text or a dimension.
+                (
+                    "sketch.transform",
+                    json!({"entities": entities, "scale_x": f, "scale_y": f * a, "angle": turn, "center": center, "translate": [dx, dy]}),
+                )
+            } else {
+                ("sketch.transform", json!({"entities": entities, "factor": f, "angle": turn, "center": center, "translate": [dx, dy]}))
+            }
         }
         Mod::Offset { distance, distance2, instances, mode, chain, flip } => {
             let curves = curve_ids(inputs, 0);
@@ -1115,6 +1270,22 @@ pub fn commands(app: &SolveApp, k: &Mod, inputs: &[SelInput], extra: &Map<String
             }
             ("sketch.pattern.rectangular", p)
         }
+        Mod::Group { name } => {
+            let curves = curve_ids(inputs, 0);
+            if curves.is_empty() {
+                return Err("Select the curves to group first".into());
+            }
+            ("sketch.group", json!({"curves": curves, "name": name.trim()}))
+        }
+        Mod::Ungroup => {
+            let Some(entity) = curve_ids(inputs, 0).into_iter().next() else { return Err("Select a curve of the group first".into()) };
+            ("sketch.ungroup", json!({"entity": entity}))
+        }
+        Mod::GroupLock { lock } => {
+            let Some(entity) = curve_ids(inputs, 0).into_iter().next() else { return Err("Select a curve of the group first".into()) };
+            let lock = GROUP_LOCKS.get(*lock).map_or("protect", |l| l).to_ascii_lowercase();
+            ("sketch.group_lock", json!({"entity": entity, "lock": lock}))
+        }
         Mod::Divide { count } => {
             let curves = curve_ids(inputs, 0);
             if curves.is_empty() {
@@ -1193,6 +1364,50 @@ pub fn commands(app: &SolveApp, k: &Mod, inputs: &[SelInput], extra: &Map<String
                 }
                 _ => ("sketch.chamfer.equal_distance", p),
             }
+        }
+        Mod::Star { x, y, points, outer, inner, skip, tip_round, valley_round, angle, circles } => {
+            let number = |label: &str, text: &str, kind: ValueKind| -> Result<f64, String> {
+                crate::length_input::no_definition(text, label)?;
+                let v = crate::length_input::eval(&app.session.doc, text.trim(), kind).map_err(|e| format!("{label}: {e}"))?;
+                if v.is_finite() { Ok(v) } else { Err(format!("{label} must be a number")) }
+            };
+            let count = |label: &str, text: &str| -> Result<u32, String> {
+                let v = number(label, text, ValueKind::Unitless)?;
+                if v < 0.0 || (v - v.round()).abs() > 1e-9 {
+                    return Err(format!("{label} must be a whole number"));
+                }
+                Ok(v.round() as u32)
+            };
+            // A field that names a parameter goes as its expression, so the star follows the
+            // parameter; any other as the number it comes to.
+            let follows = |text: &str| !solidcraft_engine::doc::expr::references(text.trim()).is_empty();
+            let value = |label: &str, text: &str, kind: ValueKind| -> Result<Value, String> {
+                let v = number(label, text, kind)?;
+                Ok(if follows(text) {
+                    json!(text.trim())
+                } else if kind == ValueKind::Angle {
+                    // The command takes degrees; an evaluated angle is in radians.
+                    json!(v.to_degrees())
+                } else {
+                    json!(v)
+                })
+            };
+            let whole = |label: &str, text: &str| -> Result<Value, String> {
+                let n = count(label, text)?;
+                Ok(if follows(text) { json!(text.trim()) } else { json!(n) })
+            };
+            let p = json!({
+                "center": [value("X", x, ValueKind::Length)?, value("Y", y, ValueKind::Length)?],
+                "points": whole("Points", points)?,
+                "outer_radius": value("Outer Radius", outer, ValueKind::Length)?,
+                "inner_percent": value("Valley Depth %", inner, ValueKind::Unitless)?,
+                "skip": whole("Skip", skip)?,
+                "tip_round": value("Tip Rounding", tip_round, ValueKind::Length)?,
+                "valley_round": value("Valley Rounding", valley_round, ValueKind::Length)?,
+                "angle": value("Angle", angle, ValueKind::Angle)?,
+                "circles": *circles,
+            });
+            (if extra.contains_key("link") { "sketch.edit_star" } else { "sketch.star" }, p)
         }
         Mod::Equation { form, x, y, start, end, tolerance, range_unit } => {
             let filled = |label: &str, text: &str| -> Result<String, String> {

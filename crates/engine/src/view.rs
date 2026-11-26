@@ -836,6 +836,22 @@ impl<'a> SketchPointVisibility<'a> {
     pub fn takes(&self, point: &solidcraft_sketch::SPoint) -> bool {
         !self.hidden.contains(point.id.as_str())
     }
+
+    /// What the window shows and picks: in object mode (the default) the points of grouped curves
+    /// are left out, in nodes mode (`Session::sketch_nodes`) they are as in [`Self::new`].
+    pub fn shown(s: &crate::Session, sk: &'a Sketch) -> Self {
+        let mut v = Self::new(sk);
+        if !s.sketch_nodes {
+            let grouped: std::collections::HashSet<usize> =
+                sk.object_groups.iter().flat_map(|g| &g.curves).filter_map(|c| sk.curve_index(c)).collect();
+            // A point a loose curve also uses stays: it is where that curve starts or ends.
+            let loose: std::collections::HashSet<usize> =
+                sk.curves.iter().enumerate().filter(|(i, _)| !grouped.contains(i)).flat_map(|(_, c)| c.kind.point_ids()).collect();
+            let nodes = grouped.iter().filter_map(|i| sk.curves.get(*i)).flat_map(|c| c.kind.point_ids()).filter(|i| !loose.contains(i));
+            v.hidden.extend(nodes.filter_map(|i| sk.points.get(i).map(|p| p.id.as_str())));
+        }
+        v
+    }
 }
 
 /// Should sketch point `i` be drawn or picked individually? Text outlines and derived
@@ -1616,7 +1632,8 @@ fn constructs(s: &Session) -> Vec<(u64, String, solidcraft_doc::construct::Const
         .iter()
         .filter_map(|c| {
             let f = s.doc.feature(c.feature).filter(|f| !f.suppressed)?;
-            let m = s.doc.component_transform(f.component);
+            // With a joint drag's shown frame, so it follows its part while that is dragged.
+            let m = s.shown_component_transform(f.component);
             if solidcraft_doc::is_identity(&m) {
                 return Some((c.feature, c.name.clone(), c.geom.clone()));
             }

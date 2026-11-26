@@ -1,0 +1,32 @@
+{
+  "en": {
+    "sketch.hint.star": "Star: click the center, then drag or click to set the size and turn; double-click a star to change it"
+  },
+  "en-GB": {
+    "sketch.hint.star": "Star: click the centre, then drag or click to set the size and turn; double-click a star to change it"
+  },
+  "es": {
+    "sketch.hint.star": "Estrella: pulsa el centro y arrastra o pulsa para dar el tamaño y el giro; doble clic en una estrella para cambiarla"
+  },
+  "de": {
+    "sketch.hint.star": "Stern: Mittelpunkt anklicken, dann ziehen oder klicken für Größe und Drehung; Doppelklick auf einen Stern zum Ändern"
+  },
+  "ko": {
+    "sketch.hint.star": "별: 중심을 클릭한 뒤 드래그하거나 클릭해 크기와 회전을 정하세요. 별을 더블클릭하면 수정할 수 있습니다"
+  },
+  "ja": {
+    "sketch.hint.star": "星: 中心をクリックし、ドラッグまたはクリックで大きさと回転を決めます。星をダブルクリックすると編集できます"
+  },
+  "zh": {
+    "sketch.hint.star": "星形：点击中心，然后拖动或点击来确定大小和旋转；双击星形可进行编辑"
+  },
+  "ar": {
+    "sketch.hint.star": "نجمة: انقر على المركز ثم اسحب أو انقر لتحديد الحجم والدوران؛ انقر نقرًا مزدوجًا على نجمة لتعديلها"
+  },
+  "he": {
+    "sketch.hint.star": "כוכב: לחצו על המרכז ואז גררו או לחצו כדי לקבוע גודל וסיבוב; לחיצה כפולה על כוכב לעריכתו"
+  },
+  "vi": {
+    "sketch.hint.star": "Ngôi sao: nhấp vào tâm, rồi kéo hoặc nhấp để đặt kích thước và góc xoay; nhấp đúp vào ngôi sao để sửa"
+  }
+}

@@ -2393,6 +2393,837 @@ fn text_makes_profiles_that_extrude_and_edit() {
     assert!(s.execute("sketch.text", &json!({"text": "", "at": [0, 0]})).is_err());
 }
 
+/// Total volume (mm³) of the design.
+fn total_volume(s: &mut Session) -> f64 {
+    run(s, "inspect.measure", json!({}))["total"]["volume_mm3"].as_f64().unwrap()
+}
+
+#[test]
+fn a_star_extrudes_and_becomes_another_star_without_being_deleted() {
+    let mut s = new_sketch();
+    // Sharp star: area = points * outer * inner * sin(pi / points).
+    let area = |n: f64, r: f64, inner: f64| n * r * inner * (std::f64::consts::PI / n).sin();
+    let r = run(&mut s, "sketch.star", json!({"center": [0, 0], "outer_radius": 20, "points": 5, "circles": true}));
+    let link = r["link"].as_str().unwrap().to_string();
+    // The two construction circles are curves of the star and never a profile.
+    assert_eq!(r["curves"].as_array().unwrap().len(), 12);
+    assert_eq!(profiles(&s).len(), 1);
+    assert!(close(profiles(&s)[0], area(5.0, 20.0, 8.0)), "{:?}", profiles(&s));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance": 2}));
+    assert!(close(total_volume(&mut s), 2.0 * area(5.0, 20.0, 8.0)));
+    // Back in the sketch: five points become eight, and the extrude follows.
+    run(&mut s, "sketch.edit", json!({"sketch": 1}));
+    let r2 = run(&mut s, "sketch.edit_star", json!({"link": link, "points": 8}));
+    assert_eq!(r2["link"], json!(link));
+    assert_eq!(r2["star"]["outer_radius"], json!(20.0), "what is not said is kept");
+    run(&mut s, "sketch.finish", json!({}));
+    assert!(close(total_volume(&mut s), 2.0 * area(8.0, 20.0, 8.0)), "{}", total_volume(&mut s));
+    // The star's numbers survive saving and opening.
+    let mut reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert!(close(total_volume(&mut reopened), 2.0 * area(8.0, 20.0, 8.0)));
+    run(&mut reopened, "sketch.edit", json!({"sketch": 1}));
+    let first = sketch(&reopened).curves[0].id.clone();
+    let again = run(&mut reopened, "sketch.edit_star", json!({"entity": first, "angle": 10}));
+    assert_eq!(again["star"]["points"], json!(8));
+    // Undo and redo.
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.redo", json!({}));
+}
+
+#[test]
+fn a_stars_numbers_typed_as_expressions_follow_the_parameters() {
+    // MEJ-1: radius, points and turn over parameters; the star and its extrude follow them.
+    let area = |n: f64, r: f64, inner: f64| n * r * inner * (std::f64::consts::PI / n).sin();
+    let mut s = new_sketch();
+    run(&mut s, "parameters.add", json!({"name": "R", "expression": "20 mm"}));
+    run(&mut s, "parameters.add", json!({"name": "n", "expression": "5", "unit": ""}));
+    run(&mut s, "parameters.add", json!({"name": "A", "expression": "10 deg"}));
+    let r = run(&mut s, "sketch.star", json!({"center": ["R", 0], "outer_radius": "R", "points": "n", "angle": "A"}));
+    let link = r["link"].as_str().unwrap().to_string();
+    assert_eq!(r["star"]["exprs"], json!({"x": "R", "outer": "R", "points": "n", "angle": "A"}), "{r}");
+    assert!(close(profiles(&s)[0], area(5.0, 20.0, 8.0)));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance": 2}));
+    assert!(close(total_volume(&mut s), 2.0 * area(5.0, 20.0, 8.0)));
+    // The parameters change: the star and the extrude follow.
+    run(&mut s, "parameters.change", json!({"name": "R", "expression": "30 mm"}));
+    run(&mut s, "parameters.change", json!({"name": "n", "expression": "8"}));
+    assert!(close(total_volume(&mut s), 2.0 * area(8.0, 30.0, 12.0)), "{}", total_volume(&mut s));
+    // Saved and opened again, it still follows them.
+    let mut reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    run(&mut reopened, "parameters.change", json!({"name": "n", "expression": "6"}));
+    assert!(close(total_volume(&mut reopened), 2.0 * area(6.0, 30.0, 12.0)));
+    // A renamed parameter is renamed in the star too, and it still follows it.
+    run(&mut reopened, "parameters.rename", json!({"name": "n", "new_name": "tips"}));
+    run(&mut reopened, "parameters.change", json!({"name": "tips", "expression": "7"}));
+    assert!(close(total_volume(&mut reopened), 2.0 * area(7.0, 30.0, 12.0)));
+    // A value that makes no star is reported as an error, not drawn as a broken star; a good one mends it.
+    let r = run(&mut reopened, "parameters.change", json!({"name": "tips", "expression": "2"}));
+    assert!(r["errors"].as_array().is_some_and(|e| !e.is_empty()), "{r}");
+    run(&mut reopened, "parameters.change", json!({"name": "tips", "expression": "7"}));
+    assert!(close(total_volume(&mut reopened), 2.0 * area(7.0, 30.0, 12.0)));
+    // Edit Star shows the numbers the parameters give now; a number replaces an expression.
+    run(&mut s, "sketch.edit", json!({"sketch": 1}));
+    let e = run(&mut s, "sketch.edit_star", json!({"link": link, "points": 7}));
+    assert_eq!((e["star"]["points"].as_u64(), e["star"]["outer_radius"].as_f64()), (Some(7), Some(30.0)));
+    assert_eq!(e["star"]["exprs"], json!({"x": "R", "outer": "R", "angle": "A"}), "{e}");
+    // Moving it makes its centre a number; scaling it, its radius.
+    let first = sketch(&s).curves[0].id.clone();
+    run(&mut s, "sketch.move", json!({"entities": [first.clone()], "translate": [5, 0]}));
+    run(&mut s, "sketch.transform", json!({"entities": [first], "factor": 2.0, "center": [35, 0]}));
+    let e = run(&mut s, "sketch.edit_star", json!({"link": link}));
+    assert_eq!(e["star"]["exprs"], json!({"angle": "A"}), "{e}");
+    assert!(close(e["star"]["outer_radius"].as_f64().unwrap(), 60.0));
+    // An expression that makes no star, or names no parameter there is, is refused and changes nothing.
+    let before = s.doc.to_json();
+    for bad in [json!({"points": "n / 3"}), json!({"outer_radius": "nope"}), json!({"skip": "n"}), json!({"points": "R"})] {
+        let mut p = bad.clone();
+        p["link"] = json!(link);
+        assert!(s.execute("sketch.edit_star", &p).is_err(), "{bad}");
+        assert_eq!(s.doc.to_json(), before, "{bad}");
+    }
+}
+
+#[test]
+fn a_parameter_typed_in_a_stars_field_is_made_and_the_star_follows_it() {
+    let area = |n: f64, r: f64, inner: f64| n * r * inner * (std::f64::consts::PI / n).sin();
+    let mut s = new_sketch();
+    let r = run(&mut s, "sketch.star", json!({"center": [0, 0], "outer_radius": "R = 20 mm", "points": "n = 5"}));
+    // The star keeps the names where the definitions were typed (the reply shows what was sent).
+    let link = r["link"].as_str().unwrap();
+    let Some(LinkSource::Star(spec)) = sketch(&s).link(link).map(|l| l.source.clone()) else { panic!("{r}") };
+    assert_eq!((spec.exprs.outer.as_deref(), spec.exprs.points.as_deref()), (Some("R"), Some("n")), "{r}");
+    assert_eq!((s.doc.param("R").map(|p| p.unit.as_str()), s.doc.param("n").map(|p| p.unit.as_str())), (Some("mm"), Some("")));
+    assert!(close(profiles(&s)[0], area(5.0, 20.0, 8.0)));
+    run(&mut s, "parameters.change", json!({"name": "R", "expression": "30 mm"}));
+    assert!(close(profiles(&s)[0], area(5.0, 30.0, 12.0)), "{}", profiles(&s)[0]);
+}
+
+#[test]
+fn a_star_moves_turns_and_scales_as_one() {
+    let mut s = new_sketch();
+    let r = run(&mut s, "sketch.star", json!({"center": [0, 0], "outer_radius": 20}));
+    let link = r["link"].as_str().unwrap().to_string();
+    let first = sketch(&s).curves[0].id.clone();
+    run(&mut s, "sketch.move", json!({"entities": [first], "translate": [10, 5]}));
+    let r = run(&mut s, "sketch.edit_star", json!({"link": link}));
+    assert_eq!(r["star"]["center"], json!([10.0, 5.0]));
+    run(&mut s, "sketch.transform", json!({"entities": [first], "factor": 2.0, "center": [10, 5], "angle": 90}));
+    let r = run(&mut s, "sketch.edit_star", json!({"link": link}));
+    assert!(close(r["star"]["outer_radius"].as_f64().unwrap(), 40.0));
+    assert!(close(r["star"]["angle"].as_f64().unwrap(), 90.0));
+    assert_eq!(sketch(&s).links.len(), 1, "still one star");
+}
+
+#[test]
+fn a_star_refuses_what_makes_no_star_and_changes_nothing() {
+    let mut s = new_sketch();
+    let r = run(&mut s, "sketch.star", json!({"center": [0, 0], "outer_radius": 20, "points": 5, "tip_round": 1, "valley_round": 1}));
+    let link = r["link"].as_str().unwrap().to_string();
+    assert_eq!(sketch(&s).curves.len(), 20, "10 lines and 10 arcs");
+    let before = s.doc.to_json();
+    for bad in [
+        json!({"points": 2}),
+        json!({"points": 201}),
+        json!({"outer_radius": 0}),
+        json!({"outer_radius": -5}),
+        json!({"inner_percent": 100}),
+        json!({"inner_percent": 0}),
+        json!({"skip": 3}),
+        json!({"tip_round": 50}),
+        json!({"valley_round": -1}),
+        json!({"angle": "x"}),
+    ] {
+        let mut p = bad.clone();
+        p["link"] = json!(link);
+        assert!(s.execute("sketch.edit_star", &p).is_err(), "{bad}");
+    }
+    assert_eq!(s.doc.to_json(), before, "refusals change nothing");
+    // A skip of 2 on 6 points shares a factor; on 5 it is the pentagram.
+    assert!(s.execute("sketch.star", &json!({"center": [50, 0], "outer_radius": 20, "points": 6, "skip": 2})).is_err());
+    run(&mut s, "sketch.star", json!({"center": [50, 0], "outer_radius": 20, "points": 5, "skip": 2}));
+    assert!(s.execute("sketch.edit_star", &json!({"link": "nope"})).is_err());
+}
+
+/// The box (min, max) of the sketch's own points.
+fn points_box(s: &Session) -> (Vec2, Vec2) {
+    let sk = sketch(s);
+    let mut lo = Vec2::new(f64::MAX, f64::MAX);
+    let mut hi = Vec2::new(f64::MIN, f64::MIN);
+    for p in sk.points.iter().filter(|p| p.id != "origin") {
+        lo = Vec2::new(lo.x.min(p.pos.x), lo.y.min(p.pos.y));
+        hi = Vec2::new(hi.x.max(p.pos.x), hi.y.max(p.pos.y));
+    }
+    (lo, hi)
+}
+
+/// A crown: a ring of `n` points with a lobed edge, as one SVG path, and a Bezier band beside it.
+fn crown_svg(n: usize) -> String {
+    let ring: Vec<String> = (0..n)
+        .map(|i| {
+            let a = std::f64::consts::TAU * i as f64 / n as f64;
+            let r = 80.0 + 10.0 * (a * 12.0).sin();
+            format!("{:.3},{:.3}", 100.0 + r * a.cos(), 100.0 + r * a.sin())
+        })
+        .collect();
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 200"><path d="M{} Z"/><path d="M200,20 C220,60 260,60 280,20 L280,40 C260,80 220,80 200,40 Z"/></svg>"#,
+        ring.join(" L")
+    )
+}
+
+#[test]
+fn an_imported_drawing_is_one_group_that_moves_and_stretches_as_one() {
+    let mut s = new_sketch();
+    let r = run(&mut s, "sketch.insert_svg", json!({"text": crown_svg(400), "width": 120}));
+    let group = r["group"].as_str().expect("the import made a group").to_string();
+    assert_eq!(sketch(&s).object_groups.len(), 1);
+    let members = sketch(&s).object_groups[0].curves.clone();
+    assert_eq!(members.len(), r["curves"].as_u64().unwrap() as usize);
+    let (lo, hi) = points_box(&s);
+    let area = |s: &Session| profiles(s).iter().sum::<f64>();
+    let a0 = area(&s);
+    // Move: one curve picked, the whole drawing goes.
+    run(&mut s, "sketch.move", json!({"entities": [members[0].clone()], "translate": [10, 5]}));
+    let (lo1, hi1) = points_box(&s);
+    assert!(close(lo1.x - lo.x, 10.0) && close(lo1.y - lo.y, 5.0) && close(hi1.x - hi.x, 10.0) && close(hi1.y - hi.y, 5.0), "{lo:?} {lo1:?}");
+    // Turn a quarter about its middle and scale: nothing deforms.
+    let mid = Vec2::new((lo1.x + hi1.x) / 2.0, (lo1.y + hi1.y) / 2.0);
+    run(&mut s, "sketch.transform", json!({"entities": [members[3].clone()], "factor": 2.0, "angle": 90, "center": [mid.x, mid.y]}));
+    let (lo2, hi2) = points_box(&s);
+    assert!(close((hi2.x - lo2.x) / (hi1.x - lo1.x), 2.0 * (hi1.y - lo1.y) / (hi1.x - lo1.x)), "a quarter turn swaps width and height");
+    assert!(close(area(&s) / a0, 4.0), "area x4");
+    // Width and height apart, along the drawing's own axes (MEJ-9): after the quarter turn its
+    // width runs along the sketch's Y.
+    let (wlo, whi) = points_box(&s);
+    run(&mut s, "sketch.transform", json!({"entities": [members[7].clone()], "scale_x": 2.0, "scale_y": 0.5, "center": [wlo.x, wlo.y]}));
+    let (lo3, hi3) = points_box(&s);
+    assert!(close((hi3.x - lo3.x) / (whi.x - wlo.x), 0.5) && close((hi3.y - lo3.y) / (whi.y - wlo.y), 2.0), "{lo3:?} {hi3:?}");
+    assert!(close(area(&s) / (a0 * 4.0), 1.0), "x2 and x0.5 keep the area");
+    // Saved and opened, the group is still there; undo and redo go through.
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    let mut reopened = reopened;
+    run(&mut reopened, "sketch.edit", json!({"sketch": 1}));
+    assert_eq!(sketch(&reopened).object_groups.len(), 1);
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.redo", json!({}));
+    // Ungroup: one curve moves alone.
+    run(&mut s, "sketch.ungroup", json!({"group": group}));
+    assert!(sketch(&s).object_groups.is_empty());
+    let before = points_box(&s);
+    run(&mut s, "sketch.move", json!({"entities": [members[0].clone()], "translate": [1000, 0]}));
+    assert!(points_box(&s).1.x > before.1.x + 100.0 && points_box(&s).0.x < before.0.x + 1.0, "only that curve left");
+}
+
+/// MEJ-9: a turned group stretches along its own width and height, and its arcs and circles
+/// become the exact elliptical shapes the stretch makes of them.
+#[test]
+fn a_turned_group_stretches_along_its_own_axes_with_its_arcs_and_circles() {
+    let mut s = new_sketch();
+    let circle = run(&mut s, "sketch.circle.center", json!({"center": [0, 0], "radius": 10}));
+    let arc = run(&mut s, "sketch.arc.three_point", json!({"start": [50, 0], "end": [30, 0], "through": [40, 10]}));
+    let a = ids(&arc["curves"])[0].clone();
+    let line = run(&mut s, "sketch.line", json!({"points": [format!("{a}.end"), format!("{a}.start")]}));
+    let curves: Vec<String> = [&circle, &arc, &line].iter().flat_map(|r| ids(&r["curves"])).collect();
+    assert_eq!(curves.len(), 3, "{circle} {arc} {line}");
+    run(&mut s, "sketch.group", json!({"curves": curves, "name": "d"}));
+    // Turned in two steps, by Move and by Transform: the group remembers the whole turn (MEJ-19).
+    run(&mut s, "sketch.move", json!({"entities": [curves[2].clone()], "angle": 10, "center": [0, 0]}));
+    assert!(close(sketch(&s).object_groups[0].angle, 10.0), "Move turns the group's box");
+    run(&mut s, "sketch.transform", json!({"entities": [curves[2].clone()], "angle": 20, "center": [0, 0]}));
+    assert!(close(sketch(&s).object_groups[0].angle, 30.0), "the group remembers its turn");
+    // A copy turned with Move is not in the group, and leaves the group's turn alone.
+    let copied = run(&mut s, "sketch.move", json!({"entities": [curves[2].clone()], "angle": 45, "center": [0, 0], "copy": true}));
+    assert!(close(sketch(&s).object_groups[0].angle, 30.0) && sketch(&s).object_groups[0].curves.len() == 3, "{copied}");
+    run(&mut s, "sketch.delete", json!({"entities": ids(&copied["curves"])}));
+    let half_disc = std::f64::consts::PI * 100.0 / 2.0;
+    run(&mut s, "sketch.transform", json!({"entities": [curves[0].clone()], "scale_x": 2.0, "scale_y": 1.0, "center": [0, 0]}));
+    let sk = sketch(&s);
+    assert!(close(sk.object_groups[0].angle, 30.0) && sk.object_groups[0].curves.len() == 3, "{:?}", sk.object_groups);
+    // The circle is an ellipse twice as long along the group's turned width.
+    let along = Vec2::new(30f64.to_radians().cos(), 30f64.to_radians().sin());
+    let Some(solidcraft_sketch::CurveKind::Ellipse { c, m, r }) = sk.curve_index(&curves[0]).map(|i| sk.curves[i].kind.clone()) else {
+        panic!("{:?}", sk.curves)
+    };
+    let (c, m) = (sk.point(c).unwrap(), sk.point(m).unwrap());
+    assert!(c.len() < 1e-9 && close(r, 10.0) && (m - c).dist(along * 20.0) < 1e-9, "{c:?} {m:?} {r}");
+    // The arc is one exact spline on the stretched circle it was on; its centre is gone.
+    let i = sk.curve_index(&curves[1]).unwrap();
+    assert!(matches!(&sk.curves[i].kind, solidcraft_sketch::CurveKind::Spline { degree: 2, nurbs: Some(_), .. }), "{:?}", sk.curves[i].kind);
+    let back = |q: Vec2| {
+        // Undo the stretch: along the turned width by a half.
+        let d = Vec2::new(q.dot(along), -q.cross(along));
+        along * (d.x / 2.0) + Vec2::new(-along.y, along.x) * d.y
+    };
+    let centre = along * 40.0;
+    for q in sk.polyline(i) {
+        assert!(close(back(q).dist(centre), 10.0), "{q:?} is off the stretched arc");
+    }
+    assert!(sk.points.iter().all(|q| q.pos.dist(along * 80.0) > 1e-6), "the arc's centre is not left behind");
+    let areas = profiles(&s);
+    assert!(areas.len() == 2 && (areas[0] - 2.0 * half_disc).abs() < 1e-3 && (areas[1] - 200.0 * std::f64::consts::PI).abs() < 1e-3, "{areas:?}");
+    // An ellipse taller than wide after the stretch turns its major axis and keeps its axis lines on it.
+    let e = run(&mut s, "sketch.ellipse", json!({"center": [100, 0], "major": [120, 0], "minor_radius": 8}));
+    let e = ids(&e["curves"])[0].clone();
+    run(&mut s, "sketch.transform", json!({"entities": [e.clone()], "scale_x": 1.0, "scale_y": 3.0, "center": [100, 0]}));
+    let sk = sketch(&s);
+    let i = sk.curve_index(&e).unwrap();
+    let Some(solidcraft_sketch::CurveKind::Ellipse { c, m, r }) = sk.curves.get(i).map(|x| x.kind.clone()) else { panic!() };
+    let (c, m) = (sk.point(c).unwrap(), sk.point(m).unwrap());
+    assert!(c.dist(Vec2::new(100.0, 0.0)) < 1e-9 && close(r, 20.0) && close((m - c).x, 0.0) && close((m - c).len(), 24.0), "{c:?} {m:?} {r}");
+    if let Some((major, minor)) = sk.ellipse_axis_lines(i) {
+        if let Some((_, other)) = major {
+            assert!(sk.point(other).unwrap().dist(c - (m - c)) < 1e-9);
+        }
+        if let Some((_, a, b)) = minor {
+            assert!(close(sk.point(a).unwrap().dist(c), 20.0) && close(sk.point(b).unwrap().dist(c), 20.0));
+        }
+    }
+}
+
+/// MEJ-18: a stretch is refused only for a dimension on what it moves, not one elsewhere.
+#[test]
+fn a_stretch_is_refused_only_by_a_dimension_on_what_it_moves() {
+    let mut s = new_sketch();
+    let a = ids(&run(&mut s, "sketch.line", json!({"points": [[0, 0], [10, 0]], "connect": false}))["curves"])[0].clone();
+    let b = ids(&run(&mut s, "sketch.line", json!({"points": [[0, 50], [10, 50]], "connect": false}))["curves"])[0].clone();
+    run(&mut s, "sketch.dimension", json!({"entities": [b.clone()], "value": "10"}));
+    run(&mut s, "sketch.transform", json!({"entities": [a.clone()], "scale_x": 3.0, "scale_y": 1.0, "center": [0, 0]}));
+    let len = |s: &Session, id: &str| {
+        let sk = sketch(s);
+        let pl = sk.polyline(sk.curve_index(id).unwrap());
+        pl[0].dist(pl[pl.len() - 1])
+    };
+    assert!(close(len(&s, &a), 30.0) && close(len(&s, &b), 10.0));
+    let before = sketch(&s);
+    let e = s.execute("sketch.transform", &json!({"entities": [b.clone()], "scale_x": 3.0, "scale_y": 1.0, "center": [0, 50]}));
+    assert!(e.is_err_and(|e| e.to_string().contains("dimensions")));
+    assert_eq!(sketch(&s).points.iter().map(|p| p.pos).collect::<Vec<_>>(), before.points.iter().map(|p| p.pos).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_group_is_made_by_import_or_by_hand_and_holds_a_curve_once() {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="20"/><rect x="0" y="0" width="30" height="30"/></svg>"#;
+    // No group when asked not to; a hand-made group; a curve in one group at most.
+    let mut t = new_sketch();
+    let r = run(&mut t, "sketch.insert_svg", json!({"text": svg, "group": false}));
+    assert!(r.get("group").is_none() && sketch(&t).object_groups.is_empty());
+    let ids: Vec<String> = sketch(&t).curves.iter().map(|c| c.id.clone()).collect();
+    let g = run(&mut t, "sketch.group", json!({"curves": ids[..2], "name": "pair"}));
+    assert_eq!(g["curves"].as_array().unwrap().len(), 2);
+    assert!(t.execute("sketch.group", &json!({"curves": [ids[1].clone()]})).is_err(), "already grouped");
+    assert!(t.execute("sketch.group", &json!({"curves": []})).is_err());
+    assert!(t.execute("sketch.ungroup", &json!({"entity": ids[0].clone()})).is_ok());
+    assert!(t.execute("sketch.ungroup", &json!({"entity": ids[0].clone()})).is_err(), "not in a group any more");
+}
+
+#[test]
+fn a_locked_group_moves_but_its_points_are_not_edited_and_a_total_lock_changes_nothing() {
+    let mut s = new_sketch();
+    let r = run(&mut s, "sketch.insert_svg", json!({"text": crown_svg(300), "width": 120}));
+    let group = r["group"].as_str().unwrap().to_string();
+    let members = sketch(&s).object_groups[0].curves.clone();
+    let node = sketch(&s).points.iter().find(|p| p.id != "origin").unwrap().id.clone();
+    let (lo, hi) = points_box(&s);
+    // Protect geometry: the whole object moves, turns and stretches...
+    run(&mut s, "sketch.group_lock", json!({"group": group, "lock": "protect"}));
+    run(&mut s, "sketch.move", json!({"entities": [members[0].clone()], "translate": [10, 5]}));
+    run(&mut s, "sketch.transform", json!({"entities": [members[1].clone()], "scale_x": 2.0, "scale_y": 0.5, "angle": 30}));
+    let area = |s: &Session| profiles(s).iter().sum::<f64>();
+    assert!(area(&s) > 0.0);
+    // ...but a point cannot be moved on its own, a curve deleted or the object trimmed.
+    let before = s.doc.to_json();
+    let at = sketch(&s).points.iter().find(|p| p.id == node).unwrap().pos;
+    for (cmd, p) in
+        [("sketch.move_point", json!({"point": node, "to": [at.x + 3.0, at.y + 3.0]})), ("sketch.delete", json!({"entities": [members[2].clone()]}))]
+    {
+        let err = s.execute(cmd, &p).unwrap_err().to_string();
+        assert!(err.contains("is locked"), "{cmd}: {err}");
+        assert_eq!(s.doc.to_json(), before, "{cmd} changed nothing");
+    }
+    // Total lock: nothing moves at all.
+    run(&mut s, "sketch.group_lock", json!({"entity": members[0].clone(), "lock": "total"}));
+    let before = s.doc.to_json();
+    let err = s.execute("sketch.move", &json!({"entities": [members[0].clone()], "translate": [1, 1]})).unwrap_err().to_string();
+    assert!(err.contains("total lock"), "{err}");
+    assert_eq!(s.doc.to_json(), before);
+    // Free again: the point moves.
+    run(&mut s, "sketch.group_lock", json!({"group": group, "lock": "free"}));
+    run(&mut s, "sketch.move_point", json!({"point": node, "to": [at.x + 3.0, at.y + 3.0]}));
+    let _ = (lo, hi);
+    // Saved and opened, the lock stays; a bad name is refused.
+    run(&mut s, "sketch.group_lock", json!({"group": group, "lock": "protect"}));
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert_eq!(reopened.doc.sketch(1).unwrap().object_groups[0].lock, solidcraft_sketch::GroupLock::Protect);
+    assert!(s.execute("sketch.group_lock", &json!({"group": group, "lock": "frozen"})).is_err());
+}
+
+#[test]
+fn trimming_or_breaking_a_curve_of_a_group_keeps_the_pieces_in_the_group() {
+    let mut s = new_sketch();
+    // A straight stroke and a curved one that cross it.
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M50,0 L50,100"/><path d="M0,50 C30,0 70,100 100,50"/></svg>"#;
+    run(&mut s, "sketch.insert_svg", json!({"text": svg}));
+    let all_grouped = |s: &Session| {
+        let sk = sketch(s);
+        sk.object_groups.len() == 1 && sk.curves.iter().all(|c| sk.object_group_of(&c.id).is_some())
+    };
+    assert!(all_grouped(&s));
+    let sk = sketch(&s);
+    let line = sk.curves.iter().position(|c| matches!(c.kind, CurveKind::Line { .. })).expect("a line");
+    let bent = sk.curves.iter().position(|c| !matches!(c.kind, CurveKind::Line { .. })).expect("a curve");
+    let (line_id, bent_id) = (sk.curves[line].id.clone(), sk.curves[bent].id.clone());
+    let lp = sk.polyline(line);
+    let bp = sk.polyline(bent);
+    // Break the line where the curve crosses it, then the curve near its start: every piece stays in.
+    let n = sketch(&s).curves.len();
+    let quarter = Vec2::new(lp[0].x * 0.75 + lp[lp.len() - 1].x * 0.25, lp[0].y * 0.75 + lp[lp.len() - 1].y * 0.25);
+    run(&mut s, "sketch.break", json!({"curve": line_id, "at": [quarter.x, quarter.y]}));
+    run(&mut s, "sketch.break", json!({"curve": bent_id, "points": [[bp[bp.len() / 4].x, bp[bp.len() / 4].y]]}));
+    assert!(sketch(&s).curves.len() >= n + 2, "both broke");
+    assert!(all_grouped(&s), "broken pieces stay in the group");
+    // Trim a piece of the line: what is left is still in the group.
+    let sk = sketch(&s);
+    let piece = sk.curves.iter().position(|c| matches!(c.kind, CurveKind::Line { .. })).expect("a line");
+    let pp = sk.polyline(piece);
+    let mid = Vec2::new((pp[0].x + pp[pp.len() - 1].x) / 2.0, (pp[0].y + pp[pp.len() - 1].y) / 2.0);
+    run(&mut s, "sketch.trim", json!({"curve": sk.curves[piece].id.clone(), "at": [mid.x, mid.y]}));
+    assert!(all_grouped(&s), "trimmed pieces stay in the group");
+    // Undo goes back through.
+    run(&mut s, "edit.undo", json!({}));
+    assert!(all_grouped(&s));
+}
+
+#[test]
+fn a_group_saves_its_pivot_and_the_pivot_follows_the_group() {
+    let mut s = new_sketch();
+    let r = run(&mut s, "sketch.insert_svg", json!({"text": crown_svg(40), "width": 80}));
+    let group = r["group"].as_str().unwrap().to_string();
+    let member = sketch(&s).object_groups[0].curves[0].clone();
+    let pivot = |s: &Session| sketch(s).object_groups[0].pivot;
+    assert_eq!(pivot(&s), None);
+    run(&mut s, "sketch.group_pivot", json!({"entity": member, "pivot": [3, 4]}));
+    assert_eq!(pivot(&s), Some(solidcore_record::Vec2::new(3.0, 4.0)));
+    // Moved, the pivot goes with the group; turned about the pivot it stays; scaled about a point it follows.
+    run(&mut s, "sketch.move", json!({"entities": [member.clone()], "translate": [10, 5]}));
+    assert_eq!(pivot(&s), Some(solidcore_record::Vec2::new(13.0, 9.0)));
+    run(&mut s, "sketch.transform", json!({"entities": [member.clone()], "angle": 90, "center": [13, 9]}));
+    let p = pivot(&s).unwrap();
+    assert!(p.dist(solidcore_record::Vec2::new(13.0, 9.0)) < 1e-9, "{p:?}");
+    run(&mut s, "sketch.transform", json!({"entities": [member.clone()], "factor": 2.0, "center": [0, 0]}));
+    let p = pivot(&s).unwrap();
+    assert!(p.dist(solidcore_record::Vec2::new(26.0, 18.0)) < 1e-9, "{p:?}");
+    // Saved and opened, it stays; a part of the group moved on its own leaves it alone.
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert_eq!(reopened.doc.sketch(1).unwrap().object_groups[0].pivot, pivot(&s));
+    // Left out, it is the middle of the box again; bad values and a curve outside a group are refused.
+    run(&mut s, "sketch.group_pivot", json!({"group": group}));
+    assert_eq!(pivot(&s), None);
+    for bad in [
+        json!({"group": group, "pivot": [1]}),
+        json!({"group": group, "pivot": "a"}),
+        json!({"group": group, "pivot": [1, null]}),
+        json!({"pivot": [1, 2]}),
+    ] {
+        assert!(s.execute("sketch.group_pivot", &bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn an_import_can_come_locked_and_nodes_mode_shows_the_points_of_grouped_curves() {
+    let mut s = new_sketch();
+    let r = run(&mut s, "sketch.insert_svg", json!({"text": crown_svg(40), "width": 80, "lock": "Protect"}));
+    assert!(r["group"].is_string() && r.get("fixed").is_none());
+    assert_eq!(sketch(&s).object_groups[0].lock, solidcraft_sketch::GroupLock::Protect);
+    assert!(s.execute("sketch.insert_svg", &json!({"text": crown_svg(5), "lock": "frozen"})).is_err());
+    assert!(s.execute("sketch.insert_svg", &json!({"text": crown_svg(5), "lock": "total", "group": false})).is_err());
+    // Object mode (the default) leaves out the points of grouped curves; nodes mode shows them.
+    let shown = |s: &Session| {
+        let sk = sketch(s);
+        let v = crate::view::SketchPointVisibility::shown(s, &sk);
+        sk.points.iter().filter(|p| v.takes(p)).count()
+    };
+    assert_eq!(run(&mut s, "sketch.nodes_mode", json!({}))["nodes"], json!(true));
+    let all = shown(&s);
+    assert!(all > 40);
+    assert_eq!(run(&mut s, "sketch.nodes_mode", json!({"nodes": false}))["nodes"], json!(false));
+    assert_eq!(shown(&s), 1, "only the origin is left");
+    assert!(s.execute("sketch.nodes_mode", &json!({"nodes": "yes"})).is_err());
+    // A point a loose curve shares with the group stays visible in object mode (MEJ-15).
+    let shared = {
+        let sk = sketch(&s);
+        let group = &sk.object_groups[0];
+        let curve = sk.curve_index(&group.curves[0]).unwrap();
+        sk.points[sk.curves[curve].kind.point_ids()[0]].id.clone()
+    };
+    run(&mut s, "sketch.line", json!({"points": [shared, [200, 200]], "connect": false}));
+    let sk = sketch(&s);
+    let v = crate::view::SketchPointVisibility::shown(&s, &sk);
+    let at = sk.points.iter().find(|p| p.id == shared).unwrap();
+    assert!(v.takes(at), "the shared point is shown");
+    assert_eq!(sk.points.iter().filter(|p| v.takes(p)).count(), 3, "the origin, the shared point and the loose line's far end");
+}
+
+#[test]
+fn a_star_copied_and_pasted_stays_a_star() {
+    // MEJ-4: the pasted copy is a star of its own, still over the parameter its radius was typed as.
+    let mut s = new_sketch();
+    run(&mut s, "parameters.add", json!({"name": "R", "expression": "10 mm"}));
+    let r = run(&mut s, "sketch.star", json!({"center": [40, 0], "outer_radius": "R", "points": 5}));
+    let (star, curves) = (r["link"].as_str().unwrap().to_string(), r["curves"].clone());
+    let copied = run(&mut s, "sketch.copy", json!({"entities": curves}));
+    assert_eq!(copied["texts"], json!(0), "a star is not a text");
+    run(&mut s, "sketch.paste", json!({"at": [0, 40]}));
+    let links: Vec<String> = sketch(&s).links.iter().map(|l| l.id.clone()).collect();
+    assert_eq!(links.len(), 2, "two stars");
+    let copy = links.iter().find(|l| **l != star).unwrap().clone();
+    let e = run(&mut s, "sketch.edit_star", json!({"link": copy}));
+    assert_eq!((e["star"]["points"].as_u64(), e["star"]["exprs"].clone()), (Some(5), json!({"outer": "R"})), "{e}");
+    let at = e["star"]["center"].clone();
+    assert!(at[1].as_f64().unwrap() > 30.0, "the copy sits where it was pasted: {at}");
+    // Both follow R; the copy turns into an 8 point star alone.
+    run(&mut s, "parameters.change", json!({"name": "R", "expression": "15 mm"}));
+    run(&mut s, "sketch.edit_star", json!({"link": copy, "points": 8}));
+    let o = run(&mut s, "sketch.edit_star", json!({"link": star}));
+    let c = run(&mut s, "sketch.edit_star", json!({"link": copy}));
+    assert_eq!((o["star"]["points"].as_u64(), o["star"]["outer_radius"].as_f64()), (Some(5), Some(15.0)), "{o}");
+    assert_eq!((c["star"]["points"].as_u64(), c["star"]["outer_radius"].as_f64(), c["star"]["center"].clone()), (Some(8), Some(15.0), at), "{c}");
+    // A star's point alone can't be copied by a pattern or a mirror, and that changes nothing.
+    let before = s.doc.to_json();
+    let tip = sketch(&s).link_points(&star)[0];
+    let tip = sketch(&s).points[tip].id.clone();
+    for (command, p) in [
+        ("sketch.pattern.circular", json!({"entities": [tip], "center": [0, 0], "count": 3})),
+        ("sketch.pattern.rectangular", json!({"entities": [tip], "count": 3, "spacing": 30})),
+        ("sketch.mirror", json!({"entities": [tip], "line": "y"})),
+    ] {
+        let err = s.execute(command, &p).unwrap_err().to_string();
+        assert!(err.contains("pick the star's outline"), "{command}: {err}");
+        assert_eq!(s.doc.to_json(), before, "{command}");
+    }
+    // Cutting one of its curves takes the whole star, as copying does; pasting brings it back.
+    let one = sketch(&s).link_curves(&copy)[0];
+    let one = sketch(&s).curves[one].id.clone();
+    run(&mut s, "sketch.cut", json!({"entities": [one]}));
+    assert_eq!(sketch(&s).links.len(), 1, "the cut star is gone whole");
+    assert!(sketch(&s).curves.iter().all(|c| c.link.is_some()), "no loose piece of it is left");
+    run(&mut s, "sketch.paste", json!({}));
+    assert_eq!(sketch(&s).links.len(), 2);
+}
+
+#[test]
+fn extending_filleting_or_chamfering_a_curve_of_a_group_keeps_the_new_curves_in_the_group() {
+    let mut s = new_sketch();
+    // An open frame of three long sides, and a short bent stroke inside it.
+    let svg =
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M0,0 L60,0 L60,60 L0,60"/><path d="M20,30 L40,30 L40,40"/></svg>"#;
+    run(&mut s, "sketch.insert_svg", json!({"text": svg}));
+    let all_grouped = |s: &Session| {
+        let sk = sketch(s);
+        sk.object_groups.len() == 1 && sk.curves.iter().all(|c| sk.object_group_of(&c.id).is_some())
+    };
+    assert!(all_grouped(&s));
+    let sk = sketch(&s);
+    let len = |i: usize| sk.polyline(i).first().zip(sk.polyline(i).last()).map_or(0.0, |(a, b)| a.dist(*b));
+    let mut lines: Vec<usize> = (0..sk.curves.len()).filter(|i| matches!(sk.curves[*i].kind, CurveKind::Line { .. })).collect();
+    lines.sort_by(|a, b| len(*a).total_cmp(&len(*b)));
+    assert_eq!(lines.len(), 5);
+    let id = |i: usize| sk.curves[i].id.clone();
+    let ends = |i: usize| sk.curves[i].kind.ends().expect("a line has ends");
+    let meet = |i: usize, j: usize| {
+        let ((a, b), (c, d)) = (ends(i), ends(j));
+        [a, b].into_iter().find(|p| *p == c || *p == d)
+    };
+    // The longer stroke's end held by the shorter one grows as a new line out to the frame.
+    let (short, stroke) = (lines[0], lines[1]);
+    let held = meet(short, stroke).expect("the stroke is one path");
+    let (a, b) = ends(stroke);
+    let free = if a == held { b } else { a };
+    let (h, f) = (sk.points[held].pos, sk.points[free].pos);
+    let at = h + (h - f) * 0.05;
+    // Two corners of the frame: the sides that meet.
+    let sides = &lines[2..];
+    let corners: Vec<(usize, usize)> =
+        (0..3).flat_map(|i| (i + 1..3).map(move |j| (sides[i], sides[j]))).filter(|(i, j)| meet(*i, *j).is_some()).collect();
+    assert_eq!(corners.len(), 2);
+    let n = sk.curves.len();
+    run(&mut s, "sketch.extend", json!({"curve": id(stroke), "at": [at.x, at.y]}));
+    run(&mut s, "sketch.fillet", json!({"a": id(corners[0].0), "b": id(corners[0].1), "radius": 5}));
+    run(&mut s, "sketch.chamfer.equal_distance", json!({"a": id(corners[1].0), "b": id(corners[1].1), "distance": 5}));
+    assert_eq!(sketch(&s).curves.len(), n + 3, "an extension, an arc and a cut");
+    assert!(all_grouped(&s), "the new curves are in the group");
+}
+
+/// MEJ-12: a mirror of a star is a star that follows the original: its shape is the original's, edited
+/// or driven by a parameter, and only its place is its own. Moved by hand it is a star of its own.
+#[test]
+fn a_mirrored_star_follows_the_original_until_it_is_moved() {
+    let mut s = new_sketch();
+    run(&mut s, "parameters.add", json!({"name": "R", "expression": "10 mm"}));
+    let r = run(&mut s, "sketch.star", json!({"center": [40, 10], "outer_radius": "R", "points": 5, "angle": 10}));
+    let (star, curves) = (r["link"].as_str().unwrap().to_string(), r["curves"].clone());
+    let made = run(&mut s, "sketch.mirror", json!({"entities": curves, "line": "y"}));
+    assert_eq!(made["curves"].as_array().unwrap().len(), curves.as_array().unwrap().len(), "the mirror is a whole star: {made}");
+    let spec = |s: &Session, link: &str| match sketch(s).link(link).unwrap().source.clone() {
+        solidcraft_sketch::LinkSource::Star(spec) => spec,
+        other => panic!("a star, not {other:?}"),
+    };
+    let copy = sketch(&s)
+        .links
+        .iter()
+        .filter(|l| matches!(l.source, solidcraft_sketch::LinkSource::Star(_)))
+        .map(|l| l.id.clone())
+        .find(|l| *l != star)
+        .expect("a second star");
+    let c = spec(&s, &copy);
+    assert_eq!(c.follows.as_ref().map(|f| f.source.as_str()), Some(star.as_str()));
+    assert!((c.center.x + 40.0).abs() < 1e-9 && (c.center.y - 10.0).abs() < 1e-9, "{:?}", c.center);
+    // The mirror image of the star's turn: 10 degrees one way is 10 degrees the other.
+    assert!((c.angle + 10.0).abs() < 1e-9, "{}", c.angle);
+    // Edit the original: points, then a parameter. The copy follows both and keeps its place.
+    run(&mut s, "sketch.edit_star", json!({"link": star, "points": 8}));
+    run(&mut s, "parameters.change", json!({"name": "R", "expression": "15 mm"}));
+    let (o, c) = (spec(&s, &star), spec(&s, &copy));
+    assert_eq!((c.points, c.outer), (8, 15.0), "{c:?}");
+    assert_eq!(c.points, o.points);
+    assert_eq!(sketch(&s).link_curves(&copy).len(), sketch(&s).link_curves(&star).len(), "the same outline, point for point");
+    assert!((c.center.x + 40.0).abs() < 1e-9);
+    // A copy is edited through its original.
+    let err = s.execute("sketch.edit_star", &json!({"link": copy, "points": 6})).unwrap_err().to_string();
+    assert!(err.contains("a copy of"), "{err}");
+    // Saved and opened, it still follows.
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert_eq!(
+        reopened
+            .doc
+            .sketch(1)
+            .unwrap()
+            .links
+            .iter()
+            .filter(|l| matches!(&l.source, solidcraft_sketch::LinkSource::Star(s) if s.follows.is_some()))
+            .count(),
+        1
+    );
+    // Move the copy by hand: it is a star of its own, and the original's edits no longer reach it.
+    let own: Vec<String> = sketch(&s).link_curves(&copy).iter().map(|i| sketch(&s).curves[*i].id.clone()).collect();
+    run(&mut s, "sketch.move", json!({"entities": own, "translate": [0, 30]}));
+    assert!(spec(&s, &copy).follows.is_none());
+    run(&mut s, "sketch.edit_star", json!({"link": star, "points": 6}));
+    assert_eq!(spec(&s, &copy).points, 8);
+}
+
+/// MEJ-27: the stars a pattern copies follow its centre and its direction line when the solver
+/// moves them (a drag, a dimension), not only when the pattern is rebuilt.
+#[test]
+fn patterned_stars_follow_a_dragged_centre_and_direction_line() {
+    let mut s = new_sketch();
+    let star_at = |s: &Session, link: &str| match &sketch(s).link(link).unwrap().source {
+        solidcraft_sketch::LinkSource::Star(spec) => (spec.center, spec.angle),
+        other => panic!("a star, not {other:?}"),
+    };
+    let copies = |s: &Session| -> Vec<String> {
+        sketch(s)
+            .links
+            .iter()
+            .filter(|l| matches!(&l.source, solidcraft_sketch::LinkSource::Star(x) if x.follows.is_some()))
+            .map(|l| l.id.clone())
+            .collect()
+    };
+    // A circular pattern about a centre point that is then dragged: every copy stays the original
+    // turned about the centre where it is now, outline and all.
+    let r = run(&mut s, "sketch.star", json!({"center": [40, 0], "outer_radius": 10, "points": 5}));
+    let star = r["link"].as_str().unwrap().to_string();
+    let made = run(&mut s, "sketch.pattern.circular", json!({"entities": r["curves"], "center": [0, 0], "count": 4}));
+    let centre = made["center"].as_str().unwrap().to_string();
+    run(&mut s, "sketch.drag", json!({"entity": centre, "from": [0, 0], "to": [-10, 5]}));
+    let c = point_at(&sketch(&s), &centre);
+    assert!(c.dist(Vec2::new(-10.0, 5.0)) < 1e-6, "{c:?}");
+    let (o, _) = star_at(&s, &star);
+    let mut got: Vec<(Vec2, f64)> = copies(&s).iter().map(|l| star_at(&s, l)).collect();
+    got.sort_by(|a, b| a.1.total_cmp(&b.1));
+    for ((at, angle), quarter) in got.iter().zip([1.0_f64, 2.0, 3.0]) {
+        let t = (90.0 * quarter).to_radians();
+        let d = o - c;
+        let want = c + Vec2::new(d.x * t.cos() - d.y * t.sin(), d.x * t.sin() + d.y * t.cos());
+        assert!(at.dist(want) < 1e-6, "copy at {at:?}, want {want:?}");
+        assert!((angle - 90.0 * quarter).abs() < 1e-9, "{angle}");
+    }
+    for copy in copies(&s) {
+        let sk = sketch(&s);
+        let (at, _) = star_at(&s, &copy);
+        let far = sk.link_points(&copy).iter().filter_map(|i| sk.point(*i)).map(|p| p.dist(at)).fold(0.0, f64::max);
+        assert!((far - 10.0).abs() < 1e-6, "the outline sits on the copy's centre: {far}");
+    }
+    // A rectangular pattern along a line that is then turned: the copy moves along the line as it is now.
+    let mut s = new_sketch();
+    let line = ids(&run(&mut s, "sketch.line", json!({"points": [[0, -20], [30, -20]], "connect": false, "infer": false}))["curves"])[0].clone();
+    let r = run(&mut s, "sketch.star", json!({"center": [0, 10], "outer_radius": 5, "points": 6}));
+    let star = r["link"].as_str().unwrap().to_string();
+    run(&mut s, "sketch.pattern.rectangular", json!({"entities": r["curves"], "direction": line, "count": 2, "spacing": 50}));
+    run(&mut s, "sketch.constraint.fix", json!({"entities": [format!("{line}.start")]}));
+    run(&mut s, "sketch.drag", json!({"entity": format!("{line}.end"), "from": [30, -20], "to": [0, 10]}));
+    let (o, _) = star_at(&s, &star);
+    let (at, _) = star_at(&s, &copies(&s)[0]);
+    assert!(at.dist(o + Vec2::new(0.0, 50.0)) < 1e-6, "the copy is 50 along the turned line: {at:?} from {o:?}");
+}
+
+/// MEJ-23: the copy follows the mirror line too: when the line is moved or turned the copy stays its
+/// mirror image in it, and it still follows the original; a line that is deleted leaves it where it was.
+#[test]
+fn a_mirrored_star_follows_its_mirror_line_when_the_line_moves() {
+    let mut s = new_sketch();
+    let line = ids(&run(&mut s, "sketch.line", json!({"points": [[0, -50], [0, 50]], "connect": false, "infer": false}))["curves"])[0].clone();
+    let r = run(&mut s, "sketch.star", json!({"center": [40, 10], "outer_radius": 10, "points": 5, "angle": 10}));
+    let (star, curves) = (r["link"].as_str().unwrap().to_string(), r["curves"].clone());
+    run(&mut s, "sketch.mirror", json!({"entities": curves, "line": line}));
+    let spec = |s: &Session, link: &str| match sketch(s).link(link).unwrap().source.clone() {
+        solidcraft_sketch::LinkSource::Star(spec) => spec,
+        other => panic!("a star, not {other:?}"),
+    };
+    let copy = sketch(&s)
+        .links
+        .iter()
+        .filter(|l| matches!(l.source, solidcraft_sketch::LinkSource::Star(_)))
+        .map(|l| l.id.clone())
+        .find(|l| *l != star)
+        .expect("a second star");
+    // The copy is the original reflected in the line as the sketch has it now.
+    let check = |s: &Session, why: &str| {
+        let sk = sketch(s);
+        let Some(solidcraft_sketch::Shape::Line { a, b }) = sk.curve_index(&line).and_then(|c| sk.shape(c)) else { panic!("a line") };
+        let u = (b - a).normalized().unwrap();
+        let (o, c) = (spec(s, &star), spec(s, &copy));
+        let reflect = |q: Vec2| (a + u * (q - a).dot(u)) * 2.0 - q;
+        assert!(c.center.dist(reflect(o.center)) < 1e-6, "{why}: centre {:?} against {:?}", c.center, reflect(o.center));
+        // The star's own tip is at the same distance from the line on the other side: compare a tip.
+        let tip = |st: &solidcraft_sketch::StarSpec| {
+            let t = (90.0 + st.angle).to_radians();
+            st.center + Vec2::new(t.cos(), t.sin()) * st.outer
+        };
+        assert!(tip(&c).dist(reflect(tip(&o))) < 1e-6, "{why}: tip {:?} against {:?}", tip(&c), reflect(tip(&o)));
+        let outline = sk.link_curves(&copy).len();
+        assert_eq!(outline, sk.link_curves(&star).len(), "{why}: same outline");
+    };
+    check(&s, "made");
+    run(&mut s, "sketch.move", json!({"entities": [line], "translate": [10, 0]}));
+    assert!((spec(&s, &copy).center.x + 20.0).abs() < 1e-6, "{:?}", spec(&s, &copy).center);
+    check(&s, "line moved");
+    run(&mut s, "sketch.move", json!({"entities": [line], "angle": 30, "center": [0, 0]}));
+    check(&s, "line turned");
+    // Edit the original after the line moved: the copy takes the shape and keeps following the line.
+    run(&mut s, "sketch.edit_star", json!({"link": star, "points": 7}));
+    check(&s, "original edited");
+    assert_eq!(spec(&s, &copy).points, 7);
+    // Saved and opened, the copy still knows its line.
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    let follow = match &reopened.doc.sketch(1).unwrap().link(&copy).unwrap().source {
+        solidcraft_sketch::LinkSource::Star(spec) => spec.follows.clone().unwrap(),
+        other => panic!("a star, not {other:?}"),
+    };
+    assert_eq!(follow.line.as_deref(), Some(line.as_str()));
+}
+
+/// MEJ-23: a mirror line that a parameter moves (a dimension's value changes on a rebuild) takes the copy with it.
+#[test]
+fn a_mirrored_star_follows_a_mirror_line_that_a_parameter_moves() {
+    let mut s = new_sketch();
+    run(&mut s, "parameters.add", json!({"name": "D", "expression": "0 mm"}));
+    let line = ids(&run(&mut s, "sketch.line", json!({"points": [[5, -50], [5, 50]], "connect": false, "infer": false}))["curves"])[0].clone();
+    run(&mut s, "sketch.constraint.horizontal_vertical", json!({"points": [format!("{line}.start"), format!("{line}.end")], "mode": "vertical"}));
+    run(&mut s, "sketch.dimension", json!({"entities": ["origin", format!("{line}.start")], "type": "horizontal", "value": "D + 5"}));
+    let r = run(&mut s, "sketch.star", json!({"center": [40, 10], "outer_radius": 10, "points": 5}));
+    run(&mut s, "sketch.mirror", json!({"entities": r["curves"], "line": line}));
+    let copy_x = |s: &Session| {
+        sketch(s)
+            .links
+            .iter()
+            .find_map(|l| match &l.source {
+                LinkSource::Star(spec) if spec.follows.is_some() => Some(spec.center.x),
+                _ => None,
+            })
+            .expect("the copy")
+    };
+    assert!((copy_x(&s) + 30.0).abs() < 1e-6, "{}", copy_x(&s));
+    run(&mut s, "parameters.change", json!({"name": "D", "expression": "10 mm"}));
+    // The line is at x = 15 now: the copy of a star at 40 is at -10.
+    assert!((copy_x(&s) + 10.0).abs() < 1e-6, "{}", copy_x(&s));
+}
+
+/// MEJ-22: a pattern of a star makes stars that follow the original: its points, size and the rest,
+/// edited or driven by a parameter, and its place moved the pattern's way. The pattern's quantity
+/// adds and takes away whole stars, typed or driven by a parameter.
+#[test]
+fn a_patterned_star_makes_stars_that_follow_the_original() {
+    let mut s = new_sketch();
+    run(&mut s, "parameters.add", json!({"name": "R", "expression": "10 mm"}));
+    run(&mut s, "parameters.add", json!({"name": "N", "expression": "4", "unit": ""}));
+    let r = run(&mut s, "sketch.star", json!({"center": [40, 0], "outer_radius": "R", "points": 5, "angle": 10}));
+    let (star, curves) = (r["link"].as_str().unwrap().to_string(), r["curves"].clone());
+    let made = run(&mut s, "sketch.pattern.circular", json!({"entities": curves, "center": [0, 0], "count": "N"}));
+    let pattern = made["pattern"].as_str().unwrap().to_string();
+    let n = curves.as_array().unwrap().len();
+    assert_eq!(made["curves"].as_array().unwrap().len(), 3 * n, "three whole stars: {made}");
+    let spec = |s: &Session, link: &str| match sketch(s).link(link).unwrap().source.clone() {
+        solidcraft_sketch::LinkSource::Star(spec) => spec,
+        other => panic!("a star, not {other:?}"),
+    };
+    let copies = |s: &Session| -> Vec<String> {
+        sketch(s)
+            .links
+            .iter()
+            .filter(|l| matches!(&l.source, solidcraft_sketch::LinkSource::Star(x) if x.follows.is_some()))
+            .map(|l| l.id.clone())
+            .collect()
+    };
+    // Each copy is the star turned a quarter more about the centre, its tip turned with it.
+    let mut placed: Vec<(f64, f64, f64)> = copies(&s).iter().map(|l| spec(&s, l)).map(|c| (c.center.x, c.center.y, c.angle)).collect();
+    placed.sort_by(|a, b| a.2.total_cmp(&b.2));
+    let want = [(0.0, 40.0, 100.0), (-40.0, 0.0, 190.0), (0.0, -40.0, 280.0)];
+    for ((x, y, a), (wx, wy, wa)) in placed.iter().zip(want) {
+        assert!((x - wx).abs() < 1e-9 && (y - wy).abs() < 1e-9 && (a - wa).abs() < 1e-9, "{placed:?}");
+    }
+    // Edit the original: points, then a parameter. Every copy follows both and keeps its place.
+    run(&mut s, "sketch.edit_star", json!({"link": star, "points": 8}));
+    run(&mut s, "parameters.change", json!({"name": "R", "expression": "15 mm"}));
+    for copy in copies(&s) {
+        let c = spec(&s, &copy);
+        assert_eq!((c.points, c.outer), (8, 15.0), "{c:?}");
+        assert_eq!(sketch(&s).link_curves(&copy).len(), sketch(&s).link_curves(&star).len(), "the same outline, point for point");
+    }
+    // A copy is edited through its original.
+    let err = s.execute("sketch.edit_star", &json!({"link": copies(&s)[0], "points": 6})).unwrap_err().to_string();
+    assert!(err.contains("a copy of"), "{err}");
+    // The quantity, driven by its parameter or typed, adds and takes away whole stars.
+    run(&mut s, "parameters.change", json!({"name": "N", "expression": "6"}));
+    assert_eq!(copies(&s).len(), 5);
+    run(&mut s, "sketch.pattern.circular", json!({"pattern": pattern, "count": 3}));
+    assert_eq!(copies(&s).len(), 2);
+    assert_eq!(sketch(&s).links.len(), 3, "no star is left behind");
+    assert!(sketch(&s).curves.iter().all(|c| c.link.is_some()), "no loose piece of a star");
+    // Moving the original takes its copies round with it.
+    let own: Vec<String> = sketch(&s).link_curves(&star).iter().map(|i| sketch(&s).curves[*i].id.clone()).collect();
+    run(&mut s, "sketch.move", json!({"entities": own, "translate": [10, 0]}));
+    let mut far: Vec<f64> = copies(&s).iter().map(|l| spec(&s, l).center.len()).collect();
+    far.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    assert_eq!(far.len(), 1, "every copy as far from the centre as the original: {far:?}");
+    assert!((far[0] - 50.0).abs() < 1e-9, "{far:?}");
+    // Saved and opened, they still follow.
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    let stored = reopened.doc.sketch(1).unwrap();
+    assert_eq!(stored.links.iter().filter(|l| matches!(&l.source, solidcraft_sketch::LinkSource::Star(x) if x.follows.is_some())).count(), 2);
+    assert_eq!(stored.patterns[0].instances.iter().map(|i| i.stars.len()).sum::<usize>(), 2);
+    // A rectangular pattern of a star with a line: the line is copied as before, the star whole.
+    let line = ids(&run(&mut s, "sketch.line", json!({"points": [[0, 80], [10, 80]], "connect": false}))["curves"])[0].clone();
+    let mut both: Vec<String> = sketch(&s).link_curves(&star).iter().map(|i| sketch(&s).curves[*i].id.clone()).collect();
+    both.push(line);
+    let rect = run(&mut s, "sketch.pattern.rectangular", json!({"entities": both, "count": 2, "spacing": 100}));
+    assert_eq!(copies(&s).len(), 3, "{rect}");
+    let moved = spec(&s, copies(&s).last().unwrap());
+    let o = spec(&s, &star);
+    assert!((moved.center.x - o.center.x - 100.0).abs() < 1e-9 && (moved.center.y - o.center.y).abs() < 1e-9, "{moved:?}");
+}
+
 /// Volumes (mm³) of the bodies in the design, smallest first.
 fn body_volumes(s: &mut Session) -> Vec<f64> {
     let m = run(s, "inspect.measure", json!({}));

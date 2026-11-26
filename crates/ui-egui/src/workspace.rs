@@ -106,12 +106,11 @@ pub fn tab_accent(t: &Tokens, tab: &str) -> TabAccent {
     TAB_ACCENTS.accent(t, tab)
 }
 
-/// The ribbon tab whose [`tab_accent`] a design view kind ("Model", "Sketch", "Sheet", "Render",
+/// The ribbon tab whose [`tab_accent`] a design view kind ("Model", "Sheet", "Render",
 /// "Animation") borrows for its sub-tab fill, ink and tint. A sheet reads as Sheet Metal; an
 /// animation has no ribbon tab of its own and keeps the main accent.
 pub fn view_accent_tab(kind: &str) -> &'static str {
     match kind {
-        "Sketch" => "SKETCH",
         "Sheet" => "SHEET METAL",
         "Render" => "RENDER",
         _ => "MODEL",
@@ -119,13 +118,11 @@ pub fn view_accent_tab(kind: &str) -> &'static str {
 }
 
 /// The stroke colour of a design view kind's icon in the Tabs board: its fill in the light theme
-/// and a brighter step of it in the dark one. Model, Sketch and Render follow their accents;
+/// and a brighter step of it in the dark one. Model and Render follow their accents;
 /// Sheet is teal and Animation amber, as drawn. The board shows no dark Animation stroke, so it
 /// reuses the dark Surface ink. Unknown kinds take Model's.
 pub fn view_icon_colour(kind: &str, dark: bool) -> egui::Color32 {
     let hex: u32 = match (kind, dark) {
-        ("Sketch", false) => 0x057f45,
-        ("Sketch", true) => 0x3cc07a,
         ("Sheet", false) => 0x0f7b72,
         ("Sheet", true) => 0x3dbfb1,
         ("Render", false) => 0xa8326e,
@@ -361,7 +358,15 @@ pub const SECTIONS: &[Section] = &[
         tab: "MODEL",
         panel: "ARRANGE",
         promoted: 3,
-        ids: &["solid.move", "solid.mirror", "solid.pattern.rectangular", "solid.align", "solid.pattern.circular", "solid.pattern.path"],
+        ids: &[
+            "solid.move",
+            "solid.mirror",
+            "solid.pattern.rectangular",
+            "solid.align",
+            "solid.place_on_plane",
+            "solid.pattern.circular",
+            "solid.pattern.path",
+        ],
     },
     Section { tab: "MODEL", panel: "CONFIGURE", promoted: 2, ids: CONFIGURE },
     // Plane, Axis and Point work out the method from the picks; the methods follow in the menu.
@@ -513,7 +518,19 @@ pub const SECTIONS: &[Section] = &[
         tab: "SKETCH",
         panel: "MODIFY",
         promoted: 3,
-        ids: &["sketch.trim", "sketch.offset", "sketch.fillet", "sketch.transform", "sketch.copy", "sketch.cut", "sketch.paste"],
+        ids: &[
+            "sketch.trim",
+            "sketch.offset",
+            "sketch.fillet",
+            "sketch.transform",
+            "sketch.group",
+            "sketch.ungroup",
+            "sketch.group_lock",
+            "sketch.nodes_mode",
+            "sketch.copy",
+            "sketch.cut",
+            "sketch.paste",
+        ],
     },
     Section { tab: "SKETCH", panel: "PATTERN", promoted: 3, ids: &["sketch.mirror", "sketch.pattern.circular", "sketch.pattern.rectangular"] },
     Section {
@@ -2029,12 +2046,12 @@ mod tests {
     #[test]
     fn view_icon_colours_hold_graphic_contrast_and_accent_tabs_exist() {
         for (dark, panel) in [(false, Tokens::light().panel), (true, Tokens::dark().panel)] {
-            for kind in ["Model", "Sketch", "Sheet", "Render", "Animation", "other"] {
+            for kind in ["Model", "Sheet", "Render", "Animation", "other"] {
                 let ratio = solidcraft_theme::contrast_ratio(view_icon_colour(kind, dark), panel);
                 assert!(ratio >= 3.0, "{kind} dark={dark}: {ratio:.2}:1");
             }
         }
-        for kind in ["Model", "Sketch", "Sheet", "Render", "Animation"] {
+        for kind in ["Model", "Sheet", "Render", "Animation"] {
             assert!(TAB_ACCENTS.contains(view_accent_tab(kind)), "{kind}");
         }
     }
