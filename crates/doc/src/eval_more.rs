@@ -81,7 +81,9 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                 }
                 let mut laid = Vec::with_capacity(faces.len());
                 let mut bodies: BTreeMap<usize, ModelBody> = BTreeMap::new();
+                let chained = emboss_chained(doc, f, st, &faces, &sources)?;
                 for (slot, face) in faces.iter().enumerate() {
+                    let chained = chained.get(slot).copied().unwrap_or(false);
                     let mut here: Option<Laid> = None;
                     for (k, (feature, plane, regions, unmoved)) in sources.iter().enumerate() {
                         let (i, mb, hit, plane, frame) = emboss_face_hit(doc, f, st, face, slot, *feature, plane)?;
@@ -89,11 +91,14 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                         let side = mb.body.planar_face(hit.face).and(kernel::emboss_face_normal(&mb.body, hit.face, at)?);
                         let side = side.filter(|n| n.dot(plane.normal()).abs() < 0.5);
                         let pieces = match side {
+                            // A wall in a tangent chain with a face the sketch looks at (the side
+                            // below a rounded top) takes nothing: the profiles go on that face.
+                            Some(_) if chained => Vec::new(),
                             Some(normal) => {
                                 let (.., unmoved, _) = emboss_face_hit(doc, f, st, face, slot, *feature, unmoved)?;
                                 emboss_adapted(&mb.body, hit.face, at, normal, &unmoved, regions, shift, signed)?
                             }
-                            None => kernel::emboss_face_pieces(&mb.body, hit.face, at, &plane, regions, signed, true)?,
+                            None => kernel::emboss_face_pieces(&mb.body, hit.face, at, &plane, regions, signed, true, chained)?,
                         };
                         let l = here.get_or_insert_with(|| Laid {
                             body: i,
@@ -101,7 +106,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                             frame,
                             near: (at - plane.origin).dot(plane.normal()).abs(),
                             curved: mb.body.planar_face(hit.face).is_none(),
-                            adapted: side.is_some(),
+                            adapted: side.is_some() && !chained,
                             plane,
                             pieces: Vec::new(),
                         });
@@ -3235,7 +3240,7 @@ fn emboss_adapted(
         let corners = [a, Vec2::new(b.x, a.y), b, Vec2::new(a.x, b.y)];
         let segs = (0..4).map(|i| Seg2::Line { a: corners[i], b: corners[(i + 1) % 4] }).collect();
         let rect = Region2 { outer: Loop2 { segs }, holes: Vec::new() };
-        Ok(matches!(kernel::emboss_face_pieces(body, face, at, &place, &[rect], signed, false)?.first(), Some(Some(_))))
+        Ok(matches!(kernel::emboss_face_pieces(body, face, at, &place, &[rect], signed, false, false)?.first(), Some(Some(_))))
     };
     let scale = if fits(1.0)? {
         1.0
@@ -3252,7 +3257,7 @@ fn emboss_adapted(
     };
     let similar = |l: &Loop2| Loop2 { segs: l.segs.iter().map(|s| s.similar(&m)).collect() };
     let scaled: Vec<Region2> = regions.iter().map(|r| Region2 { outer: similar(&r.outer), holes: r.holes.iter().map(similar).collect() }).collect();
-    Ok(kernel::emboss_face_pieces(body, face, at, &place, &scaled, signed, true)?)
+    Ok(kernel::emboss_face_pieces(body, face, at, &place, &scaled, signed, true, false)?)
 }
 
 /// An Emboss's sources: each sketch's feature, its shifted plane, its profiles and its plane.
@@ -3303,8 +3308,10 @@ fn emboss_distribute(
         let at = kernel::emboss_anchor(&mb.body, hit.face, hit.point)?;
         let normal = kernel::emboss_face_normal(&mb.body, hit.face, at)?.unwrap_or_else(|| plane.normal());
         let place = emboss_face_place(at, normal, &plane, std::slice::from_ref(region), shift)?;
-        let piece =
-            kernel::emboss_face_pieces(&mb.body, hit.face, at, &place, std::slice::from_ref(region), signed, false)?.into_iter().next().flatten();
+        let piece = kernel::emboss_face_pieces(&mb.body, hit.face, at, &place, std::slice::from_ref(region), signed, false, false)?
+            .into_iter()
+            .next()
+            .flatten();
         let piece = piece.ok_or_else(|| {
             DocError::Invalid(format!(
                 "emboss: profile {} runs off face {}: make it smaller or pick a bigger face, or a point nearer the face's middle",
@@ -3322,6 +3329,27 @@ fn emboss_distribute(
         }
     }
     Ok(curved)
+}
+
+/// Which of an emboss's selected faces join another of them smoothly, in `faces`' order
+/// ([`kernel::emboss_chained_faces`], body by body): one face alone is in no chain.
+fn emboss_chained(doc: &Document, f: &Feature, st: &ModelState, faces: &[&EmbossFace], sources: &EmbossSources) -> Result<Vec<bool>> {
+    let mut chained = vec![false; faces.len()];
+    let Some((feature, plane, ..)) = sources.first().filter(|_| faces.len() > 1) else { return Ok(chained) };
+    let mut by_body: BTreeMap<usize, (Body, Vec<(usize, usize)>)> = BTreeMap::new();
+    for (slot, face) in faces.iter().enumerate() {
+        let (i, mb, hit, ..) = emboss_face_hit(doc, f, st, face, slot, *feature, plane)?;
+        by_body.entry(i).or_insert_with(|| (mb.body, Vec::new())).1.push((slot, hit.face));
+    }
+    for (body, picked) in by_body.into_values() {
+        let indices: Vec<usize> = picked.iter().map(|(_, face)| *face).collect();
+        for ((slot, _), c) in picked.iter().zip(kernel::emboss_chained_faces(&body, &indices)?) {
+            if let Some(out) = chained.get_mut(*slot) {
+                *out = c;
+            }
+        }
+    }
+    Ok(chained)
 }
 
 /// Selected face `slot` of Emboss `f` (`face_names[slot]` names it), found on its body as built so

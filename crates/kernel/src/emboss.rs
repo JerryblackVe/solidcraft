@@ -173,7 +173,7 @@ pub fn emboss_face_normal(body: &Body, face: usize, at: Vec3) -> Result<Option<V
 /// (either side) each region is laid on the wall at its centroid's arc length from the sketch;
 /// on any other face it is projected along the sketch normal.
 pub fn emboss_project_face(body: &Body, face: usize, at: Vec3, plane: &Plane, regions: &[Region2], depth: f64) -> Result<Body> {
-    let pieces = emboss_face_pieces(body, face, at, plane, regions, depth, false)?;
+    let pieces = emboss_face_pieces(body, face, at, plane, regions, depth, false, false)?;
     // Every region must reach the face: one that misses it would leave its letter out.
     let missed: Vec<String> = pieces.iter().enumerate().filter(|(_, p)| p.is_none()).map(|(i, _)| (i + 1).to_string()).collect();
     if let Some((last, rest)) = missed.split_last() {
@@ -199,6 +199,7 @@ pub fn emboss_face_pieces(
     regions: &[Region2],
     depth: f64,
     clip: bool,
+    chained: bool,
 ) -> Result<Vec<Option<Body>>> {
     body.require_brep("emboss")?;
     if !depth.is_finite() || depth.abs() < 1e-6 || depth.abs() > 1e6 || regions.is_empty() || regions.len() > 4096 {
@@ -219,7 +220,9 @@ pub fn emboss_face_pieces(
         let (lo, hi) = if depth > 0.0 { (-overlap, d) } else { (-d, overlap) };
         let mut prisms: Vec<Option<Body>> = Vec::new();
         let mut through = false;
-        let slab = if let Some(Surf::Cylinder { o, a, r, convex }) = surf_of(&rec, face) {
+        // A face in a tangent chain (a round beside a flat top) takes the profiles projected, as
+        // its neighbours do, so the pieces meet at the smooth edge: wrapped, they would not.
+        let slab = if let Some(Surf::Cylinder { o, a, r, convex }) = surf_of(&rec, face).filter(|_| !chained) {
             // The prisms below reach at most the radius either side of the wall (further, they
             // would meet the ring's far side), so a deeper slab would be cut short.
             if d + overlap >= r {
@@ -312,7 +315,8 @@ pub fn emboss_face_pieces(
             through = true;
             slab
         };
-        let clip = clip && facing(&rec, face, plane);
+        // A chained face's piece cut at the smooth edge joins its neighbour's there.
+        let clip = clip && (chained || facing(&rec, face, plane));
         let mut pieces = Vec::with_capacity(prisms.len());
         for prism in &prisms {
             let piece = match prism {
@@ -335,6 +339,30 @@ pub fn emboss_face_pieces(
             pieces.push(piece);
         }
         Ok(pieces)
+    })
+}
+
+/// Which of `faces` (indices of `body`'s faces) join another of them smoothly: across an edge
+/// where the two meet tangentially all along it (a flat top and the round along its edge),
+/// decided exactly from their surfaces. An emboss over such a chain projects its profiles across
+/// it: a round in it is not wrapped, and a wall the sketch does not look at takes nothing.
+pub fn emboss_chained_faces(body: &Body, faces: &[usize]) -> Result<Vec<bool>> {
+    body.require_brep("emboss")?;
+    guard("emboss chain", || {
+        let rec = crate::blend::Faces::of(body)?;
+        let mut chained = vec![false; faces.len()];
+        for (e, edge) in rec.rec.edges.iter().enumerate() {
+            let &[a, b] = crate::history::faces_of(edge).as_slice() else { continue };
+            let (has_a, has_b) = (faces.contains(&a), faces.contains(&b));
+            let known = faces.iter().zip(&chained).filter(|(f, _)| **f == a || **f == b).all(|(_, c)| *c);
+            if !has_a || !has_b || known || !crate::tangent_edge::tangent_all_along(&rec.rec, |f| rec.side(f), e, crate::smooth_edges::ANGLE)? {
+                continue;
+            }
+            for (f, c) in faces.iter().zip(chained.iter_mut()) {
+                *c |= *f == a || *f == b;
+            }
+        }
+        Ok(chained)
     })
 }
 
