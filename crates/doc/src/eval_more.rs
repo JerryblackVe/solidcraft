@@ -79,18 +79,22 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                     adapted: bool,
                     pieces: Vec<(usize, usize, Body)>,
                 }
-                let mut laid = Vec::with_capacity(faces.len());
-                let mut bodies: BTreeMap<usize, ModelBody> = BTreeMap::new();
-                for (slot, face) in faces.iter().enumerate() {
+                // Each face's pieces, its shadow, the covers cut from its pieces and each body's
+                // join are independent work: they run on threads, kept in face and body order.
+                let lost = || DocError::Invalid("emboss: the work on a selected face stopped unexpectedly".into());
+                let state: &ModelState = st;
+                let slots: Vec<(usize, &EmbossFace)> = faces.iter().copied().enumerate().collect();
+                let per_face = kernel::map_on_threads(&slots, 16, |&(slot, face)| -> Result<(Option<Laid>, Vec<(usize, ModelBody)>)> {
                     let mut here: Option<Laid> = None;
+                    let mut met = Vec::new();
                     for (k, (feature, plane, regions, unmoved)) in sources.iter().enumerate() {
-                        let (i, mb, hit, plane, frame) = emboss_face_hit(doc, f, st, face, slot, *feature, plane)?;
+                        let (i, mb, hit, plane, frame) = emboss_face_hit(doc, f, state, face, slot, *feature, plane)?;
                         let at = kernel::emboss_anchor(&mb.body, hit.face, hit.point)?;
                         let side = mb.body.planar_face(hit.face).and(kernel::emboss_face_normal(&mb.body, hit.face, at)?);
                         let side = side.filter(|n| n.dot(plane.normal()).abs() < 0.5);
                         let pieces = match side {
                             Some(normal) => {
-                                let (.., unmoved, _) = emboss_face_hit(doc, f, st, face, slot, *feature, unmoved)?;
+                                let (.., unmoved, _) = emboss_face_hit(doc, f, state, face, slot, *feature, unmoved)?;
                                 emboss_adapted(&mb.body, hit.face, at, normal, &unmoved, regions, shift, signed)?
                             }
                             None => kernel::emboss_face_pieces(&mb.body, hit.face, at, &plane, regions, signed, true)?,
@@ -106,21 +110,35 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                             pieces: Vec::new(),
                         });
                         l.pieces.extend(pieces.into_iter().enumerate().filter_map(|(r, p)| p.map(|p| (k, r, p))));
+                        met.push((i, mb));
+                    }
+                    Ok((here, met))
+                });
+                let mut laid = Vec::with_capacity(faces.len());
+                let mut bodies: BTreeMap<usize, ModelBody> = BTreeMap::new();
+                for face in per_face {
+                    let (here, met) = face.ok_or_else(lost)??;
+                    laid.extend(here);
+                    for (i, mb) in met {
                         bodies.entry(i).or_insert(mb);
                     }
-                    laid.extend(here);
                 }
                 let reach = laid.iter().map(|l| l.near).fold(0.0, f64::max) + d + 1.0;
-                let mut shadows = Vec::with_capacity(laid.len());
-                for l in laid.iter().filter(|_| laid.len() > 1) {
-                    let mb = bodies.get(&l.body).ok_or_else(|| DocError::Invalid("emboss body".into()))?;
-                    shadows.push(kernel::emboss_face_shadow(&mb.body, l.face, &l.plane, reach)?.map(|(s, up)| (l.near, l.frame, up, s)));
-                }
+                let mut shadows = if laid.len() > 1 {
+                    kernel::map_on_threads(&laid, 16, |l| -> Result<_> {
+                        let mb = bodies.get(&l.body).ok_or_else(|| DocError::Invalid("emboss body".into()))?;
+                        Ok(kernel::emboss_face_shadow(&mb.body, l.face, &l.plane, reach)?.map(|(s, up)| (l.near, l.frame, up, s)))
+                    })
+                    .into_iter()
+                    .map(|s| s.unwrap_or_else(|| Err(lost())))
+                    .collect::<Result<Vec<_>>>()?
+                } else {
+                    Vec::new()
+                };
                 shadows.resize_with(laid.len(), || None);
-                let mut placed: Vec<Vec<bool>> = sources.iter().map(|(_, _, r, _)| vec![false; r.len()]).collect();
-                let mut per_body: BTreeMap<usize, Vec<Body>> = BTreeMap::new();
-                let mut curved = false;
-                for (l, own) in laid.into_iter().zip(shadows.iter().map(|s| s.as_ref().map(|(_, _, up, _)| *up))) {
+                let pairs: Vec<_> = laid.iter().zip(&shadows).collect();
+                let covered = kernel::map_on_threads(&pairs, 16, |&(l, own)| -> Result<Vec<(usize, usize, Body)>> {
+                    let own = own.as_ref().map(|(_, _, up, _)| *up);
                     let into = crate::mat_inverse(&l.frame).ok_or_else(|| DocError::Invalid("invalid emboss body frame".into()))?;
                     let mut covers = Vec::new();
                     // A face that looks the other way (a base under a selected top) is not covered.
@@ -128,13 +146,24 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                     for (_, frame, _, shadow) in shadows.iter().flatten().filter(|(near, _, up, _)| !l.adapted && over(*near, *up)) {
                         covers.push(kernel::transform_matrix(shadow, crate::mat_mul(&into, frame))?);
                     }
-                    'piece: for (k, r, mut piece) in l.pieces {
+                    let mut kept = Vec::with_capacity(l.pieces.len());
+                    'piece: for (k, r, piece) in &l.pieces {
+                        let mut piece = piece.clone();
                         for cover in &covers {
                             match kernel::boolean(&piece, cover, kernel::BoolOp::Cut)? {
                                 Some(rest) => piece = rest,
                                 None => continue 'piece,
                             }
                         }
+                        kept.push((*k, *r, piece));
+                    }
+                    Ok(kept)
+                });
+                let mut placed: Vec<Vec<bool>> = sources.iter().map(|(_, _, r, _)| vec![false; r.len()]).collect();
+                let mut per_body: BTreeMap<usize, Vec<Body>> = BTreeMap::new();
+                let mut curved = false;
+                for (l, kept) in laid.iter().zip(covered) {
+                    for (k, r, piece) in kept.ok_or_else(lost)?? {
                         if let Some(done) = placed.get_mut(k).and_then(|p| p.get_mut(r)) {
                             *done = true;
                         }
@@ -162,10 +191,14 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                 if !missed.is_empty() {
                     append_warning(warning, format!("emboss: profile {} {lies} and is left out", missed.join(", ")));
                 }
-                for (i, pieces) in per_body {
-                    let Some(mb) = bodies.remove(&i) else { continue };
-                    let result = kernel::emboss_apply(&mb.body, pieces, signed)?;
-                    if let Some(slot) = st.bodies.get_mut(i) {
+                let per_body: Vec<(usize, Vec<Body>)> = per_body.into_iter().collect();
+                let joined = kernel::map_on_threads(&per_body, 16, |(i, pieces)| -> Result<Option<Body>> {
+                    let Some(mb) = bodies.get(i) else { return Ok(None) };
+                    Ok(Some(kernel::emboss_apply(&mb.body, pieces.clone(), signed)?))
+                });
+                for ((i, _), result) in per_body.iter().zip(joined) {
+                    let (Some(result), Some(mb)) = (result.ok_or_else(lost)??, bodies.remove(i)) else { continue };
+                    if let Some(slot) = st.bodies.get_mut(*i) {
                         *slot = ModelBody::new(mb.name, result, mb.feature);
                     }
                 }

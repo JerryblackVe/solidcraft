@@ -818,6 +818,23 @@ fn an_emboss_across_slots_raises_on_each_slat_what_lies_over_it() {
     assert!(added[0].abs() < 1e-9 && rel(added[1], 100.0) < 1e-6 && added[2].abs() < 1e-9, "{added:?}");
 }
 
+/// MEJ-47: the selected faces are laid, covered and joined on threads; the bodies come out the
+/// same, in the same order, every time (the volumes above are the serial evaluation's).
+#[test]
+fn an_emboss_across_slots_comes_out_the_same_every_time() {
+    let made = || {
+        let mut s = slats_under_a_band();
+        run(&mut s, "solid.emboss", json!({"sketch": "Band", "depth": 1, "faces": [[5, 25, 3], [16, 25, 3], [27, 25, 3]]}));
+        let state = s.model.state();
+        state.bodies.iter().map(|b| (b.name.clone(), b.body.record().faces.len(), body_volume(&s, &b.name).to_bits())).collect::<Vec<_>>()
+    };
+    let first = made();
+    assert_eq!(first.iter().map(|(n, ..)| n.as_str()).collect::<Vec<_>>(), ["S1", "S2", "S3"], "{first:?}");
+    for _ in 0..3 {
+        assert_eq!(made(), first);
+    }
+}
+
 #[test]
 fn an_emboss_on_stacked_faces_leaves_out_what_the_upper_one_covers() {
     // A 20 x 40 x 3 plate and one on top of it moved 15 along x; a band x 5..30 over both. The
