@@ -340,6 +340,17 @@ fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
     now
 }
 
+/// The balloon beside the pointer while the knob turns: the total turn, in (-180, 180].
+fn turn_text(f: &Frame) -> String {
+    let a = (f.angle + 180.0).rem_euclid(360.0) - 180.0;
+    format!("R: {}\u{b0}", plain(if a <= -180.0 { 180.0 } else { a }))
+}
+
+/// The frame with the box turned back to 0 degrees in all (the window's Angle undoes `base`).
+fn upright(f: &Frame) -> Frame {
+    Frame { angle: 0.0, ..*f }
+}
+
 /// Where a point of the original box goes: scaled and turned about the pivot, then moved.
 fn moved(f: &Frame, q: Vec2) -> Vec2 {
     Vec2::new(f.x, f.y) + turn(in_box(f, q - f.pivot), f.angle)
@@ -411,7 +422,16 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
         return;
     }
     for (i, (rect, part, cursor)) in parts.into_iter().enumerate() {
-        let response = ui.interact(rect, egui::Id::unique(("sc_transform_handle", i)), Sense::drag()).on_hover_cursor(cursor);
+        // A double click on the knob turns the box back to 0 degrees.
+        let sense = if part == Part::Turn { Sense::click_and_drag() } else { Sense::drag() };
+        let response = ui.interact(rect, egui::Id::unique(("sc_transform_handle", i)), sense).on_hover_cursor(cursor);
+        if part == Part::Turn && response.double_clicked() {
+            if let Some(Kind::SketchModify(k)) = app.dialog.as_mut().map(|d| &mut d.kind) {
+                store(k, &upright(&frame), false);
+            }
+            app.viewport.transform_drag = None;
+            continue;
+        }
         crate::scenario::publish_handle(&format!("transform:handle:{i}"), rect.center());
         if response.drag_started()
             && let Some(from) = response.interact_pointer_pos().and_then(|p| pointer_on_sketch(&plane, proj, p))
@@ -428,6 +448,13 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
             let now = apply(&drag, p, ui.input(|i| i.modifiers.shift));
             if let Some(Kind::SketchModify(k)) = app.dialog.as_mut().map(|d| &mut d.kind) {
                 store(k, &now, drag.part == Part::Pivot);
+            }
+            if drag.part == Part::Turn && response.dragged() {
+                let galley = painter.layout_no_wrap(turn_text(&now), egui::FontId::proportional(t.font_body), t.text);
+                let at = ui.input(|i| i.pointer.latest_pos()).unwrap_or(knob) + vec2(14.0, -26.0);
+                let back = egui::Rect::from_min_size(at, galley.size()).expand(4.0);
+                painter.rect(back, 3.0, t.overlay, stroke, egui::StrokeKind::Inside);
+                painter.galley(at, galley, t.text);
             }
         }
         if response.drag_stopped()
@@ -540,6 +567,29 @@ mod tests {
         assert!((turned.angle - 90.0).abs() < 1e-9, "{}", turned.angle);
         let snapped = apply(&drag(Part::Turn, Vec2::new(14.0, 10.0), now), Vec2::new(4.0, 3.0), true);
         assert!((snapped.angle % 15.0).abs() < 1e-9, "{}", snapped.angle);
+    }
+
+    #[test]
+    fn the_balloon_shows_the_total_turn_and_a_double_click_makes_it_zero() {
+        let mut f = frame();
+        f.base = 30.0;
+        f.angle = 75.0;
+        assert_eq!(turn_text(&f), "R: 75\u{b0}");
+        f.angle = 190.0;
+        assert_eq!(turn_text(&f), "R: -170\u{b0}");
+        let up = upright(&f);
+        assert_eq!(turn_text(&up), "R: 0\u{b0}");
+        let mut k = Mod::Transform {
+            x: String::new(),
+            y: String::new(),
+            factor: String::new(),
+            angle: String::new(),
+            frame: None,
+            aspect: String::new(),
+            pivot: None,
+        };
+        store(&mut k, &up, false);
+        assert!(matches!(&k, Mod::Transform { angle, .. } if angle == "-30 deg"), "the window's Angle is relative to the box's own turn");
     }
 
     #[test]

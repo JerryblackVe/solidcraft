@@ -734,6 +734,33 @@ fn transform_handles_and_fields_scale_move_and_turn_the_picks() {
     assert!((top - 40.0).abs() < 1e-6, "one undo puts it back: {top}");
 }
 
+/// A double click on the turning knob puts the box back to 0 degrees.
+#[test]
+fn transform_knob_double_click_resets_the_turn() {
+    let mut h = fixture();
+    h.step(&json!({"call": "ui.view", "params": {"view": "top"}})).unwrap();
+    h.settle();
+    let ids: Vec<String> = {
+        let sk = h.app.session.doc.sketch(h.app.session.active_sketch.unwrap()).unwrap();
+        sk.curves.iter().map(|c| c.id.clone()).collect()
+    };
+    let mut d = Dialog::for_command(&h.app, "sketch.transform").unwrap();
+    d.inputs[0].items = ids.iter().map(|id| Sel::SketchCurve { id: id.clone(), sketch: None }).collect();
+    h.app.dialog = Some(d);
+    h.frames(4);
+    let angle = |h: &Harness| match h.app.dialog.as_ref().map(|d| d.kind.clone()) {
+        Some(Kind::SketchModify(Mod::Transform { angle, .. })) => angle,
+        other => panic!("no transform window: {other:?}"),
+    };
+    // The knob is straight above the box: dragged to its left, it turns a quarter.
+    h.step(&json!({"drag": [{"handle": "transform:handle:5"}, {"world": [-20, 20, 0]}]})).unwrap();
+    h.frames(3);
+    assert_ne!(angle(&h), "0 deg", "the knob turned the box");
+    h.step(&json!({"click": {"handle": "transform:handle:5"}, "double": true})).unwrap();
+    h.frames(3);
+    assert_eq!(angle(&h), "0 deg", "a double click on the knob turns it back");
+}
+
 #[test]
 fn transform_applies_the_dimensioned_rectangle_shown_in_its_preview() {
     for profile in [false, true] {
