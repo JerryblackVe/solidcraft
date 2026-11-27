@@ -69,10 +69,15 @@ pub const MODIFIERS: &[ToolModifiers] = &[
     ToolModifiers { tool: "sketch.ungroup", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
     // Lock Group: one group and a choice in the dialog; no viewport modifier chords.
     ToolModifiers { tool: "sketch.group_lock", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
+    // Node Type: one node and a choice in the dialog; no viewport modifier chords.
+    ToolModifiers { tool: "sketch.node_type", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
 ];
 
 /// The three locks of a group, in `sketch.group_lock`'s order of strength.
 pub(crate) const GROUP_LOCKS: [&str; 3] = ["Free", "Protect", "Total"];
+
+/// The two node types of `sketch.node_type`.
+const NODE_TYPES: [&str; 2] = ["Smooth", "Corner"];
 
 /// The equation curve's two forms: x(t) and y(t), or y = f(x).
 pub(crate) const EQUATION_FORMS: [&str; 2] = ["Parametric", "Explicit"];
@@ -199,6 +204,8 @@ pub enum Mod {
     Ungroup,
     /// `sketch.group_lock`: the group the picked curve is in gets a lock (an index into [`GROUP_LOCKS`]).
     GroupLock { lock: usize },
+    /// `sketch.node_type`: the picked node becomes smooth or a corner (an index into [`NODE_TYPES`]).
+    NodeType { node_type: usize },
 }
 
 impl Mod {
@@ -226,6 +233,7 @@ impl Mod {
             Mod::Group { .. } => "GROUP",
             Mod::Ungroup => "UNGROUP",
             Mod::GroupLock { .. } => "LOCK GROUP",
+            Mod::NodeType { .. } => "NODE TYPE",
         }
     }
 
@@ -242,7 +250,13 @@ impl Mod {
             Mod::PatternCirc { angle, .. } => Some(("Angle", ValueKind::Angle, angle)),
             Mod::Corner { chamfer: false, size, .. } => Some(("Radius", ValueKind::Length, size)),
             Mod::Corner { size, .. } => Some(("Distance", ValueKind::Length, size)),
-            Mod::Equation { .. } | Mod::Divide { .. } | Mod::Star { .. } | Mod::Group { .. } | Mod::Ungroup | Mod::GroupLock { .. } => None,
+            Mod::Equation { .. }
+            | Mod::Divide { .. }
+            | Mod::Star { .. }
+            | Mod::Group { .. }
+            | Mod::Ungroup
+            | Mod::GroupLock { .. }
+            | Mod::NodeType { .. } => None,
         }
     }
 }
@@ -279,6 +293,7 @@ fn inputs(k: &Mod) -> Vec<SelInput> {
         Mod::Divide { .. } => vec![SelInput::new("Curves", CURVES, true)],
         Mod::Group { .. } => vec![SelInput::new("Curves", CURVES, true)],
         Mod::Ungroup | Mod::GroupLock { .. } => vec![SelInput::new("Group", CURVES, false)],
+        Mod::NodeType { .. } => vec![SelInput::new("Node", SKETCH_POINTS, false)],
     }
 }
 
@@ -350,6 +365,7 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
         "sketch.ungroup" => Mod::Ungroup,
         // Protect first: the lock a drawing that must keep its shape asks for.
         "sketch.group_lock" => Mod::GroupLock { lock: 1 },
+        "sketch.node_type" => Mod::NodeType { node_type: 0 },
         _ => return None,
     };
     let i = inputs(&k);
@@ -667,6 +683,7 @@ pub(crate) fn command(k: &Mod) -> &'static str {
         Mod::Group { .. } => "sketch.group",
         Mod::Ungroup => "sketch.ungroup",
         Mod::GroupLock { .. } => "sketch.group_lock",
+        Mod::NodeType { .. } => "sketch.node_type",
     }
 }
 
@@ -806,6 +823,9 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Mod, doc: &Document) -> bool {
         Mod::GroupLock { lock } => {
             ui_kit::choice_row(ui, "Lock", "group_lock", lock, &GROUP_LOCKS);
             ui_kit::text(ui, solidcraft_ui_text::tr("sketch.group_lock_hint"), ui_kit::Text::Note("group_lock"));
+        }
+        Mod::NodeType { node_type } => {
+            ui_kit::choice_row(ui, "Type", "node_type", node_type, &NODE_TYPES);
         }
         Mod::Divide { count } => {
             enter |= quantity(ui, doc, "Segments", count, 2, DIVIDE_MAX);
@@ -1285,6 +1305,11 @@ pub fn commands(app: &SolveApp, k: &Mod, inputs: &[SelInput], extra: &Map<String
             let Some(entity) = curve_ids(inputs, 0).into_iter().next() else { return Err("Select a curve of the group first".into()) };
             let lock = GROUP_LOCKS.get(*lock).map_or("protect", |l| l).to_ascii_lowercase();
             ("sketch.group_lock", json!({"entity": entity, "lock": lock}))
+        }
+        Mod::NodeType { node_type } => {
+            let Some(point) = entity_ids(&app.session, inputs, 0).into_iter().next() else { return Err("Select a node first".into()) };
+            let kind = NODE_TYPES.get(*node_type).map_or("smooth", |t| t).to_ascii_lowercase();
+            ("sketch.node_type", json!({"point": point, "type": kind}))
         }
         Mod::Divide { count } => {
             let curves = curve_ids(inputs, 0);

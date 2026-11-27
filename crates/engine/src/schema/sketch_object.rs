@@ -95,3 +95,35 @@ pub struct NodesModeResult {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub param_warnings: Vec<String>,
 }
+
+/// Make the node where two curves meet smooth or a corner. Smooth holds the two curves tangent
+/// there (a tangent constraint), so moving a handle of one turns the handle of the other with it;
+/// corner takes that constraint away and the handles are free again. The shape does not change
+/// until a smooth node is solved. One undo step.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct NodeTypeParams {
+    /// The node: the id of a point where exactly two curves end.
+    pub point: String,
+    /// `smooth` or `corner`.
+    #[serde(rename = "type")]
+    pub node_type: String,
+}
+
+/// What `sketch.node_type` returns.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct NodeTypeResult {
+    /// The node's point id.
+    pub point: String,
+    /// `smooth` or `corner`, as it is now.
+    #[serde(rename = "type")]
+    pub node_type: String,
+    /// The two curves that meet at the node.
+    pub curves: Vec<String>,
+    /// The tangent constraint that makes the node smooth; none for a corner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraint: Option<String>,
+    /// In the warn parameter-check mode: what the call's parameters got wrong.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
+}

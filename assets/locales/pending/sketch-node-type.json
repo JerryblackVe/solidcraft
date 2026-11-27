@@ -1,0 +1,47 @@
+{
+  "en": {
+    "ui.node": "Node",
+    "cmd.sketch.node_type": "Node Type",
+    "help.sketch.node_type": "Makes the node where two curves meet smooth or a corner. Smooth holds the two curves tangent there, so moving a handle on one side turns the handle on the other side with it. A corner takes that hold away and the handles are free."
+  },
+  "es": {
+    "ui.node": "Nodo",
+    "cmd.sketch.node_type": "Tipo de nodo",
+    "help.sketch.node_type": "Hace que el nodo donde se juntan dos curvas sea suave o una esquina. Suave mantiene las dos curvas tangentes ahí, así que al mover un manejador de un lado gira el del otro lado con él. Esquina quita esa unión y los manejadores quedan libres."
+  },
+  "de": {
+    "ui.node": "Knoten",
+    "cmd.sketch.node_type": "Knotentyp",
+    "help.sketch.node_type": "Macht den Knoten, an dem zwei Kurven zusammentreffen, glatt oder zu einer Ecke. Glatt hält die beiden Kurven dort tangential, sodass beim Verschieben eines Griffs auf einer Seite der Griff auf der anderen Seite mitdreht. Eine Ecke hebt diese Bindung auf und die Griffe sind frei."
+  },
+  "ko": {
+    "ui.node": "노드",
+    "cmd.sketch.node_type": "노드 유형",
+    "help.sketch.node_type": "두 곡선이 만나는 노드를 부드럽게 하거나 모서리로 만듭니다. 부드러움은 그 지점에서 두 곡선을 접하게 유지하므로 한쪽 핸들을 움직이면 반대쪽 핸들도 함께 돌아갑니다. 모서리는 그 고정을 없애고 핸들을 자유롭게 합니다."
+  },
+  "ja": {
+    "ui.node": "ノード",
+    "cmd.sketch.node_type": "ノードの種類",
+    "help.sketch.node_type": "2本の曲線が出会うノードをスムーズまたはコーナーにします。スムーズはそこで2本の曲線を接したままにするので、片側のハンドルを動かすと反対側のハンドルも一緒に回ります。コーナーはその拘束を外し、ハンドルは自由になります。"
+  },
+  "zh": {
+    "ui.node": "节点",
+    "cmd.sketch.node_type": "节点类型",
+    "help.sketch.node_type": "把两条曲线相接的节点设为平滑或角点。平滑会让两条曲线在该处保持相切，因此移动一侧的手柄时，另一侧的手柄会随之转动。角点会取消这一约束，手柄可自由移动。"
+  },
+  "ar": {
+    "ui.node": "عقدة",
+    "cmd.sketch.node_type": "نوع العقدة",
+    "help.sketch.node_type": "يجعل العقدة التي تلتقي عندها منحنيان ناعمة أو زاوية. الناعمة تُبقي المنحنيين متماسّين هناك، فعند تحريك مقبض في جانب يدور مقبض الجانب الآخر معه. الزاوية تُزيل هذا القيد وتصبح المقابض حرّة."
+  },
+  "he": {
+    "ui.node": "צומת",
+    "cmd.sketch.node_type": "סוג צומת",
+    "help.sketch.node_type": "הופך את הצומת שבו נפגשות שתי עקומות לחלק או לפינה. חלק שומר על שתי העקומות משיקות שם, כך שהזזת ידית בצד אחד מסובבת איתה את הידית בצד השני. פינה מבטלת את הקשירה והידיות חופשיות."
+  },
+  "vi": {
+    "ui.node": "Nút",
+    "cmd.sketch.node_type": "Loại nút",
+    "help.sketch.node_type": "Biến nút nơi hai đường cong gặp nhau thành trơn hoặc góc. Trơn giữ hai đường cong tiếp xúc tại đó, nên khi di chuyển tay nắm ở một bên thì tay nắm bên kia xoay theo. Góc bỏ ràng buộc đó và các tay nắm được tự do."
+  }
+}

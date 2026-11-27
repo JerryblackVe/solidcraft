@@ -2831,6 +2831,52 @@ fn a_group_saves_its_pivot_and_the_pivot_follows_the_group() {
 }
 
 #[test]
+fn a_smooth_node_keeps_both_handles_on_one_line_and_a_corner_frees_them() {
+    let mut s = new_sketch();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 30"><path d="M0,0 C10,20 20,20 30,0 C40,10 50,10 60,0"/></svg>"#;
+    run(&mut s, "sketch.insert_svg", json!({"text": svg, "width": 60}));
+    let (node, left, right, ids_of_curves) = {
+        let sk = sketch(&s);
+        let cubic = |i: usize| match &sk.curves[i].kind {
+            CurveKind::Spline { pts, .. } => pts.clone(),
+            other => panic!("{other:?}"),
+        };
+        let (a, b) = (cubic(0), cubic(1));
+        assert_eq!(a[3], b[0], "the pieces share the node");
+        (sk.points[a[3]].id.clone(), a[2], b[1], vec![sk.curves[0].id.clone(), sk.curves[1].id.clone()])
+    };
+    let kink = |s: &Session| {
+        let sk = sketch(s);
+        let n = sk.points[sk.point_index(&node).unwrap()].pos;
+        let (u, v) = (sk.points[left].pos - n, sk.points[right].pos - n);
+        (u.x * v.y - u.y * v.x, u.x * v.x + u.y * v.y)
+    };
+    assert!(kink(&s).0.abs() > 1.0, "the import starts as a corner");
+    let r = run(&mut s, "sketch.node_type", json!({"point": node, "type": "smooth"}));
+    assert_eq!(r["type"], "smooth");
+    assert_eq!(ids(&r["curves"]), ids_of_curves);
+    let (cross, dot) = kink(&s);
+    assert!(cross.abs() < 1e-6 && dot < 0.0, "handles opposite on one line: cross {cross}, dot {dot}");
+    // A handle moved on one side turns the other with it.
+    let right_id = sketch(&s).points[right].id.clone();
+    let at = sketch(&s).points[right].pos;
+    run(&mut s, "sketch.move_point", json!({"point": right_id.clone(), "to": [at.x, at.y + 8.0]}));
+    assert!(kink(&s).0.abs() < 1e-6, "still smooth after a handle moved");
+    // Asking again adds nothing; a corner takes the hold away and the handles are free again.
+    let again = run(&mut s, "sketch.node_type", json!({"point": node, "type": "smooth"}));
+    assert_eq!(again["constraint"], r["constraint"]);
+    let r = run(&mut s, "sketch.node_type", json!({"point": node, "type": "corner"}));
+    assert!(r.get("constraint").is_none());
+    let at = sketch(&s).points[right].pos;
+    run(&mut s, "sketch.move_point", json!({"point": right_id, "to": [at.x, at.y - 20.0]}));
+    assert!(kink(&s).0.abs() > 1.0, "free handles after a corner");
+    // Not a node, or a bad type, is refused.
+    let handle = sketch(&s).points[left].id.clone();
+    assert!(s.execute("sketch.node_type", &json!({"point": handle, "type": "smooth"})).is_err());
+    assert!(s.execute("sketch.node_type", &json!({"point": node, "type": "round"})).is_err());
+}
+
+#[test]
 fn an_import_can_come_locked_and_nodes_mode_shows_the_points_of_grouped_curves() {
     let mut s = new_sketch();
     let r = run(&mut s, "sketch.insert_svg", json!({"text": crown_svg(40), "width": 80, "lock": "Protect"}));

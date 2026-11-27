@@ -2,12 +2,15 @@
 
 use serde_json::{Value, json};
 use solidcore_record::Vec2;
-use solidcraft_sketch::{GroupLock, Sketch};
+use solidcraft_geom::prelude::*;
+use solidcraft_sketch::{ConstraintKind, CurveKind, GroupLock, Sketch};
 
 use super::sketch_store;
 use super::{CommandSpec, in_sketch};
 use crate::params::{bad, str_, string_list};
-use crate::schema::sketch_object::{GroupLockParams, GroupParams, GroupPivotParams, GroupResult, NodesModeParams, NodesModeResult, UngroupParams};
+use crate::schema::sketch_object::{
+    GroupLockParams, GroupParams, GroupPivotParams, GroupResult, NodeTypeParams, NodeTypeResult, NodesModeParams, NodesModeResult, UngroupParams,
+};
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};
 
@@ -16,6 +19,7 @@ const UNGROUP_CONTRACT: TypedContract<UngroupParams> = TypedContract::new();
 const GROUP_LOCK_CONTRACT: TypedContract<GroupLockParams> = TypedContract::new();
 const GROUP_PIVOT_CONTRACT: TypedContract<GroupPivotParams> = TypedContract::new();
 const NODES_MODE_CONTRACT: TypedContract<NodesModeParams> = TypedContract::new();
+const NODE_TYPE_CONTRACT: TypedContract<NodeTypeParams> = TypedContract::new();
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sketch.group", "Group", crate::checked!("sketch.group", group))
@@ -54,6 +58,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&NODES_MODE_CONTRACT)
         .output(output_schema_for::<NodesModeResult>)
         .params("nodes?: bool (omitted: switch). Object mode (default): the points of grouped curves are not drawn or picked, so an imported drawing is moved, turned and scaled as one object. Nodes mode: they show and can be picked. A view setting, never saved with the design"),
+    CommandSpec::new("sketch.node_type", "Node Type", crate::checked!("sketch.node_type", node_type))
+        .in_sketch_part()
+        .icon("point")
+        .enabled(in_sketch)
+        .contract(&NODE_TYPE_CONTRACT)
+        .output(output_schema_for::<NodeTypeResult>)
+        .params("point: id of a node (a point where exactly two curves end); type: \"smooth\" (the two curves are held tangent there, so a handle moved on one side turns the other with it) | \"corner\" (that hold is removed, the handles are free) → {point, type, curves, constraint?}. One undo step"),
 ];
 
 fn reply(group: &str, curves: Vec<String>) -> Result<Value> {
@@ -162,4 +173,58 @@ fn nodes_mode(s: &mut Session, p: &Value) -> Result<Value> {
     }
     s.sketch_nodes = crate::params::bool_(p, "nodes").unwrap_or(!s.sketch_nodes);
     serde_json::to_value(NodesModeResult { nodes: s.sketch_nodes, param_warnings: Vec::new() }).map_err(|e| bad("sketch.nodes_mode", e.to_string()))
+}
+
+fn node_type(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "sketch.node_type";
+    let smooth = match str_(p, "type") {
+        Some("smooth") => true,
+        Some("corner") => false,
+        _ => return Err(bad(cmd, "`type` must be \"smooth\" or \"corner\"")),
+    };
+    let point = str_(p, "point").ok_or_else(|| bad(cmd, "give the node's `point` id"))?;
+    let (out, _) = super::sketch::edit(s, p, cmd, true, |sk, _| {
+        let at = sk.resolve_point(point).ok_or_else(|| bad(cmd, format!("unknown point `{point}`")))?;
+        let meeting: Vec<usize> = (0..sk.curves.len()).filter(|i| sk.curves[*i].kind.ends().is_some_and(|(a, b)| a == at || b == at)).collect();
+        let [a, b] = meeting[..] else {
+            return Err(bad(cmd, format!("`{point}` is not a node: exactly two curves must end there, {} do", meeting.len())));
+        };
+        let held = |k: &ConstraintKind| matches!(k, ConstraintKind::Tangent { a: x, b: y } | ConstraintKind::Smooth { a: x, b: y } if (*x, *y) == (a, b) || (*x, *y) == (b, a));
+        let mut constraint = sk.constraints.iter().find(|c| held(&c.kind)).map(|c| c.id.clone());
+        if smooth && constraint.is_none() {
+            open_the_fold(sk, a, b, at);
+            constraint = Some(super::sketch::add_c(sk, ConstraintKind::Tangent { a, b })?);
+        } else if !smooth {
+            sk.constraints.retain(|c| !held(&c.kind));
+            constraint = None;
+        }
+        let curves = [a, b].map(|i| sk.curves[i].id.clone()).to_vec();
+        Ok(NodeTypeResult {
+            point: point.to_owned(),
+            node_type: if smooth { "smooth" } else { "corner" }.into(),
+            curves,
+            constraint,
+            param_warnings: Vec::new(),
+        })
+    })?;
+    serde_json::to_value(out).map_err(|e| bad(cmd, e.to_string()))
+}
+
+/// The point beside node `at` on curve `curve`: a cubic's handle, a line's other end.
+fn next_to(sk: &Sketch, curve: usize, at: usize) -> Option<usize> {
+    match &sk.curves.get(curve)?.kind {
+        CurveKind::Spline { pts, .. } if pts.len() >= 3 => Some(if pts.last() == Some(&at) { pts[pts.len() - 2] } else { pts[1] }),
+        CurveKind::Line { a, b } => Some(if *a == at { *b } else { *a }),
+        _ => None,
+    }
+}
+
+/// Turns the handle of `b` at node `at` to face away from the one of `a`, keeping its length: a tangent hold also accepts both handles on one side.
+fn open_the_fold(sk: &mut Sketch, a: usize, b: usize, at: usize) {
+    let moved = next_to(sk, b, at).filter(|_| matches!(sk.curves[b].kind, CurveKind::Spline { .. }));
+    let (Some(fixed), Some(moved)) = (next_to(sk, a, at), moved) else { return };
+    let (n, f, m) = (sk.points[at].pos, sk.points[fixed].pos, sk.points[moved].pos);
+    if let Some(dir) = (f - n).normalized() {
+        sk.points[moved].pos = n - dir * m.dist(n);
+    }
 }

@@ -235,6 +235,7 @@ pub const DOCUMENTED: &[&str] = &[
     "sketch.line3d",
     "sketch.mirror",
     "sketch.move",
+    "sketch.node_type",
     "sketch.nodes_mode",
     "sketch.offset",
     "sketch.paste",
