@@ -643,6 +643,37 @@ fn object_mode_hides_the_points_of_a_group_and_nodes_mode_picks_them() {
     assert!(over_a_point(&mut h), "nodes mode: the corner point is under the pointer: {:?}", h.app.viewport.hover);
 }
 
+/// MEJ-41e: in nodes mode a Bezier handle shows (with its leg) only beside its picked node, or when it is picked itself.
+#[test]
+fn nodes_mode_shows_bezier_handles_only_for_the_picked_node() {
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    run(&mut h, "sketch.create", json!({"plane":"XY"}));
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 20"><path d="M0,0 C10,20 20,20 30,0"/></svg>"#;
+    run(&mut h, "sketch.insert_svg", json!({"text": svg, "width": 30, "at": [10, 10]}));
+    run(&mut h, "sketch.nodes_mode", json!({"nodes": true}));
+    let sk = h.app.session.doc.sketch(1).unwrap().clone();
+    let pts = sk
+        .curves
+        .iter()
+        .find_map(|c| match &c.kind {
+            solidcraft_engine::sketch::CurveKind::Spline { pts, .. } => Some(pts.clone()),
+            _ => None,
+        })
+        .expect("the cubic piece");
+    let (node, handle) = (pts[0], pts[1]);
+    let state = |h: &mut Harness, picked: Option<usize>| {
+        h.app.session.selection = picked.map(|i| solidcraft_engine::Sel::SketchPoint { id: sk.points[i].id.clone() }).into_iter().collect();
+        let visible = solidcraft_engine::view::SketchPointVisibility::shown(&h.app.session, &sk);
+        (visible.takes(&sk.points[handle]), visible.takes(&sk.points[node]), solidcraft_engine::view::bezier_handle_legs(&h.app.session, &sk))
+    };
+    assert_eq!(state(&mut h, None), (false, true, vec![]), "nothing picked: nodes only");
+    assert_eq!(state(&mut h, Some(node)), (true, true, vec![(node, handle)]), "a picked node shows its handle and leg");
+    assert_eq!(state(&mut h, Some(handle)), (true, true, vec![(node, handle)]), "a picked handle stays");
+    run(&mut h, "sketch.nodes_mode", json!({"nodes": false}));
+    assert!(solidcraft_engine::view::bezier_handle_legs(&h.app.session, &sk).is_empty(), "object mode draws no legs");
+}
+
 /// MEJ-15: object mode hides the points of a group from what snaps while drawing and dragging, and the
 /// Nodes button shows pressed without the "show pressed" preference.
 #[test]
