@@ -849,9 +849,56 @@ impl<'a> SketchPointVisibility<'a> {
                 sk.curves.iter().enumerate().filter(|(i, _)| !grouped.contains(i)).flat_map(|(_, c)| c.kind.point_ids()).collect();
             let nodes = grouped.iter().filter_map(|i| sk.curves.get(*i)).flat_map(|c| c.kind.point_ids()).filter(|i| !loose.contains(i));
             v.hidden.extend(nodes.filter_map(|i| sk.points.get(i).map(|p| p.id.as_str())));
+        } else {
+            // A Bezier handle shows only beside its node, or once it is the picked point itself.
+            let picked = picked_points(s, sk);
+            let legs = bezier_legs(sk);
+            let shown: std::collections::HashSet<usize> =
+                legs.iter().filter(|(node, handle)| picked.contains(node) || picked.contains(handle)).map(|l| l.1).collect();
+            v.hidden.extend(legs.iter().map(|l| l.1).filter(|h| !shown.contains(h)).filter_map(|h| sk.points.get(h).map(|p| p.id.as_str())));
         }
         v
     }
+}
+
+/// The points the selection names, by index; a qualified id (`<sketch>:<point>`) counts too.
+fn picked_points(s: &crate::Session, sk: &Sketch) -> std::collections::HashSet<usize> {
+    let find = |id: &str| sk.point_index(id).or_else(|| id.split_once(':').and_then(|(_, p)| sk.point_index(p)));
+    s.selection.iter().filter_map(|x| if let crate::Sel::SketchPoint { id } = x { find(id) } else { None }).collect()
+}
+
+/// Every Bezier handle of the grouped curves as `(node, handle)` point indices: a cubic piece of
+/// an imported drawing is a control spline of four points, the middle two being handles of the
+/// ends. A handle that is also an end of another curve is a node, not a handle.
+// shortcut: only four-point cubics (SVG pieces); a DXF's longer NURBS keep all their points, upgrade when they get handles.
+fn bezier_legs(sk: &Sketch) -> Vec<(usize, usize)> {
+    let grouped: std::collections::HashSet<usize> = sk.object_groups.iter().flat_map(|g| &g.curves).filter_map(|c| sk.curve_index(c)).collect();
+    // How many curves use each point, counted once: a handle another curve uses is a node.
+    let mut users = std::collections::HashMap::<usize, usize>::new();
+    for c in &sk.curves {
+        let own: std::collections::HashSet<usize> = c.kind.point_ids().into_iter().collect();
+        for p in own {
+            *users.entry(p).or_default() += 1;
+        }
+    }
+    let mut legs = Vec::new();
+    for c in sk.curves.iter().enumerate().filter(|(i, _)| grouped.contains(i)).map(|(_, c)| c) {
+        let CurveKind::Spline { pts, control: true, degree: 3, .. } = &c.kind else { continue };
+        let [a, h1, h2, b] = pts[..] else { continue };
+        let node = |p: usize| users.get(&p).is_some_and(|n| *n > 1) || p == a || p == b;
+        legs.extend([(a, h1), (b, h2)].into_iter().filter(|(_, h)| !node(*h)));
+    }
+    legs
+}
+
+/// The Bezier handles shown in nodes mode (see [`SketchPointVisibility::shown`]) as
+/// `(node, handle)` point indices: the legs the window draws.
+pub fn bezier_handle_legs(s: &crate::Session, sk: &Sketch) -> Vec<(usize, usize)> {
+    if !s.sketch_nodes {
+        return Vec::new();
+    }
+    let shown = SketchPointVisibility::shown(s, sk);
+    bezier_legs(sk).into_iter().filter(|(_, h)| sk.points.get(*h).is_some_and(|p| shown.takes(p))).collect()
 }
 
 /// Should sketch point `i` be drawn or picked individually? Text outlines and derived

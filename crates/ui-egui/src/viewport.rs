@@ -10156,6 +10156,22 @@ fn overlays(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
             painter.rect_filled(Rect::from_center_size(end, vec2(5.0, 5.0)), 0.0, t.sketch_point_free);
         }
     }
+    // Nodes mode: a picked node's Bezier handles hang from it by a leg, and the nodes of the
+    // drawing are rings (the picked one filled), apart from the handles' squares.
+    let legs = solidcraft_engine::view::bezier_handle_legs(&app.session, sk);
+    for (node, handle) in &legs {
+        let (Some(a), Some(b)) = (sk.point(*node), sk.point(*handle)) else { continue };
+        if let (Some(a), Some(b)) = (proj.to_screen(ss.plane.to_world(a)), proj.to_screen(ss.plane.to_world(b))) {
+            painter.line_segment([a, b], Stroke::new(1.0, t.sketch_construction));
+        }
+    }
+    let leg_handles: std::collections::HashSet<usize> = legs.iter().map(|l| l.1).collect();
+    let ring_nodes: std::collections::HashSet<usize> = if app.session.sketch_nodes {
+        let grouped: std::collections::HashSet<usize> = sk.object_groups.iter().flat_map(|g| &g.curves).filter_map(|c| sk.curve_index(c)).collect();
+        grouped.iter().filter_map(|i| sk.curves.get(*i)).flat_map(|c| c.kind.point_ids()).filter(|p| !leg_handles.contains(p)).collect()
+    } else {
+        Default::default()
+    };
     // The points Transform shows moved are not drawn where they are (`sketch_transform_ui::show`).
     let transformed = crate::sketch_transform_ui::moving(app).1;
     for (i, p) in sk.points.iter().enumerate() {
@@ -10179,6 +10195,9 @@ fn overlays(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
         } else if virtual_corners.binary_search(&i).is_ok() {
             // A virtual sharp corner: an open square, it is not on any drawn curve.
             painter.rect_stroke(Rect::from_center_size(sp, vec2(6.0, 6.0)), 0.0, Stroke::new(1.2, c), egui::StrokeKind::Middle);
+        } else if ring_nodes.contains(&i) {
+            let fill = if selected.contains(&i) { c } else { Color32::TRANSPARENT };
+            painter.circle(sp, 4.0, fill, Stroke::new(1.5, c));
         } else {
             painter.rect_filled(Rect::from_center_size(sp, vec2(5.0, 5.0)), 0.0, c);
         }
