@@ -3968,7 +3968,11 @@ fn error_rows(app: &mut SolveApp, ctx: &egui::Context, d: &mut Dialog, ui: &mut 
             // says what is wrong; the kernel's own text stays in the hover text, Copy Details and the
             // issue report.
             let setback_in_field = d.extra.get("setbacks").is_none();
-            let plain = if matches!(d.kind, Kind::Fillet { chamfer: false, .. }) { fillet_plain_error(&error, setback_in_field) } else { None };
+            let plain = if matches!(d.kind, Kind::Fillet { chamfer: false, .. }) {
+                fillet_plain_error(&error, setback_in_field)
+            } else {
+                damaged_part_plain_error(&error).map(FilletRefusal::Plain)
+            };
             ui.vertical(|ui| {
                 match &plain {
                     Some(FilletRefusal::Plain(plain)) => {
@@ -4059,6 +4063,12 @@ pub(crate) fn fillet_plain_error(error: &str, setback_in_field: bool) -> Option<
     } else {
         None
     }
+}
+
+/// One plain line for a kernel refusal that blames an operand ("… (the first operand already fails
+/// it) …", BUG-26): the part is damaged, not the operation. The kernel's text stays under Copy Details.
+pub(crate) fn damaged_part_plain_error(error: &str) -> Option<String> {
+    error.contains("already fails it").then(|| tr("ui.error_part_damaged").to_string())
 }
 
 /// The part a failed dialog's operation uses that the kernel refused, if one did.
@@ -9647,6 +9657,16 @@ mod refused_ok_tests {
         refused(&mut h);
         h.frames(10);
         assert_eq!(shown(&mut h).as_deref(), Some("hole depth must be positive"));
+    }
+
+    /// BUG-26: a refusal that blames a damaged part reads as one short line, not the kernel's wall of text.
+    #[test]
+    fn a_damaged_part_refusal_reads_as_one_plain_line() {
+        crate::i18n::install();
+        let wall = "body `X`: the operation failed: SMLib boolean: SMLib's check refuses the result (the first operand already fails it): 7 failed tests:\nSmBSplineCurve::Test #15 Bad Repeated CPts";
+        let plain = super::damaged_part_plain_error(wall).expect("plain line");
+        assert!(!plain.contains('\n') && plain.len() < 120 && !plain.contains("SMLib"), "{plain}");
+        assert_eq!(super::damaged_part_plain_error("hole depth must be positive"), None);
     }
 
     #[test]
