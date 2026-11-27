@@ -47,6 +47,65 @@ pub struct Drag {
     part: Part,
     from: Vec2,
     at: Frame,
+    /// What a moved box snaps to, made once when the drag begins (a Move drag only).
+    snaps: Option<std::sync::Arc<Targets>>,
+}
+
+/// The sketch's points the box snaps to, and the origin, kept sorted by x and by y so each frame
+/// of a drag looks a value up by binary search instead of going over the sketch.
+#[derive(Debug, Default)]
+pub struct Targets {
+    by_x: Vec<Vec2>,
+    by_y: Vec<Vec2>,
+}
+
+impl Targets {
+    fn new(mut pts: Vec<Vec2>) -> Self {
+        pts.retain(|p| p.x.is_finite() && p.y.is_finite());
+        let mut by_y = pts.clone();
+        pts.sort_by(|a, b| a.x.total_cmp(&b.x));
+        by_y.sort_by(|a, b| a.y.total_cmp(&b.y));
+        Self { by_x: pts, by_y }
+    }
+
+    /// The target nearest `v` along one axis (`key` reads it from a point), within `tol`.
+    fn near(list: &[Vec2], v: f64, key: fn(Vec2) -> f64, tol: f64) -> Option<Vec2> {
+        let i = list.partition_point(|p| key(*p) < v);
+        [i.checked_sub(1), Some(i)]
+            .into_iter()
+            .flatten()
+            .filter_map(|j| list.get(j).copied())
+            .filter(|p| (key(*p) - v).abs() <= tol)
+            .min_by(|a, b| (key(*a) - v).abs().total_cmp(&(key(*b) - v).abs()))
+    }
+
+    /// How far `spots` (the box's corners, middles of sides and centre) must move to line up with a
+    /// target, each axis on its own, and the guides to draw from each spot to its target.
+    fn pull(&self, spots: &[Vec2], tol: f64) -> (Vec2, Vec<(Vec2, Vec2)>) {
+        let best = |list: &[Vec2], key: fn(Vec2) -> f64| {
+            spots
+                .iter()
+                .filter_map(|s| Self::near(list, key(*s), key, tol).map(|t| (*s, t)))
+                .min_by(|a, b| (key(a.1) - key(a.0)).abs().total_cmp(&(key(b.1) - key(b.0)).abs()))
+        };
+        let (bx, by) = (best(&self.by_x, |p| p.x), best(&self.by_y, |p| p.y));
+        let delta = Vec2::new(bx.map_or(0.0, |(s, t)| t.x - s.x), by.map_or(0.0, |(s, t)| t.y - s.y));
+        let guides = bx.into_iter().chain(by).map(|(s, t)| (s + delta, t)).collect();
+        (delta, guides)
+    }
+}
+
+/// The points of the sketch the picks do not own, and the origin.
+fn targets(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<Targets> {
+    let state = crate::open_meshing::session_world(&app.session);
+    let sk = &state.sketch(app.session.active_sketch?)?.sketch;
+    let (drawn, points) = picked(app, d)?;
+    let key = |q: Vec2| ((q.x * 1e6).round() as i64, (q.y * 1e6).round() as i64);
+    // The picks' own points go with the box, so they are no target.
+    let own: std::collections::HashSet<(i64, i64)> =
+        drawn.iter().flat_map(|c| sk.polyline(*c)).chain(points.iter().filter_map(|i| sk.point(*i))).map(key).collect();
+    let others = sk.points.iter().map(|p| p.pos).filter(|q| !own.contains(&key(*q)));
+    Some(Targets::new(others.chain(std::iter::once(Vec2::new(0.0, 0.0))).collect()))
 }
 
 /// The box as placed: where its pivot is (the point it scales and turns about), how much it is
@@ -91,6 +150,14 @@ fn turn(v: Vec2, degrees: f64) -> Vec2 {
 /// A spot of the box in its own frame (`u`, `v` in half sizes) on the sketch.
 fn spot(f: &Frame, u: f64, v: f64) -> Vec2 {
     center(f) + turn(stretch(f, Vec2::new(u * f.natural.0 / 2.0, v * f.natural.1 / 2.0)), f.angle)
+}
+
+/// How many millimetres of the sketch one screen point covers around `at`.
+fn mm_per_pixel(plane: &Plane, proj: &Proj, at: Vec2) -> f64 {
+    match (on_screen(plane, proj, at), on_screen(plane, proj, at + Vec2::X)) {
+        (Some(a), Some(b)) => 1.0 / (a.distance(b) as f64).max(1e-9),
+        _ => 0.0,
+    }
 }
 
 fn on_screen(plane: &Plane, proj: &Proj, q: Vec2) -> Option<Pos2> {
@@ -170,8 +237,10 @@ pub fn refresh(app: &mut SolveApp) {
     let group = picked_group(app, d);
     let seen = d.extra.get("pivot_group").and_then(|v| v.as_str()).map(str::to_owned);
     let load = group.as_ref().map(|g| g.0.clone()) != seen && app.viewport.transform_drag.is_none();
-    if let Some(Kind::SketchModify(Mod::Transform { frame, pivot, .. })) = app.dialog.as_mut().map(|d| &mut d.kind) {
+    let at = frame_of(app, d).map(|f| center(&f)).map(|c| [c.x, c.y]);
+    if let Some(Kind::SketchModify(Mod::Transform { frame, pivot, placed, .. })) = app.dialog.as_mut().map(|d| &mut d.kind) {
         *frame = boxed;
+        *placed = at;
         if load && let Some((_, saved)) = &group {
             *pivot = saved.map(|p| [p.x, p.y]);
         }
@@ -239,7 +308,7 @@ fn picked_pivot(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<Vec2> {
 
 /// The placement the window's fields describe, as a frame.
 fn frame_of(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<Frame> {
-    let Kind::SketchModify(Mod::Transform { x, y, factor, angle, frame, aspect, pivot: moved_pivot }) = &d.kind else { return None };
+    let Kind::SketchModify(Mod::Transform { x, y, factor, angle, frame, aspect, pivot: moved_pivot, .. }) = &d.kind else { return None };
     let (middle, size, base) = (*frame)?;
     let middle = Vec2::new(middle[0], middle[1]);
     // The pivot the box was given by hand wins over a picked Center, which wins over the middle.
@@ -268,8 +337,18 @@ fn store(k: &mut Mod, f: &Frame, pivot_moved: bool) {
     }
 }
 
+/// The keys and the lock held during a drag: Shift snaps a turn to 15 degrees and keeps the shape
+/// of a corner drag; Ctrl scales from the box middle; `free` is the Keep Proportions lock off.
+#[derive(Clone, Copy, Debug, Default)]
+struct Keys {
+    shift: bool,
+    ctrl: bool,
+    free: bool,
+}
+
 /// The frame after the pointer has moved to `p`, from where `drag` began.
-fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
+fn apply(drag: &Drag, p: Vec2, keys: Keys) -> Frame {
+    let snap = keys.shift;
     let start = drag.at;
     let mut now = start;
     match drag.part {
@@ -290,23 +369,23 @@ fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
             }
         }
         Part::Side(axis, sign) => {
-            // One size changes, from the opposite side, which stays: the pointer in the box's own
-            // frame says how big that size is now.
+            // One size changes, from the opposite side (or the middle with Ctrl), which stays: the
+            // pointer in the box's own frame says how big that size is now.
             let (u, v) = if axis == 0 { (sign, 0.0) } else { (0.0, sign) };
-            let fixed = spot(&start, -u, -v);
+            let (fixed, span) = if keys.ctrl { (spot(&start, 0.0, 0.0), 2.0) } else { (spot(&start, -u, -v), 1.0) };
             let local = turn(p - fixed, -start.angle);
             let high = start.scale * start.aspect;
             let reach = if axis == 0 {
-                let wide = (local.x.abs() / start.natural.0).clamp(MIN_FACTOR, MAX_FACTOR);
+                let wide = (span * local.x.abs() / start.natural.0).clamp(MIN_FACTOR, MAX_FACTOR);
                 now.scale = wide;
                 now.aspect = (high / wide).clamp(MIN_FACTOR, MAX_FACTOR);
                 Vec2::new(sign * wide * start.natural.0 / 2.0, 0.0)
             } else {
-                let tall = (local.y.abs() / start.natural.1).clamp(MIN_FACTOR, MAX_FACTOR);
+                let tall = (span * local.y.abs() / start.natural.1).clamp(MIN_FACTOR, MAX_FACTOR);
                 now.aspect = (tall / start.scale).clamp(MIN_FACTOR, MAX_FACTOR);
                 Vec2::new(0.0, sign * tall * start.natural.1 / 2.0)
             };
-            let middle = fixed + turn(reach, start.angle);
+            let middle = if keys.ctrl { fixed } else { fixed + turn(reach, start.angle) };
             let pivot = middle - turn(in_box(&now, start.middle - start.pivot), start.angle);
             if pivot.x.is_finite() && pivot.y.is_finite() {
                 now.x = pivot.x;
@@ -322,22 +401,49 @@ fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
             now.y = at.y;
         }
         Part::Corner(u, v) => {
-            let fixed = spot(&start, -u, -v);
-            // The pointer in the box's own frame, measured from the corner that stays.
+            let (fixed, span) = if keys.ctrl { (spot(&start, 0.0, 0.0), 2.0) } else { (spot(&start, -u, -v), 1.0) };
+            // The pointer in the box's own frame, measured from the point that stays.
             let local = turn(p - fixed, -start.angle);
             let high = start.natural.1 * start.aspect;
-            let k = (local.x.abs() / start.natural.0).max(local.y.abs() / high).clamp(MIN_FACTOR, MAX_FACTOR);
-            if k.is_finite() {
-                let reach = turn(Vec2::new(u * k * start.natural.0 / 2.0, v * k * high / 2.0), start.angle);
-                now.scale = k;
-                // The pivot goes where it keeps the box middle at `fixed + reach`.
-                let pivot = fixed + reach - turn(in_box(&now, start.middle - start.pivot), start.angle);
+            let (wide, tall) = (span * local.x.abs(), span * local.y.abs());
+            let k = (wide / start.natural.0).max(tall / high).clamp(MIN_FACTOR, MAX_FACTOR);
+            // The shape is kept with the lock on or Shift held; otherwise each size follows the pointer.
+            let (scale, aspect) = if !keys.free || keys.shift {
+                (k, start.aspect)
+            } else {
+                let scale = (wide / start.natural.0).clamp(MIN_FACTOR, MAX_FACTOR);
+                (scale, (tall / start.natural.1 / scale).clamp(MIN_FACTOR, MAX_FACTOR))
+            };
+            if scale.is_finite() && aspect.is_finite() {
+                now.scale = scale;
+                now.aspect = aspect;
+                let reach = turn(Vec2::new(u * scale * start.natural.0 / 2.0, v * scale * aspect * start.natural.1 / 2.0), start.angle);
+                let middle = if keys.ctrl { fixed } else { fixed + reach };
+                // The pivot goes where it keeps the box middle at `middle`.
+                let pivot = middle - turn(in_box(&now, start.middle - start.pivot), start.angle);
                 now.x = pivot.x;
                 now.y = pivot.y;
             }
         }
     }
     now
+}
+
+/// The balloon beside the pointer while the knob turns: the total turn, in (-180, 180].
+fn turn_text(f: &Frame) -> String {
+    let a = (f.angle + 180.0).rem_euclid(360.0) - 180.0;
+    format!("R: {}\u{b0}", plain(if a <= -180.0 { 180.0 } else { a }))
+}
+
+/// The balloon while a corner or a side is dragged: width times height, in the design's unit.
+fn size_text(doc: &solidcraft_engine::doc::Document, f: &Frame) -> String {
+    let (w, h) = (f.natural.0 * f.scale, f.natural.1 * f.scale * f.aspect);
+    format!("{} \u{d7} {}", crate::length_input::shown(doc, w), crate::length_input::shown(doc, h))
+}
+
+/// The frame with the box turned back to 0 degrees in all (the window's Angle undoes `base`).
+fn upright(f: &Frame) -> Frame {
+    Frame { angle: 0.0, ..*f }
 }
 
 /// Where a point of the original box goes: scaled and turned about the pivot, then moved.
@@ -411,12 +517,22 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
         return;
     }
     for (i, (rect, part, cursor)) in parts.into_iter().enumerate() {
-        let response = ui.interact(rect, egui::Id::unique(("sc_transform_handle", i)), Sense::drag()).on_hover_cursor(cursor);
+        // A double click on the knob turns the box back to 0 degrees.
+        let sense = if part == Part::Turn { Sense::click_and_drag() } else { Sense::drag() };
+        let response = ui.interact(rect, egui::Id::unique(("sc_transform_handle", i)), sense).on_hover_cursor(cursor);
+        if part == Part::Turn && response.double_clicked() {
+            if let Some(Kind::SketchModify(k)) = app.dialog.as_mut().map(|d| &mut d.kind) {
+                store(k, &upright(&frame), false);
+            }
+            app.viewport.transform_drag = None;
+            continue;
+        }
         crate::scenario::publish_handle(&format!("transform:handle:{i}"), rect.center());
         if response.drag_started()
             && let Some(from) = response.interact_pointer_pos().and_then(|p| pointer_on_sketch(&plane, proj, p))
         {
-            app.viewport.transform_drag = Some(Drag { part, from, at: frame });
+            let snaps = (part == Part::Move).then(|| app.dialog.as_ref().and_then(|d| targets(app, d))).flatten().map(std::sync::Arc::new);
+            app.viewport.transform_drag = Some(Drag { part, from, at: frame, snaps });
         }
         // The release frame carries the last move too: it counts, or a quick drag stops short.
         if (response.dragged() || response.drag_stopped())
@@ -425,9 +541,39 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
             && let Some(p) =
                 response.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())).and_then(|p| pointer_on_sketch(&plane, proj, p))
         {
-            let now = apply(&drag, p, ui.input(|i| i.modifiers.shift));
+            let free = matches!(&app.dialog.as_ref().map(|d| &d.kind), Some(Kind::SketchModify(Mod::Transform { lock: false, .. })));
+            let keys = ui.input(|i| Keys { shift: i.modifiers.shift, ctrl: i.modifiers.ctrl, free });
+            let mut now = apply(&drag, p, keys);
+            // A moved box lines up with the sketch's points and the origin; Alt turns that off.
+            if let Some(targets) = drag.snaps.as_ref().filter(|_| !ui.input(|i| i.modifiers.alt)) {
+                let tol = 7.0 * mm_per_pixel(&plane, proj, Vec2::new(now.x, now.y));
+                let spots: Vec<Vec2> = [-1.0, 0.0, 1.0].into_iter().flat_map(|u| [-1.0, 0.0, 1.0].map(|v| spot(&now, u, v))).collect();
+                let (delta, guides) = targets.pull(&spots, tol);
+                now.x += delta.x;
+                now.y += delta.y;
+                for (from, to) in guides {
+                    if let (Some(a), Some(b)) = (on_screen(&plane, proj, from), on_screen(&plane, proj, to)) {
+                        painter.add(egui::Shape::dashed_line(&[a, b], Stroke::new(1.0, t.accent), 5.0, 4.0));
+                        painter.circle_stroke(b, 4.0, Stroke::new(1.5, t.accent));
+                    }
+                }
+            }
             if let Some(Kind::SketchModify(k)) = app.dialog.as_mut().map(|d| &mut d.kind) {
                 store(k, &now, drag.part == Part::Pivot);
+            }
+            let balloon = match drag.part {
+                Part::Turn => Some(turn_text(&now)),
+                Part::Corner(..) | Part::Side(..) => Some(size_text(&app.session.doc, &now)),
+                _ => None,
+            };
+            if let Some(text) = balloon
+                && response.dragged()
+            {
+                let galley = painter.layout_no_wrap(text, egui::FontId::proportional(t.font_body), t.text);
+                let at = ui.input(|i| i.pointer.latest_pos()).unwrap_or(knob) + vec2(14.0, -26.0);
+                let back = egui::Rect::from_min_size(at, galley.size()).expand(4.0);
+                painter.rect(back, 3.0, t.overlay, stroke, egui::StrokeKind::Inside);
+                painter.galley(at, galley, t.text);
             }
         }
         if response.drag_stopped()
@@ -462,7 +608,7 @@ mod tests {
         let f = cornered();
         assert!(center(&f).dist(Vec2::new(10.0, 5.0)) < 1e-9 && spot(&f, -1.0, -1.0).dist(Vec2::ZERO) < 1e-9, "unmoved, the box is where it was");
         // The pointer goes a quarter turn round the pivot: from (10, 0) up to (0, 10).
-        let turned = apply(&drag(Part::Turn, Vec2::new(10.0, 0.0), f), Vec2::new(0.0, 10.0), false);
+        let turned = apply(&drag(Part::Turn, Vec2::new(10.0, 0.0), f), Vec2::new(0.0, 10.0), Keys::default());
         assert!((turned.angle - 90.0).abs() < 1e-9, "{}", turned.angle);
         assert!(moved(&turned, Vec2::ZERO).dist(Vec2::ZERO) < 1e-9, "the pivot stays");
         assert!(moved(&turned, Vec2::new(20.0, 0.0)).dist(Vec2::new(0.0, 20.0)) < 1e-9, "the far corner turns about it");
@@ -470,7 +616,7 @@ mod tests {
         // A corner drag still keeps the opposite corner, the pivot following the box.
         let fixed = spot(&turned, -1.0, -1.0);
         let pulled = spot(&turned, 1.0, 1.0) + turn(Vec2::new(20.0, 10.0), 90.0);
-        let scaled = apply(&drag(Part::Corner(1.0, 1.0), spot(&turned, 1.0, 1.0), turned), pulled, false);
+        let scaled = apply(&drag(Part::Corner(1.0, 1.0), spot(&turned, 1.0, 1.0), turned), pulled, Keys::default());
         assert!((scaled.scale - 2.0).abs() < 1e-9 && spot(&scaled, -1.0, -1.0).dist(fixed) < 1e-9, "{scaled:?}");
         for (u, v, q) in [(-1.0, -1.0, Vec2::ZERO), (1.0, 1.0, Vec2::new(20.0, 10.0))] {
             assert!(moved(&scaled, q).dist(spot(&scaled, u, v)) < 1e-9, "a corner of the entities is a corner of the box");
@@ -478,7 +624,7 @@ mod tests {
     }
 
     fn drag(part: Part, from: Vec2, at: Frame) -> Drag {
-        Drag { part, from, at }
+        Drag { part, from, at, snaps: None }
     }
 
     #[test]
@@ -487,7 +633,7 @@ mod tests {
             let f = Frame { angle, ..frame() };
             let fixed = spot(&f, -1.0, -1.0);
             let pulled = spot(&f, 1.0, 1.0) + turn(Vec2::new(20.0, 10.0), angle);
-            let now = apply(&drag(Part::Corner(1.0, 1.0), spot(&f, 1.0, 1.0), f), pulled, false);
+            let now = apply(&drag(Part::Corner(1.0, 1.0), spot(&f, 1.0, 1.0), f), pulled, Keys::default());
             assert!((now.scale - 2.0).abs() < 1e-9, "{}", now.scale);
             assert!(spot(&now, -1.0, -1.0).dist(fixed) < 1e-9, "the opposite corner stays");
         }
@@ -500,7 +646,7 @@ mod tests {
             let f = Frame { angle, ..frame() };
             let wide_fixed = spot(&f, -1.0, 0.0);
             let pulled = spot(&f, 1.0, 0.0) + turn(Vec2::new(10.0, 0.0), angle);
-            let now = apply(&drag(Part::Side(0, 1.0), spot(&f, 1.0, 0.0), f), pulled, false);
+            let now = apply(&drag(Part::Side(0, 1.0), spot(&f, 1.0, 0.0), f), pulled, Keys::default());
             assert!((now.scale - 1.5).abs() < 1e-9, "{}", now.scale);
             assert!(spot(&now, -1.0, 0.0).dist(wide_fixed) < 1e-9, "the left side stays");
             assert!((spot(&now, 0.0, 1.0).dist(spot(&now, 0.0, -1.0)) - 10.0).abs() < 1e-9, "the height is as it was");
@@ -508,7 +654,7 @@ mod tests {
             // The height: pulled down from the top side, the bottom stays.
             let tall_fixed = spot(&now, 0.0, -1.0);
             let up = spot(&now, 0.0, 1.0) + turn(Vec2::new(0.0, 5.0), angle);
-            let taller = apply(&drag(Part::Side(1, 1.0), spot(&now, 0.0, 1.0), now), up, false);
+            let taller = apply(&drag(Part::Side(1, 1.0), spot(&now, 0.0, 1.0), now), up, Keys::default());
             assert!(spot(&taller, 0.0, -1.0).dist(tall_fixed) < 1e-9, "the bottom stays");
             assert!((spot(&taller, 0.0, 1.0).dist(spot(&taller, 0.0, -1.0)) - 15.0).abs() < 1e-9);
             assert!((spot(&taller, 1.0, 0.0).dist(spot(&taller, -1.0, 0.0)) - 30.0).abs() < 1e-9, "the width is as it was");
@@ -523,7 +669,7 @@ mod tests {
     #[test]
     fn moving_the_pivot_moves_no_entity() {
         let f = Frame { angle: 25.0, scale: 2.0, aspect: 0.5, x: 3.0, y: -2.0, ..frame() };
-        let now = apply(&drag(Part::Pivot, center(&f), f), Vec2::new(-7.0, 4.0), false);
+        let now = apply(&drag(Part::Pivot, center(&f), f), Vec2::new(-7.0, 4.0), Keys::default());
         assert_eq!(now.pivot, Vec2::new(-7.0, 4.0));
         for q in [Vec2::ZERO, Vec2::new(20.0, 10.0), Vec2::new(3.0, 8.0)] {
             assert!(moved(&now, q).dist(moved(&f, q)) < 1e-9, "{q:?}");
@@ -533,13 +679,109 @@ mod tests {
     #[test]
     fn the_box_moves_and_the_knob_turns() {
         let f = frame();
-        let now = apply(&drag(Part::Move, Vec2::new(10.0, 5.0), f), Vec2::new(14.0, 1.0), false);
+        let now = apply(&drag(Part::Move, Vec2::new(10.0, 5.0), f), Vec2::new(14.0, 1.0), Keys::default());
         assert_eq!((now.x, now.y), (14.0, 1.0));
         // The knob is straight above the middle: to the left of it is a quarter turn.
-        let turned = apply(&drag(Part::Turn, Vec2::new(14.0, 10.0), now), Vec2::new(4.0, 1.0), false);
+        let turned = apply(&drag(Part::Turn, Vec2::new(14.0, 10.0), now), Vec2::new(4.0, 1.0), Keys::default());
         assert!((turned.angle - 90.0).abs() < 1e-9, "{}", turned.angle);
-        let snapped = apply(&drag(Part::Turn, Vec2::new(14.0, 10.0), now), Vec2::new(4.0, 3.0), true);
+        let snapped = apply(&drag(Part::Turn, Vec2::new(14.0, 10.0), now), Vec2::new(4.0, 3.0), Keys { shift: true, ..Keys::default() });
         assert!((snapped.angle % 15.0).abs() < 1e-9, "{}", snapped.angle);
+    }
+
+    #[test]
+    fn the_balloon_shows_the_total_turn_and_a_double_click_makes_it_zero() {
+        let mut f = frame();
+        f.base = 30.0;
+        f.angle = 75.0;
+        assert_eq!(turn_text(&f), "R: 75\u{b0}");
+        f.angle = 190.0;
+        assert_eq!(turn_text(&f), "R: -170\u{b0}");
+        let up = upright(&f);
+        assert_eq!(turn_text(&up), "R: 0\u{b0}");
+        let mut k = Mod::Transform {
+            x: String::new(),
+            y: String::new(),
+            factor: String::new(),
+            angle: String::new(),
+            frame: None,
+            aspect: String::new(),
+            pivot: None,
+            placed: None,
+            shown: Default::default(),
+            lock: true,
+        };
+        store(&mut k, &up, false);
+        assert!(matches!(&k, Mod::Transform { angle, .. } if angle == "-30 deg"), "the window's Angle is relative to the box's own turn");
+    }
+
+    #[test]
+    fn a_typed_place_moves_the_distance_by_the_difference_in_the_design_unit() {
+        let mut doc = solidcraft_engine::doc::Document::default();
+        let mut x = "2 mm".to_string();
+        let mut at = 25.0;
+        crate::sketch_modify_ui::move_to(&doc, &mut x, &mut at, "25 mm");
+        assert_eq!((x.as_str(), at), ("2 mm", 25.0), "a row left as shown changes nothing");
+        crate::sketch_modify_ui::move_to(&doc, &mut x, &mut at, "10 in");
+        assert_eq!((x.as_str(), at), ("231 mm", 254.0), "10 in is 254 mm: 2 + 254 - 25");
+        let mut shown = String::new();
+        crate::sketch_modify_ui::sync_place(&doc, &mut shown, 25.4);
+        assert_eq!(shown, "25.4 mm");
+        doc.units = "in".into();
+        let mut x = "0 in".to_string();
+        let mut at = 25.4;
+        crate::sketch_modify_ui::move_to(&doc, &mut x, &mut at, "2");
+        assert_eq!(x, "1 in", "a bare 2 is 2 in: 0 + 50.8 - 25.4 mm");
+        let mut typed = "1 in".to_string();
+        crate::sketch_modify_ui::sync_place(&doc, &mut typed, 25.4);
+        assert_eq!(typed, "1 in", "a text that gives the place stays as typed");
+        crate::sketch_modify_ui::sync_place(&doc, &mut typed, 50.8);
+        assert_eq!(typed, "2 in");
+    }
+
+    #[test]
+    fn with_the_lock_off_a_corner_follows_the_pointer_and_shift_or_ctrl_change_it() {
+        let f = frame();
+        let at = spot(&f, 1.0, 1.0);
+        let pulled = at + Vec2::new(10.0, 0.0);
+        let free = Keys { free: true, ..Keys::default() };
+        let now = apply(&drag(Part::Corner(1.0, 1.0), at, f), pulled, free);
+        assert!(
+            (now.scale - 1.0 * (f.natural.0 + 10.0) / f.natural.0).abs() < 1e-9 && (now.scale * now.aspect - f.scale * f.aspect).abs() < 1e-9,
+            "wider only: {now:?}"
+        );
+        let kept = apply(&drag(Part::Corner(1.0, 1.0), at, f), pulled, Keys { shift: true, ..free });
+        assert!((kept.aspect - f.aspect).abs() < 1e-9, "Shift keeps the shape: {kept:?}");
+        let locked = apply(&drag(Part::Corner(1.0, 1.0), at, f), pulled, Keys::default());
+        assert!((locked.aspect - f.aspect).abs() < 1e-9, "the lock keeps the shape: {locked:?}");
+        // Ctrl scales about the middle: it stays, and the corner reaches the pointer.
+        let out = apply(&drag(Part::Corner(1.0, 1.0), at, f), pulled, Keys { ctrl: true, ..free });
+        assert!((center(&out) - center(&f)).len() < 1e-9, "the middle stays: {out:?}");
+        assert!((spot(&out, 1.0, 1.0) - pulled).len() < 1e-9, "the corner is under the pointer");
+        let side = apply(&drag(Part::Side(0, 1.0), spot(&f, 1.0, 0.0), f), spot(&f, 1.0, 0.0) + Vec2::new(4.0, 0.0), Keys { ctrl: true, ..free });
+        assert!((center(&side) - center(&f)).len() < 1e-9 && side.scale > f.scale, "a side with Ctrl grows both ways: {side:?}");
+    }
+
+    #[test]
+    fn the_size_balloon_shows_width_times_height() {
+        let mut f = frame();
+        f.natural = (30.0, 20.0);
+        f.scale = 2.0;
+        f.aspect = 0.5;
+        assert_eq!(size_text(&solidcraft_engine::doc::Document::default(), &f), "60 mm \u{d7} 20 mm");
+    }
+
+    #[test]
+    fn a_moved_box_lines_up_with_a_target_within_reach_and_not_beyond() {
+        let t = Targets::new(vec![Vec2::new(10.0, 50.0), Vec2::new(-30.0, 7.0), Vec2::new(100.0, 100.0)]);
+        // The box's left side is at x = 9.5: the target at x = 10 is within 1; y is far from all.
+        let spots = [Vec2::new(9.5, 20.0), Vec2::new(30.0, 25.0)];
+        let (delta, guides) = t.pull(&spots, 1.0);
+        assert_eq!((delta.x, delta.y), (0.5, 0.0));
+        assert_eq!(guides.len(), 1, "one guide, to the target the box lined up with");
+        assert_eq!(t.pull(&spots, 0.1).0, Vec2::new(0.0, 0.0), "out of reach: nothing moves");
+        // Both axes at once, each to its own nearest target.
+        let (both, g) = t.pull(&[Vec2::new(-29.8, 7.4)], 1.0);
+        assert!((both.x + 0.2).abs() < 1e-9 && (both.y + 0.4).abs() < 1e-9 && g.len() == 2, "{both:?}");
     }
 
     #[test]

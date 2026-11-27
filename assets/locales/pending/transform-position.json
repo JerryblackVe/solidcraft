@@ -1,0 +1,30 @@
+{
+  "en": {
+    "X Position": "X Position",
+    "Y Position": "Y Position"
+  },
+  "es": {
+    "X Position": "Posición X",
+    "Y Position": "Posición Y"
+  },
+  "ar": {
+    "X Position": "الموضع X",
+    "Y Position": "الموضع Y"
+  },
+  "he": {
+    "X Position": "מיקום X",
+    "Y Position": "מיקום Y"
+  },
+  "ja": {
+    "X Position": "X位置",
+    "Y Position": "Y位置"
+  },
+  "vi": {
+    "X Position": "Vị trí X",
+    "Y Position": "Vị trí Y"
+  },
+  "zh": {
+    "X Position": "X 位置",
+    "Y Position": "Y 位置"
+  }
+}
