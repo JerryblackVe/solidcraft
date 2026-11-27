@@ -3934,13 +3934,7 @@ fn error_rows(app: &mut SolveApp, ctx: &egui::Context, d: &mut Dialog, ui: &mut 
             ui.vertical(|ui| {
                 crate::ui_kit::text(ui, &crate::refused_part::message(&part, operation.as_deref()), crate::ui_kit::Text::Report("error", true));
                 ui.horizontal(|ui| {
-                    let ready = solidcraft_engine::find_command(crate::refused_part::REPAIR).map(|c| c.info(&app.session));
-                    let enabled = ready.as_ref().is_some_and(|i| i.enabled);
-                    let repair = crate::ui_kit::button(ui, solidcraft_ui_text::tr("refused.repair"), crate::ui_kit::Button::Enabled(enabled));
-                    crate::scenario::publish_handle("dialog:repair_part", repair.rect.center());
-                    if repair.clicked() {
-                        crate::refused_part::repair(app, &part.body);
-                    }
+                    crate::refused_part::repair_button(app, ui, &part.body);
                     if part.face.is_some() {
                         let show = crate::ui_kit::button(ui, solidcraft_ui_text::tr("refused.show_face"), crate::ui_kit::Button::Normal);
                         crate::scenario::publish_handle("dialog:show_face", show.rect.center());
@@ -3973,6 +3967,11 @@ fn error_rows(app: &mut SolveApp, ctx: &egui::Context, d: &mut Dialog, ui: &mut 
             } else {
                 damaged_part_plain_error(&error).map(FilletRefusal::Plain)
             };
+            // The message says to repair the part: the button is here, on the part it names.
+            let damaged = damaged_part_plain_error(&error).and_then(|_| {
+                let names = crate::refused_part::operands(app, &dialog_commands(app, d).unwrap_or_default(), &d.items());
+                names.into_iter().next()
+            });
             ui.vertical(|ui| {
                 match &plain {
                     Some(FilletRefusal::Plain(plain)) => {
@@ -3984,6 +3983,9 @@ fn error_rows(app: &mut SolveApp, ctx: &egui::Context, d: &mut Dialog, ui: &mut 
                     }
                 }
                 ui.horizontal(|ui| {
+                    if let Some(body) = &damaged {
+                        crate::refused_part::repair_button(app, ui, body);
+                    }
                     if plain.is_some() {
                         let copy = crate::ui_kit::button(ui, tr("ui.copy_details"), crate::ui_kit::Button::Normal);
                         crate::scenario::publish_handle("dialog:copy_details", copy.rect.center());
@@ -9667,6 +9669,21 @@ mod refused_ok_tests {
         let plain = super::damaged_part_plain_error(wall).expect("plain line");
         assert!(!plain.contains('\n') && plain.len() < 120 && !plain.contains("SMLib"), "{plain}");
         assert_eq!(super::damaged_part_plain_error("hole depth must be positive"), None);
+    }
+
+    /// BUG-28: the damaged-part line says "Try Repair Part first", so the dialog has the button.
+    #[test]
+    fn a_damaged_part_refusal_offers_repair_part() {
+        crate::i18n::install();
+        let mut h = hole_dialog();
+        let wall =
+            "body `Box`: the operation failed: SMLib boolean: SMLib's check refuses the result (the first operand already fails it): 7 failed tests";
+        if let Some(d) = h.app.dialog.as_mut() {
+            d.error = Some(wall.to_string());
+        }
+        h.frames(2);
+        assert!(crate::scenario::handle_at("dialog:repair_part").is_some(), "no Repair Part button under the damaged-part line");
+        assert!(crate::scenario::handle_at("dialog:copy_details").is_some());
     }
 
     #[test]

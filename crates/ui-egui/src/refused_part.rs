@@ -102,6 +102,16 @@ pub(crate) fn next_frame(app: &mut SolveApp, ctx: &egui::Context) {
     }
 }
 
+/// The Repair Part button of a dialog's refusal: it repairs `body` when clicked.
+pub(crate) fn repair_button(app: &mut SolveApp, ui: &mut egui::Ui, body: &str) {
+    let enabled = solidcraft_engine::find_command(REPAIR).map(|c| c.info(&app.session)).is_some_and(|i| i.enabled);
+    let button = crate::ui_kit::button(ui, solidcraft_ui_text::tr("refused.repair"), crate::ui_kit::Button::Enabled(enabled));
+    crate::scenario::publish_handle("dialog:repair_part", button.rect.center());
+    if button.clicked() {
+        repair(app, body);
+    }
+}
+
 /// Repair the part with the command's defaults (it says why when nothing applies).
 pub(crate) fn repair(app: &mut SolveApp, body: &str) {
     if let Err(e) = app.run(REPAIR, json!({ "body": body })) {
