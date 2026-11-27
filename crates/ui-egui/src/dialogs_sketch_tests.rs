@@ -767,6 +767,30 @@ fn transform_position_is_where_the_middle_is_on_the_sketch() {
     assert_eq!((field.as_str(), at), ("15 mm", 40.0), "L * 4 is 40 mm: 0 + 40 - 25");
 }
 
+/// A moved box lines its edge up with a point of the sketch that is not picked.
+#[test]
+fn transform_box_snaps_to_a_sketch_point_while_it_moves() {
+    let mut h = fixture();
+    h.app.run("sketch.line", json!({"points": [[100, 60], [100, 80]]})).unwrap();
+    h.step(&json!({"call": "ui.view", "params": {"view": "fit"}})).unwrap();
+    h.settle();
+    let ids: Vec<String> = ["l1", "l2", "l3", "l4"].map(String::from).to_vec();
+    let mut d = Dialog::for_command(&h.app, "sketch.transform").unwrap();
+    d.inputs[0].items = ids.iter().map(|id| Sel::SketchCurve { id: id.clone(), sketch: None }).collect();
+    h.app.dialog = Some(d);
+    h.frames(4);
+    // The rectangle's right side is at x = 40; the box goes 59.8 mm to the right, so the side
+    // would end at 99.8, a hair from the point at x = 100.
+    h.step(&json!({"drag": [{"sketch": [18.0, 25.0]}, {"sketch": [77.8, 25.0]}]})).unwrap();
+    h.frames(3);
+    let x = match h.app.dialog.as_ref().map(|d| d.kind.clone()) {
+        Some(Kind::SketchModify(Mod::Transform { x, .. })) => x,
+        other => panic!("no transform window: {other:?}"),
+    };
+    let moved = x.trim_end_matches("mm").trim().parse::<f64>().unwrap();
+    assert!((moved - 60.0).abs() < 1e-6, "the right side lined up with x = 100: moved {x}");
+}
+
 /// A double click on the turning knob puts the box back to 0 degrees.
 #[test]
 fn transform_knob_double_click_resets_the_turn() {

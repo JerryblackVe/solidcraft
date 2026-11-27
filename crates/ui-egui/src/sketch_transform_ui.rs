@@ -47,6 +47,65 @@ pub struct Drag {
     part: Part,
     from: Vec2,
     at: Frame,
+    /// What a moved box snaps to, made once when the drag begins (a Move drag only).
+    snaps: Option<std::sync::Arc<Targets>>,
+}
+
+/// The sketch's points the box snaps to, and the origin, kept sorted by x and by y so each frame
+/// of a drag looks a value up by binary search instead of going over the sketch.
+#[derive(Debug, Default)]
+pub struct Targets {
+    by_x: Vec<Vec2>,
+    by_y: Vec<Vec2>,
+}
+
+impl Targets {
+    fn new(mut pts: Vec<Vec2>) -> Self {
+        pts.retain(|p| p.x.is_finite() && p.y.is_finite());
+        let mut by_y = pts.clone();
+        pts.sort_by(|a, b| a.x.total_cmp(&b.x));
+        by_y.sort_by(|a, b| a.y.total_cmp(&b.y));
+        Self { by_x: pts, by_y }
+    }
+
+    /// The target nearest `v` along one axis (`key` reads it from a point), within `tol`.
+    fn near(list: &[Vec2], v: f64, key: fn(Vec2) -> f64, tol: f64) -> Option<Vec2> {
+        let i = list.partition_point(|p| key(*p) < v);
+        [i.checked_sub(1), Some(i)]
+            .into_iter()
+            .flatten()
+            .filter_map(|j| list.get(j).copied())
+            .filter(|p| (key(*p) - v).abs() <= tol)
+            .min_by(|a, b| (key(*a) - v).abs().total_cmp(&(key(*b) - v).abs()))
+    }
+
+    /// How far `spots` (the box's corners, middles of sides and centre) must move to line up with a
+    /// target, each axis on its own, and the guides to draw from each spot to its target.
+    fn pull(&self, spots: &[Vec2], tol: f64) -> (Vec2, Vec<(Vec2, Vec2)>) {
+        let best = |list: &[Vec2], key: fn(Vec2) -> f64| {
+            spots
+                .iter()
+                .filter_map(|s| Self::near(list, key(*s), key, tol).map(|t| (*s, t)))
+                .min_by(|a, b| (key(a.1) - key(a.0)).abs().total_cmp(&(key(b.1) - key(b.0)).abs()))
+        };
+        let (bx, by) = (best(&self.by_x, |p| p.x), best(&self.by_y, |p| p.y));
+        let delta = Vec2::new(bx.map_or(0.0, |(s, t)| t.x - s.x), by.map_or(0.0, |(s, t)| t.y - s.y));
+        let guides = bx.into_iter().chain(by).map(|(s, t)| (s + delta, t)).collect();
+        (delta, guides)
+    }
+}
+
+/// The points of the sketch the picks do not own, and the origin.
+fn targets(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<Targets> {
+    let state = crate::open_meshing::session_world(&app.session);
+    let sk = &state.sketch(app.session.active_sketch?)?.sketch;
+    let (drawn, points) = picked(app, d)?;
+    let key = |q: Vec2| ((q.x * 1e6).round() as i64, (q.y * 1e6).round() as i64);
+    // The picks' own points go with the box, so they are no target.
+    let own: std::collections::HashSet<(i64, i64)> =
+        drawn.iter().flat_map(|c| sk.polyline(*c)).chain(points.iter().filter_map(|i| sk.point(*i))).map(key).collect();
+    let others = sk.points.iter().map(|p| p.pos).filter(|q| !own.contains(&key(*q)));
+    Some(Targets::new(others.chain(std::iter::once(Vec2::new(0.0, 0.0))).collect()))
 }
 
 /// The box as placed: where its pivot is (the point it scales and turns about), how much it is
@@ -91,6 +150,14 @@ fn turn(v: Vec2, degrees: f64) -> Vec2 {
 /// A spot of the box in its own frame (`u`, `v` in half sizes) on the sketch.
 fn spot(f: &Frame, u: f64, v: f64) -> Vec2 {
     center(f) + turn(stretch(f, Vec2::new(u * f.natural.0 / 2.0, v * f.natural.1 / 2.0)), f.angle)
+}
+
+/// How many millimetres of the sketch one screen point covers around `at`.
+fn mm_per_pixel(plane: &Plane, proj: &Proj, at: Vec2) -> f64 {
+    match (on_screen(plane, proj, at), on_screen(plane, proj, at + Vec2::X)) {
+        (Some(a), Some(b)) => 1.0 / (a.distance(b) as f64).max(1e-9),
+        _ => 0.0,
+    }
 }
 
 fn on_screen(plane: &Plane, proj: &Proj, q: Vec2) -> Option<Pos2> {
@@ -464,7 +531,8 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
         if response.drag_started()
             && let Some(from) = response.interact_pointer_pos().and_then(|p| pointer_on_sketch(&plane, proj, p))
         {
-            app.viewport.transform_drag = Some(Drag { part, from, at: frame });
+            let snaps = (part == Part::Move).then(|| app.dialog.as_ref().and_then(|d| targets(app, d))).flatten().map(std::sync::Arc::new);
+            app.viewport.transform_drag = Some(Drag { part, from, at: frame, snaps });
         }
         // The release frame carries the last move too: it counts, or a quick drag stops short.
         if (response.dragged() || response.drag_stopped())
@@ -475,7 +543,21 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
         {
             let free = matches!(&app.dialog.as_ref().map(|d| &d.kind), Some(Kind::SketchModify(Mod::Transform { lock: false, .. })));
             let keys = ui.input(|i| Keys { shift: i.modifiers.shift, ctrl: i.modifiers.ctrl, free });
-            let now = apply(&drag, p, keys);
+            let mut now = apply(&drag, p, keys);
+            // A moved box lines up with the sketch's points and the origin; Alt turns that off.
+            if let Some(targets) = drag.snaps.as_ref().filter(|_| !ui.input(|i| i.modifiers.alt)) {
+                let tol = 7.0 * mm_per_pixel(&plane, proj, Vec2::new(now.x, now.y));
+                let spots: Vec<Vec2> = [-1.0, 0.0, 1.0].into_iter().flat_map(|u| [-1.0, 0.0, 1.0].map(|v| spot(&now, u, v))).collect();
+                let (delta, guides) = targets.pull(&spots, tol);
+                now.x += delta.x;
+                now.y += delta.y;
+                for (from, to) in guides {
+                    if let (Some(a), Some(b)) = (on_screen(&plane, proj, from), on_screen(&plane, proj, to)) {
+                        painter.add(egui::Shape::dashed_line(&[a, b], Stroke::new(1.0, t.accent), 5.0, 4.0));
+                        painter.circle_stroke(b, 4.0, Stroke::new(1.5, t.accent));
+                    }
+                }
+            }
             if let Some(Kind::SketchModify(k)) = app.dialog.as_mut().map(|d| &mut d.kind) {
                 store(k, &now, drag.part == Part::Pivot);
             }
@@ -542,7 +624,7 @@ mod tests {
     }
 
     fn drag(part: Part, from: Vec2, at: Frame) -> Drag {
-        Drag { part, from, at }
+        Drag { part, from, at, snaps: None }
     }
 
     #[test]
@@ -686,6 +768,20 @@ mod tests {
         f.scale = 2.0;
         f.aspect = 0.5;
         assert_eq!(size_text(&solidcraft_engine::doc::Document::default(), &f), "60 mm \u{d7} 20 mm");
+    }
+
+    #[test]
+    fn a_moved_box_lines_up_with_a_target_within_reach_and_not_beyond() {
+        let t = Targets::new(vec![Vec2::new(10.0, 50.0), Vec2::new(-30.0, 7.0), Vec2::new(100.0, 100.0)]);
+        // The box's left side is at x = 9.5: the target at x = 10 is within 1; y is far from all.
+        let spots = [Vec2::new(9.5, 20.0), Vec2::new(30.0, 25.0)];
+        let (delta, guides) = t.pull(&spots, 1.0);
+        assert_eq!((delta.x, delta.y), (0.5, 0.0));
+        assert_eq!(guides.len(), 1, "one guide, to the target the box lined up with");
+        assert_eq!(t.pull(&spots, 0.1).0, Vec2::new(0.0, 0.0), "out of reach: nothing moves");
+        // Both axes at once, each to its own nearest target.
+        let (both, g) = t.pull(&[Vec2::new(-29.8, 7.4)], 1.0);
+        assert!((both.x + 0.2).abs() < 1e-9 && (both.y + 0.4).abs() < 1e-9 && g.len() == 2, "{both:?}");
     }
 
     #[test]
