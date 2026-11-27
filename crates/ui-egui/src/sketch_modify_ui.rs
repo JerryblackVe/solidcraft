@@ -153,6 +153,8 @@ pub enum Mod {
         /// What the Position rows and the Angle row show, as typed (an expression stays as typed
         /// while it gives the value the box has).
         shown: [String; 3],
+        /// Keep Proportions: a corner and the Width and Height rows keep the shape (on by default).
+        lock: bool,
     },
     /// `sketch.pattern.rectangular`: how many instances along the picked direction and how far
     /// apart, then the same along a second picked direction (perpendicular by default).
@@ -319,6 +321,7 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
             pivot: None,
             placed: None,
             shown: Default::default(),
+            lock: true,
         },
         "sketch.move" => Mod::Move {
             x: crate::dialogs::length_default(&app.session, "0"),
@@ -779,7 +782,7 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Mod, doc: &Document) -> bool {
             enter |= number(ui, "Angle", angle);
             ui_kit::options(ui, "move_options", &mut [("Create Copy", copy)]);
         }
-        Mod::Transform { x, y, factor, angle, frame, aspect, placed, shown: texts, .. } => {
+        Mod::Transform { x, y, factor, angle, frame, aspect, placed, shown: texts, lock, .. } => {
             // X and Y are where the middle of the picks is on the sketch; the window keeps the
             // distance it moved, so a typed place moves it by the difference.
             if let Some(at) = placed {
@@ -808,7 +811,11 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Mod, doc: &Document) -> bool {
                         && mm > 0.0
                         && natural > 1e-9
                     {
-                        if high {
+                        if *lock {
+                            // The shape is kept: the other size follows.
+                            let new = if high { mm / natural / a } else { mm / natural };
+                            *factor = format!("{}", (new * 1e6).round() / 1e6);
+                        } else if high {
                             *aspect = format!("{}", ((mm / natural / k) * 1e6).round() / 1e6);
                         } else {
                             // The height keeps its own size while the width changes.
@@ -836,6 +843,7 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Mod, doc: &Document) -> bool {
             {
                 *angle = format!("{} deg", crate::sketch_transform_ui::plain(whole - own));
             }
+            ui_kit::options(ui, "transform_options", &mut [("Keep Proportions", lock)]);
         }
         Mod::PatternRect { count, spacing, count2, spacing2, alignment: a, alignment2, reversed, reversed2 } => {
             let (left1, left2) = (copies_left(doc, count2), copies_left(doc, count));

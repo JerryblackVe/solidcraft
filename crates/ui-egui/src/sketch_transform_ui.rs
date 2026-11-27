@@ -270,8 +270,18 @@ fn store(k: &mut Mod, f: &Frame, pivot_moved: bool) {
     }
 }
 
+/// The keys and the lock held during a drag: Shift snaps a turn to 15 degrees and keeps the shape
+/// of a corner drag; Ctrl scales from the box middle; `free` is the Keep Proportions lock off.
+#[derive(Clone, Copy, Debug, Default)]
+struct Keys {
+    shift: bool,
+    ctrl: bool,
+    free: bool,
+}
+
 /// The frame after the pointer has moved to `p`, from where `drag` began.
-fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
+fn apply(drag: &Drag, p: Vec2, keys: Keys) -> Frame {
+    let snap = keys.shift;
     let start = drag.at;
     let mut now = start;
     match drag.part {
@@ -292,23 +302,23 @@ fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
             }
         }
         Part::Side(axis, sign) => {
-            // One size changes, from the opposite side, which stays: the pointer in the box's own
-            // frame says how big that size is now.
+            // One size changes, from the opposite side (or the middle with Ctrl), which stays: the
+            // pointer in the box's own frame says how big that size is now.
             let (u, v) = if axis == 0 { (sign, 0.0) } else { (0.0, sign) };
-            let fixed = spot(&start, -u, -v);
+            let (fixed, span) = if keys.ctrl { (spot(&start, 0.0, 0.0), 2.0) } else { (spot(&start, -u, -v), 1.0) };
             let local = turn(p - fixed, -start.angle);
             let high = start.scale * start.aspect;
             let reach = if axis == 0 {
-                let wide = (local.x.abs() / start.natural.0).clamp(MIN_FACTOR, MAX_FACTOR);
+                let wide = (span * local.x.abs() / start.natural.0).clamp(MIN_FACTOR, MAX_FACTOR);
                 now.scale = wide;
                 now.aspect = (high / wide).clamp(MIN_FACTOR, MAX_FACTOR);
                 Vec2::new(sign * wide * start.natural.0 / 2.0, 0.0)
             } else {
-                let tall = (local.y.abs() / start.natural.1).clamp(MIN_FACTOR, MAX_FACTOR);
+                let tall = (span * local.y.abs() / start.natural.1).clamp(MIN_FACTOR, MAX_FACTOR);
                 now.aspect = (tall / start.scale).clamp(MIN_FACTOR, MAX_FACTOR);
                 Vec2::new(0.0, sign * tall * start.natural.1 / 2.0)
             };
-            let middle = fixed + turn(reach, start.angle);
+            let middle = if keys.ctrl { fixed } else { fixed + turn(reach, start.angle) };
             let pivot = middle - turn(in_box(&now, start.middle - start.pivot), start.angle);
             if pivot.x.is_finite() && pivot.y.is_finite() {
                 now.x = pivot.x;
@@ -324,16 +334,26 @@ fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
             now.y = at.y;
         }
         Part::Corner(u, v) => {
-            let fixed = spot(&start, -u, -v);
-            // The pointer in the box's own frame, measured from the corner that stays.
+            let (fixed, span) = if keys.ctrl { (spot(&start, 0.0, 0.0), 2.0) } else { (spot(&start, -u, -v), 1.0) };
+            // The pointer in the box's own frame, measured from the point that stays.
             let local = turn(p - fixed, -start.angle);
             let high = start.natural.1 * start.aspect;
-            let k = (local.x.abs() / start.natural.0).max(local.y.abs() / high).clamp(MIN_FACTOR, MAX_FACTOR);
-            if k.is_finite() {
-                let reach = turn(Vec2::new(u * k * start.natural.0 / 2.0, v * k * high / 2.0), start.angle);
-                now.scale = k;
-                // The pivot goes where it keeps the box middle at `fixed + reach`.
-                let pivot = fixed + reach - turn(in_box(&now, start.middle - start.pivot), start.angle);
+            let (wide, tall) = (span * local.x.abs(), span * local.y.abs());
+            let k = (wide / start.natural.0).max(tall / high).clamp(MIN_FACTOR, MAX_FACTOR);
+            // The shape is kept with the lock on or Shift held; otherwise each size follows the pointer.
+            let (scale, aspect) = if !keys.free || keys.shift {
+                (k, start.aspect)
+            } else {
+                let scale = (wide / start.natural.0).clamp(MIN_FACTOR, MAX_FACTOR);
+                (scale, (tall / start.natural.1 / scale).clamp(MIN_FACTOR, MAX_FACTOR))
+            };
+            if scale.is_finite() && aspect.is_finite() {
+                now.scale = scale;
+                now.aspect = aspect;
+                let reach = turn(Vec2::new(u * scale * start.natural.0 / 2.0, v * scale * aspect * start.natural.1 / 2.0), start.angle);
+                let middle = if keys.ctrl { fixed } else { fixed + reach };
+                // The pivot goes where it keeps the box middle at `middle`.
+                let pivot = middle - turn(in_box(&now, start.middle - start.pivot), start.angle);
                 now.x = pivot.x;
                 now.y = pivot.y;
             }
@@ -346,6 +366,12 @@ fn apply(drag: &Drag, p: Vec2, snap: bool) -> Frame {
 fn turn_text(f: &Frame) -> String {
     let a = (f.angle + 180.0).rem_euclid(360.0) - 180.0;
     format!("R: {}\u{b0}", plain(if a <= -180.0 { 180.0 } else { a }))
+}
+
+/// The balloon while a corner or a side is dragged: width times height, in the design's unit.
+fn size_text(doc: &solidcraft_engine::doc::Document, f: &Frame) -> String {
+    let (w, h) = (f.natural.0 * f.scale, f.natural.1 * f.scale * f.aspect);
+    format!("{} \u{d7} {}", crate::length_input::shown(doc, w), crate::length_input::shown(doc, h))
 }
 
 /// The frame with the box turned back to 0 degrees in all (the window's Angle undoes `base`).
@@ -447,12 +473,21 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
             && let Some(p) =
                 response.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())).and_then(|p| pointer_on_sketch(&plane, proj, p))
         {
-            let now = apply(&drag, p, ui.input(|i| i.modifiers.shift));
+            let free = matches!(&app.dialog.as_ref().map(|d| &d.kind), Some(Kind::SketchModify(Mod::Transform { lock: false, .. })));
+            let keys = ui.input(|i| Keys { shift: i.modifiers.shift, ctrl: i.modifiers.ctrl, free });
+            let now = apply(&drag, p, keys);
             if let Some(Kind::SketchModify(k)) = app.dialog.as_mut().map(|d| &mut d.kind) {
                 store(k, &now, drag.part == Part::Pivot);
             }
-            if drag.part == Part::Turn && response.dragged() {
-                let galley = painter.layout_no_wrap(turn_text(&now), egui::FontId::proportional(t.font_body), t.text);
+            let balloon = match drag.part {
+                Part::Turn => Some(turn_text(&now)),
+                Part::Corner(..) | Part::Side(..) => Some(size_text(&app.session.doc, &now)),
+                _ => None,
+            };
+            if let Some(text) = balloon
+                && response.dragged()
+            {
+                let galley = painter.layout_no_wrap(text, egui::FontId::proportional(t.font_body), t.text);
                 let at = ui.input(|i| i.pointer.latest_pos()).unwrap_or(knob) + vec2(14.0, -26.0);
                 let back = egui::Rect::from_min_size(at, galley.size()).expand(4.0);
                 painter.rect(back, 3.0, t.overlay, stroke, egui::StrokeKind::Inside);
@@ -491,7 +526,7 @@ mod tests {
         let f = cornered();
         assert!(center(&f).dist(Vec2::new(10.0, 5.0)) < 1e-9 && spot(&f, -1.0, -1.0).dist(Vec2::ZERO) < 1e-9, "unmoved, the box is where it was");
         // The pointer goes a quarter turn round the pivot: from (10, 0) up to (0, 10).
-        let turned = apply(&drag(Part::Turn, Vec2::new(10.0, 0.0), f), Vec2::new(0.0, 10.0), false);
+        let turned = apply(&drag(Part::Turn, Vec2::new(10.0, 0.0), f), Vec2::new(0.0, 10.0), Keys::default());
         assert!((turned.angle - 90.0).abs() < 1e-9, "{}", turned.angle);
         assert!(moved(&turned, Vec2::ZERO).dist(Vec2::ZERO) < 1e-9, "the pivot stays");
         assert!(moved(&turned, Vec2::new(20.0, 0.0)).dist(Vec2::new(0.0, 20.0)) < 1e-9, "the far corner turns about it");
@@ -499,7 +534,7 @@ mod tests {
         // A corner drag still keeps the opposite corner, the pivot following the box.
         let fixed = spot(&turned, -1.0, -1.0);
         let pulled = spot(&turned, 1.0, 1.0) + turn(Vec2::new(20.0, 10.0), 90.0);
-        let scaled = apply(&drag(Part::Corner(1.0, 1.0), spot(&turned, 1.0, 1.0), turned), pulled, false);
+        let scaled = apply(&drag(Part::Corner(1.0, 1.0), spot(&turned, 1.0, 1.0), turned), pulled, Keys::default());
         assert!((scaled.scale - 2.0).abs() < 1e-9 && spot(&scaled, -1.0, -1.0).dist(fixed) < 1e-9, "{scaled:?}");
         for (u, v, q) in [(-1.0, -1.0, Vec2::ZERO), (1.0, 1.0, Vec2::new(20.0, 10.0))] {
             assert!(moved(&scaled, q).dist(spot(&scaled, u, v)) < 1e-9, "a corner of the entities is a corner of the box");
@@ -516,7 +551,7 @@ mod tests {
             let f = Frame { angle, ..frame() };
             let fixed = spot(&f, -1.0, -1.0);
             let pulled = spot(&f, 1.0, 1.0) + turn(Vec2::new(20.0, 10.0), angle);
-            let now = apply(&drag(Part::Corner(1.0, 1.0), spot(&f, 1.0, 1.0), f), pulled, false);
+            let now = apply(&drag(Part::Corner(1.0, 1.0), spot(&f, 1.0, 1.0), f), pulled, Keys::default());
             assert!((now.scale - 2.0).abs() < 1e-9, "{}", now.scale);
             assert!(spot(&now, -1.0, -1.0).dist(fixed) < 1e-9, "the opposite corner stays");
         }
@@ -529,7 +564,7 @@ mod tests {
             let f = Frame { angle, ..frame() };
             let wide_fixed = spot(&f, -1.0, 0.0);
             let pulled = spot(&f, 1.0, 0.0) + turn(Vec2::new(10.0, 0.0), angle);
-            let now = apply(&drag(Part::Side(0, 1.0), spot(&f, 1.0, 0.0), f), pulled, false);
+            let now = apply(&drag(Part::Side(0, 1.0), spot(&f, 1.0, 0.0), f), pulled, Keys::default());
             assert!((now.scale - 1.5).abs() < 1e-9, "{}", now.scale);
             assert!(spot(&now, -1.0, 0.0).dist(wide_fixed) < 1e-9, "the left side stays");
             assert!((spot(&now, 0.0, 1.0).dist(spot(&now, 0.0, -1.0)) - 10.0).abs() < 1e-9, "the height is as it was");
@@ -537,7 +572,7 @@ mod tests {
             // The height: pulled down from the top side, the bottom stays.
             let tall_fixed = spot(&now, 0.0, -1.0);
             let up = spot(&now, 0.0, 1.0) + turn(Vec2::new(0.0, 5.0), angle);
-            let taller = apply(&drag(Part::Side(1, 1.0), spot(&now, 0.0, 1.0), now), up, false);
+            let taller = apply(&drag(Part::Side(1, 1.0), spot(&now, 0.0, 1.0), now), up, Keys::default());
             assert!(spot(&taller, 0.0, -1.0).dist(tall_fixed) < 1e-9, "the bottom stays");
             assert!((spot(&taller, 0.0, 1.0).dist(spot(&taller, 0.0, -1.0)) - 15.0).abs() < 1e-9);
             assert!((spot(&taller, 1.0, 0.0).dist(spot(&taller, -1.0, 0.0)) - 30.0).abs() < 1e-9, "the width is as it was");
@@ -552,7 +587,7 @@ mod tests {
     #[test]
     fn moving_the_pivot_moves_no_entity() {
         let f = Frame { angle: 25.0, scale: 2.0, aspect: 0.5, x: 3.0, y: -2.0, ..frame() };
-        let now = apply(&drag(Part::Pivot, center(&f), f), Vec2::new(-7.0, 4.0), false);
+        let now = apply(&drag(Part::Pivot, center(&f), f), Vec2::new(-7.0, 4.0), Keys::default());
         assert_eq!(now.pivot, Vec2::new(-7.0, 4.0));
         for q in [Vec2::ZERO, Vec2::new(20.0, 10.0), Vec2::new(3.0, 8.0)] {
             assert!(moved(&now, q).dist(moved(&f, q)) < 1e-9, "{q:?}");
@@ -562,12 +597,12 @@ mod tests {
     #[test]
     fn the_box_moves_and_the_knob_turns() {
         let f = frame();
-        let now = apply(&drag(Part::Move, Vec2::new(10.0, 5.0), f), Vec2::new(14.0, 1.0), false);
+        let now = apply(&drag(Part::Move, Vec2::new(10.0, 5.0), f), Vec2::new(14.0, 1.0), Keys::default());
         assert_eq!((now.x, now.y), (14.0, 1.0));
         // The knob is straight above the middle: to the left of it is a quarter turn.
-        let turned = apply(&drag(Part::Turn, Vec2::new(14.0, 10.0), now), Vec2::new(4.0, 1.0), false);
+        let turned = apply(&drag(Part::Turn, Vec2::new(14.0, 10.0), now), Vec2::new(4.0, 1.0), Keys::default());
         assert!((turned.angle - 90.0).abs() < 1e-9, "{}", turned.angle);
-        let snapped = apply(&drag(Part::Turn, Vec2::new(14.0, 10.0), now), Vec2::new(4.0, 3.0), true);
+        let snapped = apply(&drag(Part::Turn, Vec2::new(14.0, 10.0), now), Vec2::new(4.0, 3.0), Keys { shift: true, ..Keys::default() });
         assert!((snapped.angle % 15.0).abs() < 1e-9, "{}", snapped.angle);
     }
 
@@ -591,6 +626,7 @@ mod tests {
             pivot: None,
             placed: None,
             shown: Default::default(),
+            lock: true,
         };
         store(&mut k, &up, false);
         assert!(matches!(&k, Mod::Transform { angle, .. } if angle == "-30 deg"), "the window's Angle is relative to the box's own turn");
@@ -618,6 +654,38 @@ mod tests {
         assert_eq!(typed, "1 in", "a text that gives the place stays as typed");
         crate::sketch_modify_ui::sync_place(&doc, &mut typed, 50.8);
         assert_eq!(typed, "2 in");
+    }
+
+    #[test]
+    fn with_the_lock_off_a_corner_follows_the_pointer_and_shift_or_ctrl_change_it() {
+        let f = frame();
+        let at = spot(&f, 1.0, 1.0);
+        let pulled = at + Vec2::new(10.0, 0.0);
+        let free = Keys { free: true, ..Keys::default() };
+        let now = apply(&drag(Part::Corner(1.0, 1.0), at, f), pulled, free);
+        assert!(
+            (now.scale - 1.0 * (f.natural.0 + 10.0) / f.natural.0).abs() < 1e-9 && (now.scale * now.aspect - f.scale * f.aspect).abs() < 1e-9,
+            "wider only: {now:?}"
+        );
+        let kept = apply(&drag(Part::Corner(1.0, 1.0), at, f), pulled, Keys { shift: true, ..free });
+        assert!((kept.aspect - f.aspect).abs() < 1e-9, "Shift keeps the shape: {kept:?}");
+        let locked = apply(&drag(Part::Corner(1.0, 1.0), at, f), pulled, Keys::default());
+        assert!((locked.aspect - f.aspect).abs() < 1e-9, "the lock keeps the shape: {locked:?}");
+        // Ctrl scales about the middle: it stays, and the corner reaches the pointer.
+        let out = apply(&drag(Part::Corner(1.0, 1.0), at, f), pulled, Keys { ctrl: true, ..free });
+        assert!((center(&out) - center(&f)).len() < 1e-9, "the middle stays: {out:?}");
+        assert!((spot(&out, 1.0, 1.0) - pulled).len() < 1e-9, "the corner is under the pointer");
+        let side = apply(&drag(Part::Side(0, 1.0), spot(&f, 1.0, 0.0), f), spot(&f, 1.0, 0.0) + Vec2::new(4.0, 0.0), Keys { ctrl: true, ..free });
+        assert!((center(&side) - center(&f)).len() < 1e-9 && side.scale > f.scale, "a side with Ctrl grows both ways: {side:?}");
+    }
+
+    #[test]
+    fn the_size_balloon_shows_width_times_height() {
+        let mut f = frame();
+        f.natural = (30.0, 20.0);
+        f.scale = 2.0;
+        f.aspect = 0.5;
+        assert_eq!(size_text(&solidcraft_engine::doc::Document::default(), &f), "60 mm \u{d7} 20 mm");
     }
 
     #[test]
