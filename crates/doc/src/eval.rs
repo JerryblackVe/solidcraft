@@ -2501,6 +2501,7 @@ pub(crate) fn heal_digest(heal: bool) -> u64 {
 /// state it started from), once its steps left their checks to its end: the first that fails is
 /// the feature's error, naming the body.
 fn check_kept(before: &ModelState, after: &ModelState) -> kernel::Result<()> {
+    let mut kept = Vec::new();
     for b in &after.bodies {
         if before.bodies.iter().any(|old| old.body.same_shape(&b.body)) {
             continue;
@@ -2511,7 +2512,12 @@ fn check_kept(before: &ModelState, after: &ModelState) -> kernel::Result<()> {
             cost_tests::count(|c| c.reused_checks += 1);
             continue;
         }
-        check_feature_body(&b.body).map_err(|e| kept_refused(&b.name, &e, &replaced(before, after)))?;
+        kept.push(b);
+    }
+    // Each body's check is its own: they run on threads, the first refusal in order is the error.
+    for (b, r) in kept.iter().zip(kernel::map_on_threads(&kept, 16, |b| check_feature_body(&b.body))) {
+        r.unwrap_or_else(|| Err(kernel::KernelError::Internal("the check of a body stopped unexpectedly".into())))
+            .map_err(|e| kept_refused(&b.name, &e, &replaced(before, after)))?;
     }
     Ok(())
 }
@@ -2520,8 +2526,16 @@ fn check_kept(before: &ModelState, after: &ModelState) -> kernel::Result<()> {
 /// body name, in order: the first that fails is the feature's error, as there. `inputs` are the
 /// bodies the feature replaced ([`replaced`]), for that error.
 fn run_kept(checks: Vec<(String, kernel::KeptCheck)>, inputs: Vec<(String, Body, bool)>) -> kernel::Result<()> {
-    for (name, check) in checks {
-        check.run().map_err(|e| kept_refused(&name, &e, &inputs))?;
+    // Each body's check is its own: they run on threads, the first refusal in order is the error.
+    let checks: Vec<(String, std::sync::Mutex<Option<kernel::KeptCheck>>)> =
+        checks.into_iter().map(|(name, check)| (name, std::sync::Mutex::new(Some(check)))).collect();
+    let ran = kernel::map_on_threads(&checks, 16, |(_, check)| match check.lock().ok().and_then(|mut c| c.take()) {
+        Some(check) => check.run(),
+        None => Err(kernel::KernelError::Internal("a body's check was lost".into())),
+    });
+    for ((name, _), r) in checks.iter().zip(ran) {
+        r.unwrap_or_else(|| Err(kernel::KernelError::Internal("the check of a body stopped unexpectedly".into())))
+            .map_err(|e| kept_refused(name, &e, &inputs))?;
     }
     Ok(())
 }

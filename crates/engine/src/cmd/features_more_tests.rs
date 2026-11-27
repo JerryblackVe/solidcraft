@@ -818,6 +818,23 @@ fn an_emboss_across_slots_raises_on_each_slat_what_lies_over_it() {
     assert!(added[0].abs() < 1e-9 && rel(added[1], 100.0) < 1e-6 && added[2].abs() < 1e-9, "{added:?}");
 }
 
+/// MEJ-47: the selected faces are laid, covered and joined on threads; the bodies come out the
+/// same, in the same order, every time (the volumes above are the serial evaluation's).
+#[test]
+fn an_emboss_across_slots_comes_out_the_same_every_time() {
+    let made = || {
+        let mut s = slats_under_a_band();
+        run(&mut s, "solid.emboss", json!({"sketch": "Band", "depth": 1, "faces": [[5, 25, 3], [16, 25, 3], [27, 25, 3]]}));
+        let state = s.model.state();
+        state.bodies.iter().map(|b| (b.name.clone(), b.body.record().faces.len(), body_volume(&s, &b.name).to_bits())).collect::<Vec<_>>()
+    };
+    let first = made();
+    assert_eq!(first.iter().map(|(n, ..)| n.as_str()).collect::<Vec<_>>(), ["S1", "S2", "S3"], "{first:?}");
+    for _ in 0..3 {
+        assert_eq!(made(), first);
+    }
+}
+
 #[test]
 fn an_emboss_on_stacked_faces_leaves_out_what_the_upper_one_covers() {
     // A 20 x 40 x 3 plate and one on top of it moved 15 along x; a band x 5..30 over both. The
@@ -899,6 +916,40 @@ fn an_emboss_on_a_side_the_sketch_does_not_look_at_takes_its_profiles_adapted() 
     run(&mut s, "solid.emboss", json!({"sketch": "Big", "depth": 1, "faces": [[40, 10, 5]]}));
     let side = 30.0 * 0.9 * 5.0 / 14.7;
     assert!(rel(volume(&mut s) - v, side * side) < 2e-3, "{}", volume(&mut s) - v);
+}
+
+/// A 40 x 20 x 10 box whose top edges are rounded (radius 4) and a sketch above it: the faces of
+/// its top's tangent chain are the top (y 4..16, x 4..36), the four rounds and the four sides.
+fn rounded_box_with_square(p0: [f64; 2], p1: [f64; 2]) -> Session {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 40, "width": 20, "height": 10, "operation": "new", "body_name": "Box"}));
+    run(&mut s, "solid.fillet", json!({"edges": [[20, 20, 10], [20, 0, 10], [0, 10, 10], [40, 10, 10]], "radius": 4}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 15], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Lid"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": p0, "p1": p1}));
+    run(&mut s, "sketch.finish", json!({}));
+    s
+}
+
+#[test]
+fn an_emboss_on_a_tangent_chain_raises_only_what_lies_over_it() {
+    // A 10 x 10 square over the middle of the top, 1 mm, on the whole chain: 100 on the top; the
+    // sides are walls of the chain, not faces to adapt it onto, and no round lies under it (MEJ-46).
+    let mut s = rounded_box_with_square([15.0, 5.0], [25.0, 15.0]);
+    let v = volume(&mut s);
+    let (a, b) = (4.0 - 4.0 * std::f64::consts::FRAC_1_SQRT_2, 16.0 + 4.0 * std::f64::consts::FRAC_1_SQRT_2);
+    let z = 6.0 + 4.0 * std::f64::consts::FRAC_1_SQRT_2;
+    let chain = json!([[20, 10, 10], [20, b, z], [20, a, z], [a, 10, z], [b + 20.0, 10, z], [20, 20, 5], [20, 0, 5], [0, 10, 5], [40, 10, 5]]);
+    run(&mut s, "solid.emboss", json!({"sketch": "Lid", "depth": 1, "faces": chain}));
+    assert!(rel(volume(&mut s) - v, 100.0) < 1e-6, "{}", volume(&mut s) - v);
+    // Over the top and on across the back round (y 8..19.5): 10 x 8 on the top, and on the round
+    // the column over y 16..19.5 between radius 4 and 5 about its axis (y 16, z 6),
+    // 10 * the integral of sqrt(25 - t^2) - sqrt(16 - t^2) for t 0..3.5 = 40.2887: projected
+    // across the smooth edge as the top is, not wrapped round the round.
+    let mut s = rounded_box_with_square([15.0, 8.0], [25.0, 19.5]);
+    let v = volume(&mut s);
+    run(&mut s, "solid.emboss", json!({"sketch": "Lid", "depth": 1, "faces": [[20, 10, 10], [20, b, z]]}));
+    assert!(rel(volume(&mut s) - v, 120.2887) < 1e-4, "{}", volume(&mut s) - v);
+    assert_eq!(s.model.state().bodies.len(), 1);
 }
 
 #[test]
