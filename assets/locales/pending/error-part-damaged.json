@@ -1,5 +1,20 @@
 {
+  "ar": {
+    "ui.error_part_damaged": "في هذا الجزء وجه تالف، لذا لا يمكن تغييره. جرّب «إصلاح الجزء» أدناه أولاً."
+  },
   "en": {
-    "ui.error_part_damaged": "This part has a damaged face, so it cannot be changed. Try Repair Part first."
+    "ui.error_part_damaged": "This part has a damaged face, so it cannot be changed. Try Repair part below first."
+  },
+  "he": {
+    "ui.error_part_damaged": "בחלק הזה יש פן פגום, ולכן אי אפשר לשנות אותו. נסו קודם «תיקון חלק» למטה."
+  },
+  "ja": {
+    "ui.error_part_damaged": "このパーツには壊れた面があり、変更できません。まず下の「パーツを修復」を試してください。"
+  },
+  "vi": {
+    "ui.error_part_damaged": "Chi tiết này có một mặt bị hỏng nên không thể thay đổi. Hãy thử «Sửa chi tiết» bên dưới trước."
+  },
+  "zh": {
+    "ui.error_part_damaged": "此零件有一个损坏的面，因此无法更改。请先试试下方的“修复零件”。"
   }
 }
