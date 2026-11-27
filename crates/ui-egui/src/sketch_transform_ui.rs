@@ -170,8 +170,10 @@ pub fn refresh(app: &mut SolveApp) {
     let group = picked_group(app, d);
     let seen = d.extra.get("pivot_group").and_then(|v| v.as_str()).map(str::to_owned);
     let load = group.as_ref().map(|g| g.0.clone()) != seen && app.viewport.transform_drag.is_none();
-    if let Some(Kind::SketchModify(Mod::Transform { frame, pivot, .. })) = app.dialog.as_mut().map(|d| &mut d.kind) {
+    let at = frame_of(app, d).map(|f| center(&f)).map(|c| [c.x, c.y]);
+    if let Some(Kind::SketchModify(Mod::Transform { frame, pivot, placed, .. })) = app.dialog.as_mut().map(|d| &mut d.kind) {
         *frame = boxed;
+        *placed = at;
         if load && let Some((_, saved)) = &group {
             *pivot = saved.map(|p| [p.x, p.y]);
         }
@@ -239,7 +241,7 @@ fn picked_pivot(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<Vec2> {
 
 /// The placement the window's fields describe, as a frame.
 fn frame_of(app: &SolveApp, d: &crate::dialogs::Dialog) -> Option<Frame> {
-    let Kind::SketchModify(Mod::Transform { x, y, factor, angle, frame, aspect, pivot: moved_pivot }) = &d.kind else { return None };
+    let Kind::SketchModify(Mod::Transform { x, y, factor, angle, frame, aspect, pivot: moved_pivot, .. }) = &d.kind else { return None };
     let (middle, size, base) = (*frame)?;
     let middle = Vec2::new(middle[0], middle[1]);
     // The pivot the box was given by hand wins over a picked Center, which wins over the middle.
@@ -587,9 +589,35 @@ mod tests {
             frame: None,
             aspect: String::new(),
             pivot: None,
+            placed: None,
+            shown: Default::default(),
         };
         store(&mut k, &up, false);
         assert!(matches!(&k, Mod::Transform { angle, .. } if angle == "-30 deg"), "the window's Angle is relative to the box's own turn");
+    }
+
+    #[test]
+    fn a_typed_place_moves_the_distance_by_the_difference_in_the_design_unit() {
+        let mut doc = solidcraft_engine::doc::Document::default();
+        let mut x = "2 mm".to_string();
+        let mut at = 25.0;
+        crate::sketch_modify_ui::move_to(&doc, &mut x, &mut at, "25 mm");
+        assert_eq!((x.as_str(), at), ("2 mm", 25.0), "a row left as shown changes nothing");
+        crate::sketch_modify_ui::move_to(&doc, &mut x, &mut at, "10 in");
+        assert_eq!((x.as_str(), at), ("231 mm", 254.0), "10 in is 254 mm: 2 + 254 - 25");
+        let mut shown = String::new();
+        crate::sketch_modify_ui::sync_place(&doc, &mut shown, 25.4);
+        assert_eq!(shown, "25.4 mm");
+        doc.units = "in".into();
+        let mut x = "0 in".to_string();
+        let mut at = 25.4;
+        crate::sketch_modify_ui::move_to(&doc, &mut x, &mut at, "2");
+        assert_eq!(x, "1 in", "a bare 2 is 2 in: 0 + 50.8 - 25.4 mm");
+        let mut typed = "1 in".to_string();
+        crate::sketch_modify_ui::sync_place(&doc, &mut typed, 25.4);
+        assert_eq!(typed, "1 in", "a text that gives the place stays as typed");
+        crate::sketch_modify_ui::sync_place(&doc, &mut typed, 50.8);
+        assert_eq!(typed, "2 in");
     }
 
     #[test]

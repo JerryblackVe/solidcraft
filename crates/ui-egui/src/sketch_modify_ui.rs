@@ -147,6 +147,12 @@ pub enum Mod {
         frame: Option<([f64; 2], [f64; 2], f64)>,
         aspect: String,
         pivot: Option<[f64; 2]>,
+        /// Where the box middle is placed now, on the sketch (kept up to date by `refresh`): the
+        /// Position rows show it, so X and Y read as a place and not as a distance.
+        placed: Option<[f64; 2]>,
+        /// What the Position rows and the Angle row show, as typed (an expression stays as typed
+        /// while it gives the value the box has).
+        shown: [String; 3],
     },
     /// `sketch.pattern.rectangular`: how many instances along the picked direction and how far
     /// apart, then the same along a second picked direction (perpendicular by default).
@@ -311,6 +317,8 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
             frame: None,
             aspect: "1".into(),
             pivot: None,
+            placed: None,
+            shown: Default::default(),
         },
         "sketch.move" => Mod::Move {
             x: crate::dialogs::length_default(&app.session, "0"),
@@ -722,6 +730,26 @@ fn pattern_hint(ui: &mut egui::Ui) {
     );
 }
 
+/// A place typed into a Position row: `field` is the distance moved, `at` (mm) where the middle is
+/// now. The text is worked out like any length (units, parameters), and the distance changes by
+/// what it differs from `at`; `at` follows, as the next frame's pick would say.
+pub(crate) fn move_to(doc: &Document, field: &mut String, at: &mut f64, typed: &str) {
+    let mm = |t: &str| crate::length_input::eval(doc, t, ValueKind::Length).ok().filter(|v| v.is_finite());
+    if let (Some(typed), Some(old)) = (mm(typed), mm(&crate::length_input::stored(doc, field))) {
+        *field = crate::length_input::shown(doc, old + typed - *at);
+        *at = typed;
+    }
+}
+
+/// The text of a Position row follows where the middle is (`at`, mm) unless it already works out
+/// to that place: an expression the user typed stays.
+pub(crate) fn sync_place(doc: &Document, text: &mut String, at: f64) {
+    let same = crate::length_input::eval(doc, text, ValueKind::Length).ok().map(|v| (v - at).abs() < 1e-5);
+    if text.trim().is_empty() || same == Some(false) {
+        *text = crate::length_input::shown(doc, at);
+    }
+}
+
 /// Dense rows after the selection inputs; true when an expression field accepts Enter.
 /// `doc` evaluates the pattern counts the step arrows change.
 pub fn rows(ui: &mut egui::Ui, k: &mut Mod, doc: &Document) -> bool {
@@ -751,8 +779,23 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Mod, doc: &Document) -> bool {
             enter |= number(ui, "Angle", angle);
             ui_kit::options(ui, "move_options", &mut [("Create Copy", copy)]);
         }
-        Mod::Transform { x, y, factor, angle, frame, aspect, .. } => {
-            enter |= ui_kit::value_pair(ui, "Position", [x, y], ["X", "Y"], Some(["X Distance", "Y Distance"]));
+        Mod::Transform { x, y, factor, angle, frame, aspect, placed, shown: texts, .. } => {
+            // X and Y are where the middle of the picks is on the sketch; the window keeps the
+            // distance it moved, so a typed place moves it by the difference.
+            if let Some(at) = placed {
+                let [tx, ty, _] = texts;
+                sync_place(doc, tx, at[0]);
+                sync_place(doc, ty, at[1]);
+                let before = [tx.clone(), ty.clone()];
+                enter |= ui_kit::value_pair(ui, "Position", [tx, ty], ["X", "Y"], Some(["X Position", "Y Position"]));
+                for (i, field) in [&mut *x, &mut *y].into_iter().enumerate() {
+                    if texts[i] != before[i] {
+                        move_to(doc, field, &mut at[i], &texts[i]);
+                    }
+                }
+            } else {
+                enter |= ui_kit::value_pair(ui, "Position", [x, y], ["X", "Y"], Some(["X Distance", "Y Distance"]));
+            }
             // The size in millimetres follows the scale and the other way round: the width sets the
             // scale, the height the aspect, so each can be typed on its own.
             if let Some((_, size, _)) = frame {
@@ -777,7 +820,22 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Mod, doc: &Document) -> bool {
                 }
             }
             enter |= number(ui, "Scale", factor);
-            enter |= number(ui, "Angle", angle);
+            // The turn is shown as a whole, with the box's own turn in it (a turned group's).
+            let own = frame.map_or(0.0, |(.., base)| base);
+            let total = |text: &str| crate::length_input::eval(doc, text, ValueKind::Angle).ok().map(f64::to_degrees);
+            let text = &mut texts[2];
+            if let Some(now) = total(angle)
+                && text.is_empty() | total(text).is_some_and(|t| (t - own - now).abs() > 1e-6)
+            {
+                *text = format!("{} deg", crate::sketch_transform_ui::plain(own + now));
+            }
+            let before = text.clone();
+            enter |= number(ui, "Angle", text);
+            if *text != before
+                && let Some(whole) = total(text)
+            {
+                *angle = format!("{} deg", crate::sketch_transform_ui::plain(whole - own));
+            }
         }
         Mod::PatternRect { count, spacing, count2, spacing2, alignment: a, alignment2, reversed, reversed2 } => {
             let (left1, left2) = (copies_left(doc, count2), copies_left(doc, count));
@@ -1141,7 +1199,7 @@ pub fn commands(app: &SolveApp, k: &Mod, inputs: &[SelInput], extra: &Map<String
             }
             ("sketch.scale", p)
         }
-        Mod::Transform { x, y, factor: text, angle, frame, aspect, pivot } => {
+        Mod::Transform { x, y, factor: text, angle, frame, aspect, pivot, .. } => {
             let entities = entity_ids(&app.session, inputs, 0);
             if entities.is_empty() {
                 return Err("Select the sketch curves or points to transform first".into());

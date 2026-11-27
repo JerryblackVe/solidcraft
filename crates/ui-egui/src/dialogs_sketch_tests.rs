@@ -734,6 +734,39 @@ fn transform_handles_and_fields_scale_move_and_turn_the_picks() {
     assert!((top - 40.0).abs() < 1e-6, "one undo puts it back: {top}");
 }
 
+/// The Position rows are a place on the sketch (the middle of the picks), not a distance moved.
+#[test]
+fn transform_position_is_where_the_middle_is_on_the_sketch() {
+    let mut h = fixture();
+    h.step(&json!({"call": "ui.view", "params": {"view": "top"}})).unwrap();
+    h.settle();
+    let ids: Vec<String> = {
+        let sk = h.app.session.doc.sketch(h.app.session.active_sketch.unwrap()).unwrap();
+        sk.curves.iter().map(|c| c.id.clone()).collect()
+    };
+    let mut d = Dialog::for_command(&h.app, "sketch.transform").unwrap();
+    d.inputs[0].items = ids.iter().map(|id| Sel::SketchCurve { id: id.clone(), sketch: None }).collect();
+    h.app.dialog = Some(d);
+    h.frames(4);
+    let placed = |h: &Harness| match h.app.dialog.as_ref().map(|d| d.kind.clone()) {
+        Some(Kind::SketchModify(Mod::Transform { placed, .. })) => placed,
+        other => panic!("no transform window: {other:?}"),
+    };
+    // The rectangle is 30 x 20 around (25, 20), and X and Y still say 0 mm moved.
+    let at = placed(&h).expect("the middle is placed");
+    assert!((at[0] - 25.0).abs() < 1e-6 && (at[1] - 20.0).abs() < 1e-6, "{at:?}");
+    // A corner dragged out by half the size moves the middle: the place follows it.
+    h.step(&json!({"drag": [{"handle": "transform:handle:3"}, {"world": [55, 40, 0]}]})).unwrap();
+    h.frames(3);
+    let at = placed(&h).unwrap();
+    assert!((at[0] - 32.5).abs() < 0.05 && (at[1] - 25.0).abs() < 0.05, "{at:?}");
+    // A place typed as an expression with a parameter moves it the same way.
+    h.app.run("parameters.add", json!({"name": "L", "expression": "10 mm"})).unwrap();
+    let (mut field, mut at) = ("0 mm".to_string(), 25.0);
+    crate::sketch_modify_ui::move_to(&h.app.session.doc, &mut field, &mut at, "L * 4");
+    assert_eq!((field.as_str(), at), ("15 mm", 40.0), "L * 4 is 40 mm: 0 + 40 - 25");
+}
+
 /// A double click on the turning knob puts the box back to 0 degrees.
 #[test]
 fn transform_knob_double_click_resets_the_turn() {
