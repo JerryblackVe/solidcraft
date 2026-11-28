@@ -6796,6 +6796,32 @@ fn default_extrude_profiles_keep_even_depth_islands_and_separate_outlines() {
     assert!(rel(actual, expected) < 1e-6, "{actual} vs {expected}");
 }
 
+/// BUG-32: one extrude with two separate profiles joined to a body gives both caps one name;
+/// painting the cap of one profile must leave the other cap alone.
+#[test]
+fn painting_one_cap_of_a_multi_profile_extrude_leaves_the_other_cap() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 100, "width": 40, "height": 10, "body_name": "Base"}));
+    let top = {
+        let world = s.world_state().unwrap();
+        let face = world.body("Base").unwrap().body.faces(0.01).unwrap().into_iter().find(|f| (f.centroid.z - 10.0).abs() < 1e-6).unwrap();
+        json!({"body": "Base", "index": face.index, "face": [face.centroid.x, face.centroid.y, face.centroid.z]})
+    };
+    run(&mut s, "sketch.create", json!({"plane": top}));
+    for (p0, p1) in [([10, 10], [30, 30]), ([60, 10], [80, 30])] {
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": p0, "p1": p1}));
+    }
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance": 5, "operation": "join"}));
+    run(&mut s, "appearance.assign", json!({"faces": [[20, 20, 15]], "color": "#ffff00"}));
+    let st = s.world_state().unwrap();
+    let body = &st.bodies[0];
+    let cap = |x: f64| solidcraft_doc::appearance::face_index_at(body, solidcore_record::Vec3::new(x, 20.0, 15.0)).unwrap();
+    let painted: Vec<usize> = s.doc.face_colors(body).into_iter().map(|(i, _)| i).collect();
+    assert!(painted.contains(&cap(20.0)), "{painted:?}");
+    assert!(!painted.contains(&cap(70.0)), "the other cap was painted too: {painted:?}");
+}
+
 /// The face of `body` whose normal points along +x, as a plane pick.
 fn side_face_pick(s: &Session, body: &str) -> Value {
     let world = s.world_state().unwrap();

@@ -473,7 +473,7 @@ impl Document {
             }
             // By name (every piece of a split face), else by the point.
             if let Some(n) = &f.name {
-                let hits = crate::naming::faces_with_stem(b, n);
+                let hits = near_pieces(b, crate::naming::faces_with_stem(b, n), p);
                 if !hits.is_empty() {
                     for i in hits {
                         out.retain(|(j, _)| *j != i);
@@ -490,6 +490,24 @@ impl Document {
             }
         }
     }
+}
+
+/// Of faces sharing one name, those joined (by shared B-rep edges) to the one that holds `p`:
+/// pieces of one split face stay together, while the same-named caps of separate profiles of one
+/// extrude are left out.
+fn near_pieces(b: &crate::ModelBody, hits: Vec<usize>, p: Vec3) -> Vec<usize> {
+    if hits.len() < 2 {
+        return hits;
+    }
+    let Some(seed) = faces_within(b, p, pick_tolerance(b)).into_iter().find(|f| hits.contains(f)) else { return hits };
+    let edges = &b.body.record().edges;
+    let touch = |x: usize, y: usize| edges.iter().any(|e| e.uses.iter().any(|u| u.face as usize == x) && e.uses.iter().any(|u| u.face as usize == y));
+    let mut group = vec![seed];
+    while let Some(h) = hits.iter().copied().find(|h| !group.contains(h) && group.iter().any(|&g| touch(g, *h))) {
+        group.push(h);
+    }
+    group.sort_unstable();
+    group
 }
 
 /// The B-rep face of a body nearest a point (within 5% of the body's size).
